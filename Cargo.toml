@@ -154,3 +154,4 @@ fynd-client = { path = "clients/rust", version = "0.55.0" }
 
 # Dev dependencies
 rstest = "0.18"
+tempfile = "3"
