@@ -8,3 +8,4 @@ scale_results*.json
 .env
 .claude/worktrees/
 .claude/plans/
+.worktrees/
