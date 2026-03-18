@@ -3301,6 +3301,7 @@ name = "fynd-core"
 version = "0.55.0"
 dependencies = [
  "alloy",
+ "anyhow",
  "async-channel",
  "async-trait",
  "chrono",
@@ -3317,6 +3318,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
