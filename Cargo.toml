@@ -126,6 +126,9 @@ tycho-simulation = ">=0.254.0"
 tycho-execution = "<=0.175.0"
 typetag = "0.2"
 
+# Compression
+zstd = "0.13"
+
 # Graph algorithms
 petgraph = "0.6"
 
