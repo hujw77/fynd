@@ -60,3 +60,4 @@ pub(crate) mod types;
 pub use computation::FailedItemError;
 pub use manager::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef};
 pub use store::DerivedData;
+pub use events::DerivedDataEvent;

@@ -3,7 +3,8 @@ use std::{collections::HashSet, time::Duration};
 use tycho_simulation::tycho_common::models::Chain;
 
 pub(crate) mod events;
-pub(crate) mod gas;
+pub use events::MarketEvent;
+pub mod gas;
 /// Shared market data store (`SharedMarketData`, `SharedMarketDataRef`).
 pub mod market_data;
 /// Protocol system registry: maps protocol names to their Tycho identifiers.
