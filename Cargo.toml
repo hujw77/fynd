@@ -71,6 +71,7 @@ members = [
     "clients/rust",
     "tools/benchmark",
     "tools/fynd-swap-cli",
+    "tools/record-market",
 ]
 resolver = "2"
 
