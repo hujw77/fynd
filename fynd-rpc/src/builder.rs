@@ -357,4 +357,3 @@ impl FyndRPC {
         Ok(())
     }
 }
-

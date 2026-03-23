@@ -58,6 +58,6 @@ pub(crate) mod types;
 
 // Only export the public API: manager, config, store, and shared reference type
 pub use computation::FailedItemError;
+pub use events::DerivedDataEvent;
 pub use manager::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef};
 pub use store::DerivedData;
-pub use events::DerivedDataEvent;
