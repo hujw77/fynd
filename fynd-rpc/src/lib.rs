@@ -23,3 +23,6 @@ pub mod builder;
 pub mod config;
 /// Protocol discovery via the Tycho RPC.
 pub mod protocols;
+
+// Re-export parse_chain so tools that depend on fynd-rpc (not fynd-core) can use it.
+pub use fynd_core::types::parse_chain;

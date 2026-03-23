@@ -29,6 +29,12 @@ use fynd_client::{
     PermitSingle as FyndPermitSingle, QuoteOptions, QuoteParams, SignedApproval, SignedSwap,
     SigningHints, StorageOverrides, UserTransferType,
 };
+use fynd_rpc::{
+    builder::FyndRPCBuilder,
+    config::WorkerPoolsConfig,
+    parse_chain,
+    protocols::fetch_protocol_systems,
+};
 use num_bigint::BigUint;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
