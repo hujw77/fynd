@@ -305,7 +305,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Build FyndClient ──────────────────────────────────────────────────────
-    let client = FyndClientBuilder::new(&cli.fynd_url, &cli.rpc_url)
+    let client = FyndClientBuilder::new(&cli.fynd_url)
+        .with_rpc_url(&cli.rpc_url)
         .with_sender(sender)
         .build()
         .await?;
