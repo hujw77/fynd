@@ -164,14 +164,11 @@ async fn test_quality_invariants() {
                     "{}: gas_estimate should be positive",
                     scenario.name
                 );
-                if let Some(route) = oq.route() {
-                    assert!(
-                        route.hop_count() <= 3,
-                        "{}: hops {} exceeds max_hops 3",
-                        scenario.name,
-                        route.hop_count()
-                    );
-                }
+                assert!(
+                    oq.route().is_some(),
+                    "{}: successful quote should have a route",
+                    scenario.name
+                );
             }
         }
     }

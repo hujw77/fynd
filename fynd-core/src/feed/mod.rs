@@ -4,6 +4,7 @@ use tycho_simulation::tycho_common::models::Chain;
 
 pub(crate) mod events;
 pub use events::MarketEvent;
+/// Gas price fetching from Ethereum RPC.
 pub mod gas;
 /// Shared market data store (`SharedMarketData`, `SharedMarketDataRef`).
 pub mod market_data;
@@ -50,6 +51,7 @@ pub struct TychoFeedConfig {
 }
 
 impl TychoFeedConfig {
+    /// Creates a new feed configuration.
     pub fn new(
         tycho_url: String,
         chain: Chain,
@@ -108,6 +110,7 @@ impl TychoFeedConfig {
 /// Errors that can occur in the indexer.
 #[derive(Debug, thiserror::Error)]
 pub enum DataFeedError {
+    /// Gas price fetching failed.
     #[error("gas price fetcher error: {0}")]
     GasPriceFetcherError(String),
 

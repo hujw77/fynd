@@ -33,6 +33,7 @@ use tycho_simulation::{
 
 use super::DataFeedError;
 
+/// Register DEX protocol decoders on a [`ProtocolStreamBuilder`].
 pub fn register_exchanges(
     mut builder: ProtocolStreamBuilder,
     tvl_filter: ComponentFilter,

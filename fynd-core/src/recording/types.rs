@@ -14,10 +14,15 @@ use tycho_simulation::{
 /// via `#[typetag::serde]`), so this wrapper just adds the derives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordedUpdate {
+    /// Block number (or timestamp for non-EVM chains).
     pub block_number_or_timestamp: u64,
+    /// Per-protocol synchronization state from the Tycho stream.
     pub sync_states: HashMap<String, SynchronizerState>,
+    /// Simulation states keyed by pool/component ID.
     pub states: HashMap<String, Box<dyn ProtocolSim>>,
+    /// Newly discovered protocol components.
     pub new_pairs: HashMap<String, ProtocolComponent>,
+    /// Components removed in this update.
     pub removed_pairs: HashMap<String, ProtocolComponent>,
 }
 
@@ -66,14 +71,23 @@ impl From<RecordedUpdate> for Update {
 /// Metadata about the recording session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingMetadata {
+    /// Chain name (e.g. `"ethereum"`).
     pub chain: String,
+    /// Unix timestamp when recording started.
     pub recorded_at_unix_s: u64,
+    /// Fynd crate version at recording time.
     pub fynd_version: String,
+    /// Actual recording wall-clock duration in seconds.
     pub recording_duration_s: u64,
+    /// Number of stream updates captured.
     pub num_updates: usize,
+    /// Protocol systems included in the recording.
     pub protocols: Vec<String>,
+    /// Minimum TVL filter used during recording.
     pub min_tvl: f64,
+    /// Minimum token quality filter used during recording.
     pub min_token_quality: i32,
+    /// Token recency filter (days).
     pub traded_n_days_ago: Option<u64>,
     /// Gas price in wei captured from RPC at recording time.
     /// Stored as a decimal string to preserve full precision.
@@ -89,7 +103,9 @@ pub struct RecordingMetadata {
 /// used in production.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketRecording {
+    /// Recording session metadata.
     pub metadata: RecordingMetadata,
+    /// Ordered sequence of stream updates to replay.
     pub updates: Vec<RecordedUpdate>,
 }
 
