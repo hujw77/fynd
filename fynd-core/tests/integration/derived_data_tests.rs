@@ -1,32 +1,41 @@
-use fynd_core::recording::golden::load_golden_file;
+use fynd_test_fixtures::expected::load_expected_file;
 
 use crate::harness::TestHarness;
+
+fn expected_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/expected_outputs.json")
+}
 
 /// All derived data fields should be computed after pipeline initialization.
 #[tokio::test]
 async fn test_all_derived_fields_computed() {
     let harness = TestHarness::from_fixture().await;
-    let derived = harness.derived_data.read().await;
+    let derived_ref = harness.solver().derived_data();
+    let derived = derived_ref.read().await;
 
     assert!(derived.spot_prices().is_some(), "spot_prices should be computed");
     assert!(derived.pool_depths().is_some(), "pool_depths should be computed");
     assert!(derived.token_prices().is_some(), "token_prices should be computed");
 }
 
-/// Derived data metrics should exactly match the golden baseline.
-/// Since replay is deterministic (same recording → same derived data),
+/// Derived data metrics should exactly match the expected baseline.
+/// Since replay is deterministic (same recording + same code = same result),
 /// any deviation indicates a real bug, not expected variance.
 #[tokio::test]
-async fn test_derived_data_matches_golden() {
+async fn test_derived_data_matches_expected() {
     let harness = TestHarness::from_fixture().await;
-    let golden = load_golden_file().expect("golden_outputs.json required");
-    let expected = golden
+    let expected_file = load_expected_file(&expected_path())
+        .expect("I/O error")
+        .expect("expected_outputs.json required");
+    let expected = expected_file
         .metadata
         .derived_data
-        .expect("golden file missing derived_data metrics — regenerate with record-market");
+        .expect("expected file missing derived_data metrics — regenerate with record-market");
 
-    let market = harness.market_data.read().await;
-    let derived = harness.derived_data.read().await;
+    let market_ref = harness.solver().market_data();
+    let market = market_ref.read().await;
+    let derived_ref = harness.solver().derived_data();
+    let derived = derived_ref.read().await;
 
     let spot_prices = derived
         .spot_prices()
@@ -48,28 +57,25 @@ async fn test_derived_data_matches_golden() {
         .token_prices()
         .expect("token prices not computed");
 
-    // Also verify pool/token counts match golden metadata
-    let actual_pools = market.component_topology().len();
-    let actual_tokens = market.token_registry_ref().len();
-
-    assert_eq!(actual_pools, golden.metadata.num_pools, "pool count mismatch (actual vs golden)");
     assert_eq!(
-        actual_tokens, golden.metadata.num_tokens,
-        "token count mismatch (actual vs golden)"
+        market.component_topology().len(),
+        expected_file.metadata.num_pools,
+        "pool count mismatch"
+    );
+    assert_eq!(
+        market.token_registry_ref().len(),
+        expected_file.metadata.num_tokens,
+        "token count mismatch"
     );
     assert_eq!(
         actual_spot_price_pools.len(),
         expected.spot_price_pools,
-        "spot_price pool count mismatch (actual vs golden)"
+        "spot_price pool count mismatch"
     );
     assert_eq!(
         actual_pool_depth_pools.len(),
         expected.pool_depth_pools,
-        "pool_depth pool count mismatch (actual vs golden)"
+        "pool_depth pool count mismatch"
     );
-    assert_eq!(
-        token_prices.len(),
-        expected.token_prices,
-        "token_prices count mismatch (actual vs golden)"
-    );
+    assert_eq!(token_prices.len(), expected.token_prices, "token_prices count mismatch");
 }

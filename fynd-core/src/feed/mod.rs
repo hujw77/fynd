@@ -5,7 +5,7 @@ use tycho_simulation::tycho_common::models::Chain;
 pub(crate) mod events;
 pub use events::MarketEvent;
 /// Gas price fetching from Ethereum RPC.
-pub mod gas;
+pub(crate) mod gas;
 /// Shared market data store (`SharedMarketData`, `SharedMarketDataRef`).
 pub mod market_data;
 /// Protocol system registry: maps protocol names to their Tycho identifiers.
@@ -15,7 +15,7 @@ pub mod tycho_feed;
 
 /// Configuration for the TychoFeed.
 #[derive(Debug, Clone)]
-pub struct TychoFeedConfig {
+pub(crate) struct TychoFeedConfig {
     /// Tycho WebSocket URL.
     pub(crate) tycho_url: String,
     /// Blockchain to connect to.
@@ -51,8 +51,7 @@ pub struct TychoFeedConfig {
 }
 
 impl TychoFeedConfig {
-    /// Creates a new feed configuration.
-    pub fn new(
+    pub(crate) fn new(
         tycho_url: String,
         chain: Chain,
         tycho_api_key: Option<String>,

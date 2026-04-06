@@ -1,25 +1,34 @@
-use fynd_core::{
-    recording::golden::{load_golden_file, load_test_scenarios},
-    types::QuoteStatus,
-};
+use fynd_core::types::QuoteStatus;
+use fynd_test_fixtures::{expected::load_expected_file, load_test_scenarios};
 
 use crate::harness::TestHarness;
 
-/// Scenarios that succeeded in golden generation should also succeed in replay.
+fn expected_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/expected_outputs.json")
+}
+
+fn scenarios() -> Vec<fynd_test_fixtures::TestScenario> {
+    let pairs_json = include_str!("../../../tools/benchmark/src/pairs.json");
+    load_test_scenarios(pairs_json).expect("failed to load test scenarios")
+}
+
+/// Scenarios that succeeded in expected baseline should also succeed in replay.
 #[tokio::test]
-async fn test_all_golden_pairs_return_solutions() {
+async fn test_all_expected_pairs_return_solutions() {
     let harness = TestHarness::from_fixture().await;
-    let golden = load_golden_file().expect("golden_outputs.json required for tests");
-    let golden_map: std::collections::HashMap<_, _> = golden
+    let expected_file = load_expected_file(&expected_path())
+        .expect("I/O error")
+        .expect("expected_outputs.json required");
+    let expected_map: std::collections::HashMap<_, _> = expected_file
         .scenarios
         .iter()
-        .map(|gs| (gs.scenario.name.clone(), &gs.expected))
+        .map(|es| (es.scenario.name.clone(), &es.expected))
         .collect();
 
-    let scenarios = load_test_scenarios();
+    let scenarios = scenarios();
     let mut failures = Vec::new();
     for scenario in &scenarios {
-        let Some(expected) = golden_map.get(&scenario.name) else {
+        let Some(expected) = expected_map.get(&scenario.name) else {
             continue;
         };
         if expected.status != QuoteStatus::Success {
@@ -31,12 +40,12 @@ async fn test_all_golden_pairs_return_solutions() {
 
         match result {
             Ok(quote) => {
-                let order_quote = &quote.orders()[0];
-                if order_quote.status() != QuoteStatus::Success {
+                let oq = &quote.orders()[0];
+                if oq.status() != QuoteStatus::Success {
                     failures.push(format!(
                         "{}: expected Success, got {:?}",
                         scenario.name,
-                        order_quote.status()
+                        oq.status()
                     ));
                 }
             }
@@ -58,8 +67,10 @@ async fn test_unknown_token_returns_error() {
         "0x0000000000000000000000000000000000000BAD"
             .parse()
             .unwrap();
-    let golden = load_golden_file().expect("golden_outputs.json required");
-    let known_token = golden.scenarios[0]
+    let expected_file = load_expected_file(&expected_path())
+        .expect("I/O error")
+        .expect("expected_outputs.json required");
+    let known_token = expected_file.scenarios[0]
         .scenario
         .token_in
         .clone();
@@ -85,30 +96,32 @@ async fn test_unknown_token_returns_error() {
     }
 }
 
-/// Quality: each pair's amount_out_net_gas should be within 1% of golden baseline.
+/// Quality: each pair's amount_out_net_gas should be within 1% of expected baseline.
 #[tokio::test]
-async fn test_quality_within_golden_baseline() {
+async fn test_quality_within_expected_baseline() {
     let harness = TestHarness::from_fixture().await;
-    let golden = load_golden_file().expect("golden_outputs.json required for quality tests");
-    let golden_map: std::collections::HashMap<_, _> = golden
+    let expected_file = load_expected_file(&expected_path())
+        .expect("I/O error")
+        .expect("expected_outputs.json required");
+    let expected_map: std::collections::HashMap<_, _> = expected_file
         .scenarios
         .iter()
-        .map(|gs| (gs.scenario.name.clone(), &gs.expected))
+        .map(|es| (es.scenario.name.clone(), &es.expected))
         .collect();
-    let scenarios = load_test_scenarios();
+    let scenarios = scenarios();
 
     let mut regressions = Vec::new();
     for scenario in &scenarios {
-        let Some(expected_output) = golden_map.get(&scenario.name) else {
+        let Some(expected_output) = expected_map.get(&scenario.name) else {
             continue;
         };
         let order = scenario.to_order();
         let result = harness.quote(vec![order]).await;
 
         if let Ok(quote) = result {
-            let order_quote = &quote.orders()[0];
-            if order_quote.status() == QuoteStatus::Success {
-                let actual = order_quote.amount_out_net_gas();
+            let oq = &quote.orders()[0];
+            if oq.status() == QuoteStatus::Success {
+                let actual = oq.amount_out_net_gas();
                 let expected = &expected_output.amount_out_net_gas;
 
                 if expected.gt(&num_bigint::BigUint::ZERO) {
@@ -147,7 +160,7 @@ async fn test_quality_within_golden_baseline() {
 #[tokio::test]
 async fn test_quality_invariants() {
     let harness = TestHarness::from_fixture().await;
-    let scenarios = load_test_scenarios();
+    let scenarios = scenarios();
 
     for scenario in &scenarios {
         let order = scenario.to_order();

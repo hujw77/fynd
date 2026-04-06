@@ -9,33 +9,31 @@ mod recorder;
 #[derive(Parser)]
 #[command(name = "record-market", about = "Capture Tycho market state for integration testing")]
 struct Cli {
-    /// Tycho WebSocket URL
+    /// Tycho WebSocket URL.
     #[arg(long, env = "TYCHO_URL")]
     tycho_url: String,
 
-    /// Tycho API key
+    /// Tycho API key.
     #[arg(long, env = "TYCHO_API_KEY")]
     tycho_api_key: String,
 
     /// Ethereum RPC URL for gas price capture.
-    /// If provided, the gas price is recorded and used during replay.
     #[arg(long, env = "RPC_URL")]
     rpc_url: Option<String>,
 
-    /// Duration to record stream updates (seconds)
+    /// Duration to record stream updates (seconds).
     #[arg(long, default_value = "600")]
     duration_secs: u64,
 
-    /// Output directory for fixtures
-    #[arg(long, default_value = "fixtures/integration")]
+    /// Output directory for fixtures.
+    #[arg(long, default_value = "fynd-core/tests/fixtures")]
     output_dir: PathBuf,
 
-    /// Protocol systems to record (e.g. uniswap_v2, uniswap_v3).
-    /// If omitted, all protocols discovered from Tycho are used.
+    /// Protocol systems to record (comma-delimited).
     #[arg(long, value_delimiter = ',')]
     protocols: Option<Vec<String>>,
 
-    /// Minimum TVL in native token (ETH) for component filtering.
+    /// Minimum TVL in ETH for component filtering.
     #[arg(long, default_value = "10.0")]
     min_tvl: f64,
 
@@ -44,7 +42,6 @@ struct Cli {
     min_token_quality: i32,
 
     /// Only include tokens traded within this many days.
-    /// Defaults to 3 (same as production).
     #[arg(long, default_value = "3")]
     traded_n_days_ago: u64,
 }
@@ -70,34 +67,39 @@ async fn main() -> anyhow::Result<()> {
         rpc_url: cli.rpc_url,
     };
 
-    // 1. Record Update messages from live Tycho stream
     let recording = recorder::record_market(&recording_opts).await?;
 
     tracing::info!(
         updates = recording.updates.len(),
-        duration_s = recording.metadata.recording_duration_s,
+        duration_s = recording
+            .metadata
+            .recording_duration_secs,
         "market recording captured"
     );
 
-    // 2. Write recording
     std::fs::create_dir_all(&cli.output_dir)?;
     let recording_path = cli
         .output_dir
         .join("market_recording.json.zst");
-    fynd_core::recording::write_recording(&recording, &recording_path)?;
+    fynd_test_fixtures::write_recording(&recording, &recording_path)?;
     tracing::info!(path = %recording_path.display(), "recording written");
 
-    // 3. Generate golden outputs by replaying the recording
-    let golden = golden::generate_golden_outputs(recording).await?;
-    let golden_path = cli
+    // Read back the recording from disk so golden generation uses the same
+    // deserialized data that integration tests will see (VM states filtered
+    // during serialization won't be present in the deserialized version).
+    let recording = fynd_test_fixtures::read_recording(&recording_path)?;
+
+    let pools_toml = include_str!("../../../worker_pools.toml");
+    let expected = golden::generate_expected_outputs(recording, pools_toml).await?;
+    let expected_path = cli
         .output_dir
-        .join("golden_outputs.json");
-    let golden_json = serde_json::to_string_pretty(&golden)?;
-    std::fs::write(&golden_path, golden_json)?;
+        .join("expected_outputs.json");
+    let json = serde_json::to_string_pretty(&expected)?;
+    std::fs::write(&expected_path, json)?;
     tracing::info!(
-        scenarios = golden.scenarios.len(),
-        path = %golden_path.display(),
-        "golden outputs written"
+        scenarios = expected.scenarios.len(),
+        path = %expected_path.display(),
+        "expected outputs written"
     );
 
     Ok(())

@@ -32,11 +32,11 @@ typetag.workspace = true
 tycho-execution.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
-zstd = { workspace = true }
 alloy = { workspace = true, features = ["sol-types"] }
 
 [dev-dependencies]
 rstest.workspace = true
 tempfile.workspace = true
 toml.workspace = true
+fynd-test-fixtures.workspace = true
 tracing-subscriber.workspace = true

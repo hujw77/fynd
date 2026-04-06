@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
-use fynd_core::recording::{MarketRecording, RecordedUpdate, RecordingMetadata};
+use fynd_test_fixtures::{MarketRecording, RecordingMetadata};
 use tokio_stream::StreamExt;
 use tycho_simulation::{
     evm::stream::ProtocolStreamBuilder,
+    protocol::models::Update,
     tycho_client::{
         feed::component_tracker::ComponentFilter,
         rpc::{HttpRPCClient, HttpRPCClientOptions, RPCClient},
@@ -33,7 +34,6 @@ pub struct RecordingOptions {
 pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketRecording> {
     let chain = Chain::Ethereum;
 
-    // 1. Resolve protocol list: use explicit list or discover from Tycho RPC
     let protocols = match &opts.protocols {
         Some(p) if !p.is_empty() => {
             tracing::info!(protocols = ?p, "using explicit protocol list");
@@ -42,19 +42,14 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
         _ => {
             let discovered =
                 fetch_protocol_systems(&opts.tycho_url, Some(&opts.tycho_api_key), chain).await?;
-            tracing::info!(
-                count = discovered.len(),
-                ?discovered,
-                "discovered protocols from Tycho RPC"
-            );
+            tracing::info!(count = discovered.len(), ?discovered, "discovered protocols");
             discovered
         }
     };
 
-    // 2. Load tokens from Tycho (TLS enabled for production Tycho)
     let all_tokens = load_all_tokens(
         &opts.tycho_url,
-        false, // use TLS
+        false,
         Some(&opts.tycho_api_key),
         true,
         chain,
@@ -64,7 +59,6 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
     .await?;
     tracing::info!(count = all_tokens.len(), "loaded tokens");
 
-    // 3. Fetch gas price from RPC (if URL provided)
     let gas_price_wei = match &opts.rpc_url {
         Some(url) => match fetch_gas_price_wei(url).await {
             Ok(wei) => {
@@ -72,19 +66,13 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
                 Some(wei)
             }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to fetch gas price, using None");
+                tracing::warn!(error = %e, "failed to fetch gas price");
                 None
             }
         },
-        None => {
-            tracing::info!("no --rpc-url provided, gas price will not be recorded");
-            None
-        }
+        None => None,
     };
 
-    // 4. Build the protocol stream with TVL filtering
-    // with_tvl_range(lower_bound, upper_bound): components are added when TVL >= upper
-    // and removed when TVL < lower. Use same value for both (no hysteresis in recording).
     let tvl_filter = ComponentFilter::with_tvl_range(opts.min_tvl, opts.min_tvl);
     let builder = ProtocolStreamBuilder::new(&opts.tycho_url, chain);
 
@@ -100,12 +88,11 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
         .build()
         .await?;
 
-    // 5. Receive Update messages until duration expires
-    let mut updates = Vec::new();
+    let mut updates: Vec<Update> = Vec::new();
     let start = Instant::now();
     let deadline = start + Duration::from_secs(opts.duration_secs);
 
-    tracing::info!(duration_secs = opts.duration_secs, "recording stream updates...");
+    tracing::info!(duration_secs = opts.duration_secs, "recording...");
 
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -117,13 +104,11 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
                     states = update.states.len(),
                     "captured update"
                 );
-                updates.push(RecordedUpdate::from(update));
+                updates.push(update);
             }
-            Ok(Some(Err(e))) => {
-                tracing::warn!("stream error (continuing): {e}");
-            }
+            Ok(Some(Err(e))) => tracing::warn!("stream error (continuing): {e}"),
             Ok(None) => {
-                tracing::info!("stream ended before deadline");
+                tracing::info!("stream ended");
                 break;
             }
             Err(_) => {
@@ -136,21 +121,24 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
     let actual_duration = start.elapsed().as_secs();
     tracing::info!(updates = updates.len(), actual_duration, "recording complete");
 
+    let pools_toml = include_str!("../../../worker_pools.toml");
+    let worker_pools_hash = fynd_test_fixtures::recording::sha256_hex(pools_toml.as_bytes());
+
     Ok(MarketRecording {
         metadata: RecordingMetadata {
             chain: "ethereum".to_string(),
-            recorded_at_unix_s: std::time::SystemTime::now()
+            recorded_at_secs: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time went backwards")
                 .as_secs(),
             fynd_version: env!("CARGO_PKG_VERSION").to_string(),
-            recording_duration_s: actual_duration,
-            num_updates: updates.len(),
-            protocols: protocols.clone(),
+            recording_duration_secs: actual_duration,
+            protocols,
             min_tvl: opts.min_tvl,
             min_token_quality: opts.min_token_quality,
             traded_n_days_ago: Some(opts.traded_n_days_ago),
             gas_price_wei,
+            worker_pools_hash: Some(worker_pools_hash),
         },
         updates,
     })
@@ -167,7 +155,6 @@ async fn fetch_gas_price_wei(rpc_url: &str) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("failed to fetch gas price: {e}"))?;
     let gas_price_wei = match block_gas_price.pricing {
         GasPrice::Legacy { gas_price } => gas_price,
-        // EIP-1559: use max_fee_per_gas as the upper bound
         other => {
             tracing::warn!(?other, "non-legacy gas price, falling back to 10 gwei");
             num_bigint::BigUint::from(10_000_000_000u64)

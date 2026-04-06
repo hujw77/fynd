@@ -73,5 +73,5 @@ pub fn parse_chain(chain: &str) -> Result<Chain, ParseChainError> {
 
 /// Error returned when a chain name string cannot be parsed.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("unsupported chain '{0}'. Try values like 'ethereum', 'base', 'unichain'")]
+#[error("unsupported chain '{0}'")]
 pub struct ParseChainError(pub String);

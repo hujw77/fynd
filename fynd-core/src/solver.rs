@@ -245,6 +245,9 @@ pub enum SolverBuildError {
     /// [`FyndBuilder::build`] was called without configuring any worker pools.
     #[error("no worker pools configured")]
     NoPools,
+    /// A recorded update failed to replay through the feed.
+    #[error("replay failed: {0}")]
+    Replay(String),
 }
 
 /// Internal pool entry — either a built-in algorithm (by name) or a custom one.
@@ -766,6 +769,167 @@ impl Solver {
 
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+    }
+
+    /// Build a Solver by replaying recorded market updates.
+    ///
+    /// Creates the full pipeline (feed -> derived data -> worker pools -> router)
+    /// from pre-recorded data instead of a live Tycho connection. The returned
+    /// Solver behaves identically to a live one — call [`wait_until_ready`](Self::wait_until_ready)
+    /// then [`quote`](Self::quote).
+    ///
+    /// VM-backed protocol states that couldn't be serialized will be absent from
+    /// the recording. Pools without states will be registered as components but
+    /// won't contribute to routing.
+    pub async fn from_recording(
+        chain: Chain,
+        updates: Vec<tycho_simulation::protocol::models::Update>,
+        pools: std::collections::HashMap<String, PoolConfig>,
+        gas_price_wei: Option<num_bigint::BigUint>,
+    ) -> Result<Self, SolverBuildError> {
+        use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
+
+        use crate::feed::events::MarketEvent;
+
+        if pools.is_empty() {
+            return Err(SolverBuildError::NoPools);
+        }
+
+        let market_data: SharedMarketDataRef =
+            Arc::new(tokio::sync::RwLock::new(SharedMarketData::new()));
+
+        // Replay updates through TychoFeed (stays pub(crate))
+        let feed_config =
+            TychoFeedConfig::new("ws://replay".to_string(), chain, None, false, vec![], 0.0);
+        let feed = TychoFeed::new(feed_config, Arc::clone(&market_data));
+        let _feed_rx = feed.subscribe();
+
+        for update in updates {
+            feed.handle_tycho_message(update)
+                .await
+                .map_err(|e| SolverBuildError::Replay(e.to_string()))?;
+        }
+
+        // Inject gas price (recorded value or default 10 gwei)
+        let gas_price =
+            gas_price_wei.unwrap_or_else(|| num_bigint::BigUint::from(10_000_000_000u64));
+        let block_number = market_data
+            .read()
+            .await
+            .last_updated()
+            .map(|b| b.number())
+            .unwrap_or(0);
+        {
+            let mut market = market_data.write().await;
+            market.update_gas_price(BlockGasPrice {
+                block_number,
+                block_hash: Default::default(),
+                block_timestamp: 0,
+                pricing: GasPrice::Legacy { gas_price },
+            });
+        }
+
+        // Computation manager
+        let gas_token = native_token(&chain).map_err(|_| SolverBuildError::GasToken)?;
+        let computation_config = ComputationManagerConfig::new()
+            .with_gas_token(gas_token)
+            .with_depth_slippage_threshold(DEFAULT_DEPTH_SLIPPAGE_THRESHOLD);
+        let (computation_manager, _) =
+            ComputationManager::new(computation_config, Arc::clone(&market_data))
+                .map_err(|e| SolverBuildError::ComputationManager(e.to_string()))?;
+
+        let derived_data: SharedDerivedDataRef = computation_manager.store();
+        let derived_event_tx = computation_manager.event_sender();
+
+        // Market event channel — must be kept alive for workers
+        let (market_tx, market_rx) = broadcast::channel(64);
+        let (computation_shutdown_tx, computation_shutdown_rx) = broadcast::channel(1);
+
+        let computation_handle = tokio::spawn(async move {
+            computation_manager
+                .run(market_rx, computation_shutdown_rx)
+                .await;
+        });
+
+        // Build worker pools BEFORE sending MarketUpdated
+        let mut solver_pool_handles: Vec<SolverPoolHandle> = Vec::new();
+        let mut worker_pools: Vec<WorkerPool> = Vec::new();
+        let mut max_timeout_ms = 0u64;
+
+        for (name, pool_cfg) in &pools {
+            let algo_cfg = AlgorithmConfig::new(
+                pool_cfg.min_hops(),
+                pool_cfg.max_hops(),
+                Duration::from_millis(pool_cfg.timeout_ms()),
+                pool_cfg.max_routes(),
+            )?;
+
+            let pool_event_rx = market_tx.subscribe();
+            let derived_rx = derived_event_tx.subscribe();
+
+            let (worker_pool, task_handle) = WorkerPoolBuilder::new()
+                .name(name.clone())
+                .algorithm(pool_cfg.algorithm().to_string())
+                .algorithm_config(algo_cfg)
+                .num_workers(pool_cfg.num_workers())
+                .task_queue_capacity(pool_cfg.task_queue_capacity())
+                .build(
+                    Arc::clone(&market_data),
+                    Arc::clone(&derived_data),
+                    pool_event_rx,
+                    derived_rx,
+                )?;
+
+            solver_pool_handles.push(SolverPoolHandle::new(worker_pool.name(), task_handle));
+            max_timeout_ms = max_timeout_ms.max(pool_cfg.timeout_ms());
+            worker_pools.push(worker_pool);
+        }
+
+        // Encoder + router
+        let encoder = {
+            let registry = SwapEncoderRegistry::new(chain)
+                .add_default_encoders(None)
+                .map_err(|e| SolverBuildError::Encoder(e.to_string()))?;
+            Encoder::new(chain, registry).map_err(|e| SolverBuildError::Encoder(e.to_string()))?
+        };
+
+        let router_address = encoder.router_address().clone();
+        let router_config = WorkerPoolRouterConfig::default()
+            .with_timeout(Duration::from_millis(max_timeout_ms.max(5000)))
+            .with_min_responses(defaults::ROUTER_MIN_RESPONSES);
+        let router = WorkerPoolRouter::new(solver_pool_handles, router_config, encoder);
+
+        // Trigger derived data computation
+        let market_read = market_data.read().await;
+        let added = market_read.component_topology();
+        drop(market_read);
+
+        let _ = market_tx.send(MarketEvent::MarketUpdated {
+            added_components: added,
+            removed_components: vec![],
+            updated_components: vec![],
+        });
+
+        // Dummy handles for feed/gas (not running in replay mode)
+        let feed_handle = tokio::spawn(async {
+            // Keep market_tx alive so workers don't exit
+            let _tx = market_tx;
+            futures::future::pending::<()>().await;
+        });
+        let gas_price_handle = tokio::spawn(async { /* no-op */ });
+
+        Ok(Solver {
+            router,
+            worker_pools,
+            market_data,
+            derived_data,
+            feed_handle,
+            gas_price_handle,
+            computation_handle,
+            computation_shutdown_tx,
+            chain,
+            router_address,
+        })
     }
 
     /// Signals all worker pools and the computation manager to stop, then aborts background tasks.
