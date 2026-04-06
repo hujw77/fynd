@@ -584,7 +584,8 @@ impl BlockInfo {
         self.timestamp
     }
 
-    pub(crate) fn new(number: u64, hash: String, timestamp: u64) -> Self {
+    /// Create a new [`BlockInfo`].
+    pub fn new(number: u64, hash: String, timestamp: u64) -> Self {
         Self { number, hash, timestamp }
     }
 }
@@ -850,8 +851,9 @@ impl Quote {
         self.solve_time_ms
     }
 
+    /// Create a new [`Quote`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         order_id: String,
         status: QuoteStatus,
         backend: BackendKind,
