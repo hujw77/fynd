@@ -640,8 +640,9 @@ impl Swap {
         &self.gas_estimate
     }
 
+    /// Create a new [`Swap`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         component_id: String,
         protocol: String,
         token_in: Bytes,
@@ -678,7 +679,8 @@ impl Route {
         &self.swaps
     }
 
-    pub(crate) fn new(swaps: Vec<Swap>) -> Self {
+    /// Create a new [`Route`] from a list of swaps.
+    pub fn new(swaps: Vec<Swap>) -> Self {
         Self { swaps }
     }
 }
