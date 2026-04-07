@@ -61,9 +61,10 @@ docker run \
 ```bash
 git clone https://github.com/propeller-heads/fynd.git
 cd fynd
+cargo install --locked --path .
 export TYCHO_API_KEY=your-api-key
 export RUST_LOG=fynd=info
-cargo run --release -- serve
+fynd serve
 ```
 {% endtab %}
 {% endtabs %}
