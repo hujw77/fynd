@@ -1,3 +1,5 @@
+## [0.49.1](https://github.com/propeller-heads/fynd/compare/0.49.0...0.49.1) (2026-04-07)
+
 ## [0.49.0](https://github.com/propeller-heads/fynd/compare/0.48.0...0.49.0) (2026-04-06)
 
 
