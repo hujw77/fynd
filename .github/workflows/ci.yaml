@@ -147,6 +147,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [compile_and_test]
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -164,7 +166,7 @@ jobs:
       - name: Install latest nextest release
         uses: taiki-e/install-action@nextest
       - name: Run integration tests
-        run: cargo nextest run -p fynd-core --test integration
+        run: cargo nextest run -p fynd-core --features test-utils --test integration
 
   security_audit:
     name: Security Audit

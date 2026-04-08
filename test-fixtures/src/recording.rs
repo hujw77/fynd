@@ -40,7 +40,17 @@ impl RecordingMetadata {
     pub fn gas_price_as_biguint(&self) -> Option<num_bigint::BigUint> {
         self.gas_price_wei
             .as_deref()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| match s.parse() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        gas_price_wei = s,
+                        error = %e,
+                        "failed to parse recorded gas price"
+                    );
+                    None
+                }
+            })
     }
 }
 

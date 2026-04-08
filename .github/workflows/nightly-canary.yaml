@@ -37,7 +37,7 @@ jobs:
             --rpc-url "$RPC_URL" \
             --tycho-api-key "$TYCHO_API_KEY" \
             --duration-secs 120 \
-            --output /tmp/canary-fixtures
+            --output-dir fynd-core/tests/fixtures
         env:
           TYCHO_URL: ${{ secrets.TYCHO_URL }}
           RPC_URL: ${{ secrets.RPC_URL }}
@@ -45,9 +45,9 @@ jobs:
 
       - name: Run solver against live market
         run: |
-          # Copy fresh recording to fixture location
-          mkdir -p fixtures/integration
-          cp /tmp/canary-fixtures/market_recording.json.zst fixtures/integration/
-          cp /tmp/canary-fixtures/golden_outputs.json fixtures/integration/
-          # Run integration tests against fresh data
-          cargo nextest run -p fynd-core --test integration
+          cargo nextest run -p fynd-core --features test-utils --test integration
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Nightly canary failed — Tycho data format or solver behavior may have changed"

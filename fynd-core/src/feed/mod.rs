@@ -3,7 +3,6 @@ use std::{collections::HashSet, time::Duration};
 use tycho_simulation::tycho_common::models::Chain;
 
 pub(crate) mod events;
-pub use events::MarketEvent;
 /// Gas price fetching from Ethereum RPC.
 pub(crate) mod gas;
 /// Shared market data store (`SharedMarketData`, `SharedMarketDataRef`).

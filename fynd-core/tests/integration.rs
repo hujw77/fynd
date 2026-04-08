@@ -1,3 +1,5 @@
+#![cfg(feature = "test-utils")]
+
 #[path = "integration/harness.rs"]
 mod harness;
 

@@ -78,9 +78,3 @@ pub fn load_expected_file(path: &Path) -> anyhow::Result<Option<ExpectedFile>> {
     let file = serde_json::from_str(&content)?;
     Ok(Some(file))
 }
-
-/// Standard path for expected outputs relative to fynd-core.
-pub fn expected_file_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../fynd-core/tests/fixtures/expected_outputs.json")
-}

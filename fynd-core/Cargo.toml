@@ -25,7 +25,6 @@ lazy_static.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
 metrics.workspace = true
 typetag.workspace = true
@@ -33,6 +32,9 @@ tycho-execution.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 alloy = { workspace = true, features = ["sol-types"] }
+
+[features]
+test-utils = []
 
 [dev-dependencies]
 rstest.workspace = true

@@ -3,9 +3,10 @@ name = "record-market"
 version.workspace = true
 edition = "2021"
 description = "Capture Tycho market state for integration testing"
+publish = false
 
 [dependencies]
-fynd-core.workspace = true
+fynd-core = { workspace = true, features = ["test-utils"] }
 fynd-test-fixtures.workspace = true
 tycho-simulation.workspace = true
 tokio = { workspace = true, features = ["full"] }

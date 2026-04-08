@@ -124,24 +124,17 @@ async fn test_quality_within_expected_baseline() {
                 let actual = oq.amount_out_net_gas();
                 let expected = &expected_output.amount_out_net_gas;
 
+                // Use BigUint arithmetic to avoid f64 precision loss on
+                // large wei-denominated values (>2^53).
+                // Regression = actual * 100 < expected * 99 (i.e. >1% drop).
                 if expected.gt(&num_bigint::BigUint::ZERO) {
-                    let actual_f64 = actual
-                        .to_string()
-                        .parse::<f64>()
-                        .unwrap_or(0.0);
-                    let expected_f64 = expected
-                        .to_string()
-                        .parse::<f64>()
-                        .unwrap_or(0.0);
-                    let diff_pct = (actual_f64 - expected_f64) / expected_f64 * 100.0;
+                    let actual_scaled = actual * &num_bigint::BigUint::from(100u32);
+                    let threshold = expected * &num_bigint::BigUint::from(99u32);
 
-                    if diff_pct < -1.0 {
+                    if actual_scaled < threshold {
                         regressions.push(format!(
-                            "{}: degraded by {:.2}% (expected {}, got {})",
-                            scenario.name,
-                            diff_pct.abs(),
-                            expected,
-                            actual
+                            "{}: degraded >1% (expected {}, got {})",
+                            scenario.name, expected, actual,
                         ));
                     }
                 }

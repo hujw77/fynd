@@ -2,8 +2,8 @@ use std::{collections::HashMap, time::Duration};
 
 use fynd_core::{PoolConfig, QuoteOptions, QuoteRequest, QuoteStatus, Solver};
 use fynd_test_fixtures::{
-    recording::sha256_hex, DerivedDataMetrics, ExpectedFile, ExpectedMetadata, ExpectedOutput,
-    ExpectedScenario, MarketRecording,
+    DerivedDataMetrics, ExpectedFile, ExpectedMetadata, ExpectedOutput, ExpectedScenario,
+    MarketRecording,
 };
 use num_bigint::BigUint;
 use serde::Deserialize;
@@ -19,7 +19,6 @@ pub async fn generate_expected_outputs(
         .metadata
         .gas_price_as_biguint();
     let pools = parse_pools(pools_toml)?;
-    let _worker_pools_hash = sha256_hex(pools_toml.as_bytes());
 
     let solver = Solver::from_recording(Chain::Ethereum, recording.updates, pools, gas_price)
         .await

@@ -16,12 +16,11 @@ use num_cpus;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
+#[cfg(feature = "test-utils")]
+use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
 use tycho_simulation::{
     tycho_common::{models::Chain, Bytes},
-    tycho_ethereum::{
-        gas::{BlockGasPrice, GasPrice},
-        rpc::EthereumRpcClient,
-    },
+    tycho_ethereum::rpc::EthereumRpcClient,
 };
 
 use crate::{
@@ -29,7 +28,7 @@ use crate::{
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
     encoding::encoder::Encoder,
     feed::{
-        events::{MarketEvent, MarketEventHandler},
+        events::MarketEventHandler,
         gas::GasPriceFetcher,
         market_data::{SharedMarketData, SharedMarketDataRef},
         tycho_feed::TychoFeed,
@@ -249,6 +248,7 @@ pub enum SolverBuildError {
     #[error("no worker pools configured")]
     NoPools,
     /// A recorded update failed to replay through the feed.
+    #[cfg(feature = "test-utils")]
     #[error("replay failed: {0}")]
     Replay(String),
 }
@@ -784,12 +784,17 @@ impl Solver {
     /// VM-backed protocol states that couldn't be serialized will be absent from
     /// the recording. Pools without states will be registered as components but
     /// won't contribute to routing.
+    ///
+    /// Requires the `test-utils` feature.
+    #[cfg(feature = "test-utils")]
     pub async fn from_recording(
         chain: Chain,
         updates: Vec<tycho_simulation::protocol::models::Update>,
         pools: std::collections::HashMap<String, PoolConfig>,
         gas_price_wei: Option<num_bigint::BigUint>,
     ) -> Result<Self, SolverBuildError> {
+        use crate::feed::events::MarketEvent;
+
         if pools.is_empty() {
             return Err(SolverBuildError::NoPools);
         }
