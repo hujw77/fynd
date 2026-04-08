@@ -18,7 +18,10 @@ use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
 use tycho_simulation::{
     tycho_common::{models::Chain, Bytes},
-    tycho_ethereum::rpc::EthereumRpcClient,
+    tycho_ethereum::{
+        gas::{BlockGasPrice, GasPrice},
+        rpc::EthereumRpcClient,
+    },
 };
 
 use crate::{
@@ -26,7 +29,7 @@ use crate::{
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
     encoding::encoder::Encoder,
     feed::{
-        events::MarketEventHandler,
+        events::{MarketEvent, MarketEventHandler},
         gas::GasPriceFetcher,
         market_data::{SharedMarketData, SharedMarketDataRef},
         tycho_feed::TychoFeed,
@@ -787,10 +790,6 @@ impl Solver {
         pools: std::collections::HashMap<String, PoolConfig>,
         gas_price_wei: Option<num_bigint::BigUint>,
     ) -> Result<Self, SolverBuildError> {
-        use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
-
-        use crate::feed::events::MarketEvent;
-
         if pools.is_empty() {
             return Err(SolverBuildError::NoPools);
         }
@@ -811,14 +810,20 @@ impl Solver {
         }
 
         // Inject gas price (recorded value or default 10 gwei)
-        let gas_price =
-            gas_price_wei.unwrap_or_else(|| num_bigint::BigUint::from(10_000_000_000u64));
-        let block_number = market_data
-            .read()
-            .await
-            .last_updated()
-            .map(|b| b.number())
-            .unwrap_or(0);
+        let gas_price = match gas_price_wei {
+            Some(price) => price,
+            None => {
+                tracing::warn!("no recorded gas price, defaulting to 10 gwei");
+                num_bigint::BigUint::from(10_000_000_000u64)
+            }
+        };
+        let block_number = match market_data.read().await.last_updated() {
+            Some(block) => block.number(),
+            None => {
+                tracing::warn!("no block number from replayed updates, defaulting to 0");
+                0
+            }
+        };
         {
             let mut market = market_data.write().await;
             market.update_gas_price(BlockGasPrice {
