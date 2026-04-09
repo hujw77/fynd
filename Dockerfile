@@ -20,8 +20,11 @@ COPY fynd-rpc-types/Cargo.toml fynd-rpc-types/
 COPY clients/rust/Cargo.toml clients/rust/
 COPY tools/benchmark/Cargo.toml tools/benchmark/
 COPY tools/fynd-swap-cli/Cargo.toml tools/fynd-swap-cli/
+COPY tools/record-market/Cargo.toml tools/record-market/
+COPY test-fixtures/Cargo.toml test-fixtures/
 RUN mkdir -p src fynd-core/src fynd-rpc/src fynd-rpc-types/src \
-        clients/rust/src tools/benchmark/src tools/fynd-swap-cli/src && \
+        clients/rust/src tools/benchmark/src tools/fynd-swap-cli/src \
+        tools/record-market/src test-fixtures/src && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs && \
     echo "" > fynd-core/src/lib.rs && \
@@ -30,9 +33,12 @@ RUN mkdir -p src fynd-core/src fynd-rpc/src fynd-rpc-types/src \
     echo "" > clients/rust/src/lib.rs && \
     echo "fn main() {}" > tools/benchmark/src/main.rs && \
     echo "fn main() {}" > tools/fynd-swap-cli/src/main.rs && \
+    echo "fn main() {}" > tools/record-market/src/main.rs && \
+    echo "" > test-fixtures/src/lib.rs && \
     cargo build --release --package fynd --package fynd-swap-cli && \
     rm -rf src fynd-core/src fynd-rpc/src fynd-rpc-types/src \
-        clients/rust/src tools/benchmark/src tools/fynd-swap-cli/src
+        clients/rust/src tools/benchmark/src tools/fynd-swap-cli/src \
+        tools/record-market/src test-fixtures/src
 
 # Copy real source and rebuild
 COPY src/ src/
@@ -41,8 +47,10 @@ COPY fynd-rpc/src/ fynd-rpc/src/
 COPY fynd-rpc-types/src/ fynd-rpc-types/src/
 COPY clients/rust/src/ clients/rust/src/
 COPY tools/fynd-swap-cli/src/ tools/fynd-swap-cli/src/
-RUN mkdir -p tools/benchmark/src && \
+RUN mkdir -p tools/benchmark/src tools/record-market/src test-fixtures/src && \
     echo "fn main() {}" > tools/benchmark/src/main.rs && \
+    echo "fn main() {}" > tools/record-market/src/main.rs && \
+    echo "" > test-fixtures/src/lib.rs && \
     touch src/main.rs src/lib.rs fynd-core/src/lib.rs fynd-rpc/src/lib.rs \
         fynd-rpc-types/src/lib.rs clients/rust/src/lib.rs \
         tools/fynd-swap-cli/src/main.rs && \
