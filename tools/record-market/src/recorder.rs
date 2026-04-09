@@ -146,22 +146,19 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
 }
 
 async fn fetch_gas_price_wei(rpc_url: &str) -> anyhow::Result<String> {
-    use tycho_simulation::tycho_ethereum::gas::GasPrice;
-
     let client = EthereumRpcClient::new(rpc_url)
         .map_err(|e| anyhow::anyhow!("failed to create RPC client: {e}"))?;
     let block_gas_price = client
         .get_latest_fee_price()
         .await
         .map_err(|e| anyhow::anyhow!("failed to fetch gas price: {e}"))?;
-    let gas_price_wei = match block_gas_price.pricing {
-        GasPrice::Legacy { gas_price } => gas_price,
-        other => {
-            tracing::warn!(?other, "non-legacy gas price, falling back to 10 gwei");
-            num_bigint::BigUint::from(10_000_000_000u64)
-        }
-    };
-    Ok(gas_price_wei.to_string())
+    tracing::info!(
+        ?block_gas_price.pricing,
+        "fetched gas price from RPC"
+    );
+    Ok(block_gas_price
+        .effective_gas_price()
+        .to_string())
 }
 
 async fn fetch_protocol_systems(
