@@ -23,6 +23,8 @@ use tycho_simulation::{
     tycho_ethereum::rpc::EthereumRpcClient,
 };
 
+#[cfg(feature = "test-utils")]
+use crate::feed::events::MarketEvent;
 use crate::{
     algorithm::{AlgorithmConfig, AlgorithmError},
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
@@ -793,8 +795,6 @@ impl Solver {
         pools: std::collections::HashMap<String, PoolConfig>,
         gas_price_wei: Option<num_bigint::BigUint>,
     ) -> Result<Self, SolverBuildError> {
-        use crate::feed::events::MarketEvent;
-
         if pools.is_empty() {
             return Err(SolverBuildError::NoPools);
         }
