@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-
-use fynd_core::PoolConfig;
 use fynd_test_fixtures::{expected::load_expected_file, load_test_scenarios};
 
 use crate::harness::TestHarness;
@@ -16,16 +13,9 @@ fn scenarios() -> Vec<fynd_test_fixtures::TestScenario> {
 
 fn max_pool_timeout_ms() -> u64 {
     let toml_content = include_str!("../../../worker_pools.toml");
-
-    #[derive(serde::Deserialize)]
-    struct PoolsFile {
-        pools: HashMap<String, PoolConfig>,
-    }
-
-    let config: PoolsFile =
-        toml::from_str(toml_content).expect("failed to parse worker_pools.toml");
-    config
-        .pools
+    let pools = fynd_test_fixtures::parse_pools_toml(toml_content)
+        .expect("failed to parse worker_pools.toml");
+    pools
         .values()
         .map(|p| p.timeout_ms())
         .max()
@@ -65,14 +55,14 @@ async fn test_solve_time_p95_within_threshold() {
     let expected_p95_idx = (expected_times.len() as f64 * 0.95).ceil() as usize - 1;
     let expected_p95 = expected_times[expected_p95_idx.min(expected_times.len() - 1)];
 
-    let relative_threshold = expected_p95.saturating_mul(4);
+    let relative_threshold = expected_p95.saturating_mul(3);
     let absolute_threshold = max_pool_timeout_ms();
     let threshold = relative_threshold.max(absolute_threshold);
 
     assert!(
         p95 <= threshold,
         "P95 solve time {}ms exceeds threshold {}ms \
-         (expected P95: {}ms, 4x: {}ms, absolute cap: {}ms)",
+         (expected P95: {}ms, 3x: {}ms, absolute cap: {}ms)",
         p95,
         threshold,
         expected_p95,

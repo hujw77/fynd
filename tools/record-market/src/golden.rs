@@ -1,12 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
-use fynd_core::{PoolConfig, QuoteOptions, QuoteRequest, QuoteStatus, Solver};
+use fynd_core::{QuoteOptions, QuoteRequest, QuoteStatus, Solver};
 use fynd_test_fixtures::{
     DerivedDataMetrics, ExpectedFile, ExpectedMetadata, ExpectedOutput, ExpectedScenario,
     MarketRecording,
 };
 use num_bigint::BigUint;
-use serde::Deserialize;
 use tycho_simulation::tycho_common::models::Chain;
 
 /// Generate expected outputs by replaying a recording through the full pipeline.
@@ -18,7 +17,7 @@ pub async fn generate_expected_outputs(
     let gas_price = recording
         .metadata
         .gas_price_as_biguint();
-    let pools = parse_pools(pools_toml)?;
+    let pools = fynd_test_fixtures::parse_pools_toml(pools_toml)?;
 
     let solver = Solver::from_recording(Chain::Ethereum, recording.updates, pools, gas_price)
         .await
@@ -125,14 +124,4 @@ pub async fn generate_expected_outputs(
         },
         scenarios: expected_scenarios,
     })
-}
-
-fn parse_pools(toml_content: &str) -> anyhow::Result<HashMap<String, PoolConfig>> {
-    #[derive(Deserialize)]
-    struct PoolsFile {
-        pools: HashMap<String, PoolConfig>,
-    }
-
-    let config: PoolsFile = toml::from_str(toml_content)?;
-    Ok(config.pools)
 }

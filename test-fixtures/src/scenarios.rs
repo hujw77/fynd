@@ -93,6 +93,12 @@ pub fn load_test_scenarios(pairs_json: &str) -> anyhow::Result<Vec<TestScenario>
                 })?;
             // f64 precision is sufficient for human-readable test amounts
             let raw_amount = human_amount * 10_f64.powi(*decimals_in as i32);
+            if !raw_amount.is_finite() || raw_amount < 0.0 {
+                anyhow::bail!(
+                    "pair {token_in_sym}/{token_out_sym}: \
+                     computed amount is not a valid positive number ({raw_amount})"
+                );
+            }
 
             Ok(TestScenario {
                 name: format!("{token_in_sym}_to_{token_out_sym}_{human_amount}"),

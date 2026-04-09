@@ -139,6 +139,7 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
             traded_n_days_ago: Some(opts.traded_n_days_ago),
             gas_price_wei,
             worker_pools_hash: Some(worker_pools_hash),
+            schema_version: 1,
         },
         updates,
     })

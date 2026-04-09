@@ -32,6 +32,9 @@ pub struct RecordingMetadata {
     /// Integration tests warn if the current file's hash differs.
     #[serde(default)]
     pub worker_pools_hash: Option<String>,
+    /// Recording format version for forward compatibility.
+    #[serde(default)]
+    pub schema_version: u32,
 }
 
 impl RecordingMetadata {
@@ -119,6 +122,7 @@ mod tests {
                 traded_n_days_ago: Some(3),
                 gas_price_wei: Some("15000000000".to_string()),
                 worker_pools_hash: None,
+                schema_version: 1,
             },
             updates: vec![Update::new(12345, HashMap::new(), HashMap::new())],
         };

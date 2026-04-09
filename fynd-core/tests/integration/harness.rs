@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use fynd_core::{PoolConfig, Quote, QuoteOptions, QuoteRequest, SolveError, Solver};
+use fynd_core::{Quote, QuoteOptions, QuoteRequest, SolveError, Solver};
 use fynd_test_fixtures::read_recording;
 use tycho_simulation::tycho_common::models::Chain;
 
@@ -47,15 +47,7 @@ impl TestHarness {
     }
 }
 
-fn load_pools() -> HashMap<String, PoolConfig> {
+fn load_pools() -> HashMap<String, fynd_core::PoolConfig> {
     let toml_content = include_str!("../../../worker_pools.toml");
-
-    #[derive(serde::Deserialize)]
-    struct PoolsFile {
-        pools: HashMap<String, PoolConfig>,
-    }
-
-    let config: PoolsFile =
-        toml::from_str(toml_content).expect("failed to parse worker_pools.toml");
-    config.pools
+    fynd_test_fixtures::parse_pools_toml(toml_content).expect("failed to parse worker_pools.toml")
 }

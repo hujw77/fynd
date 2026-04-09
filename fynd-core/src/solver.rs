@@ -914,11 +914,16 @@ impl Solver {
         let added = market_read.component_topology();
         drop(market_read);
 
-        let _ = market_tx.send(MarketEvent::MarketUpdated {
-            added_components: added,
-            removed_components: vec![],
-            updated_components: vec![],
-        });
+        if market_tx
+            .send(MarketEvent::MarketUpdated {
+                added_components: added,
+                removed_components: vec![],
+                updated_components: vec![],
+            })
+            .is_err()
+        {
+            tracing::warn!("no receivers for initial MarketUpdated broadcast");
+        }
 
         // Dummy handles for feed/gas (not running in replay mode)
         let feed_handle = tokio::spawn(async {
