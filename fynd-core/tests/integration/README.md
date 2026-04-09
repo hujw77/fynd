@@ -1,7 +1,7 @@
 # Integration Tests
 
 Replay-based integration tests for the Fynd solver. Tests replay recorded Tycho market
-state through `Solver::from_recording()` and verify quote results against a golden
+state through `Solver::from_recording()` and verify quote results against an expected
 baseline.
 
 ## Running

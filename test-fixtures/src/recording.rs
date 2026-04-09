@@ -28,7 +28,7 @@ pub struct RecordingMetadata {
     /// Stored as a decimal string to preserve full precision.
     #[serde(default)]
     pub gas_price_wei: Option<String>,
-    /// SHA-256 hash of worker_pools.toml at golden generation time.
+    /// SHA-256 hash of worker_pools.toml at expected output generation time.
     /// Integration tests warn if the current file's hash differs.
     #[serde(default)]
     pub worker_pools_hash: Option<String>,

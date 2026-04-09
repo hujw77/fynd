@@ -1,4 +1,4 @@
-//! Expected output types for golden baseline comparison.
+//! Expected output types for baseline comparison.
 
 use std::path::Path;
 

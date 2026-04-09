@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-mod golden;
+mod expected;
 mod recorder;
 
 #[derive(Parser)]
@@ -84,13 +84,13 @@ async fn main() -> anyhow::Result<()> {
     fynd_test_fixtures::write_recording(&recording, &recording_path)?;
     tracing::info!(path = %recording_path.display(), "recording written");
 
-    // Read back the recording from disk so golden generation uses the same
+    // Read back from disk so expected output generation uses the same
     // deserialized data that integration tests will see (VM states filtered
     // during serialization won't be present in the deserialized version).
     let recording = fynd_test_fixtures::read_recording(&recording_path)?;
 
     let pools_toml = include_str!("../../../worker_pools.toml");
-    let expected = golden::generate_expected_outputs(recording, pools_toml).await?;
+    let expected = expected::generate_expected_outputs(recording, pools_toml).await?;
     let expected_path = cli
         .output_dir
         .join("expected_outputs.json");
