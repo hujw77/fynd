@@ -377,10 +377,10 @@ export interface components {
          *     All fields are optional. When `None`, the server's configured defaults are used.
          */
         PriceGuardConfig: {
-            /** @description Whether to let solutions pass when no provider can return a price. */
-            allow_on_provider_error?: boolean | null;
-            /** @description Whether to let solutions pass when no provider returns price for token pair. */
-            allow_on_token_price_not_found?: boolean | null;
+            /** @description Whether to reject solutions when no provider can return a price. */
+            fail_on_provider_error?: boolean | null;
+            /** @description Whether to reject solutions when no provider returns price for token pair. */
+            fail_on_token_price_not_found?: boolean | null;
             /** @description Whether price guard validation is enabled. */
             enabled?: boolean | null;
             /**

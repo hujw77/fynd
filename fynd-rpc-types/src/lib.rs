@@ -214,7 +214,6 @@ impl QuoteOptions {
     pub fn encoding_options(&self) -> Option<&EncodingOptions> {
         self.encoding_options.as_ref()
     }
-
 }
 
 /// Per-request overrides for price guard validation.
@@ -231,12 +230,12 @@ pub struct PriceGuardConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(example = 10000))]
     upper_tolerance_bps: Option<u32>,
-    /// Whether to let solutions pass when no provider can return a price.
+    /// Whether to reject solutions when no provider can return a price.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    allow_on_provider_error: Option<bool>,
-    /// Whether to let solutions pass when no provider returns price for token pair.
+    fail_on_provider_error: Option<bool>,
+    /// Whether to reject solutions when no provider returns price for token pair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    allow_on_token_price_not_found: Option<bool>,
+    fail_on_token_price_not_found: Option<bool>,
     /// Whether price guard validation is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
@@ -255,15 +254,15 @@ impl PriceGuardConfig {
         self
     }
 
-    /// Set whether to allow solutions when providers error.
-    pub fn with_allow_on_provider_error(mut self, allow: bool) -> Self {
-        self.allow_on_provider_error = Some(allow);
+    /// Set whether to reject solutions when providers error.
+    pub fn with_fail_on_provider_error(mut self, fail: bool) -> Self {
+        self.fail_on_provider_error = Some(fail);
         self
     }
 
-    /// Set whether to allow solutions when no provider returns price for token pair.
-    pub fn with_allow_on_token_price_not_found(mut self, allow: bool) -> Self {
-        self.allow_on_token_price_not_found = Some(allow);
+    /// Set whether to reject solutions when no provider returns price for token pair.
+    pub fn with_fail_on_token_price_not_found(mut self, fail: bool) -> Self {
+        self.fail_on_token_price_not_found = Some(fail);
         self
     }
 
@@ -283,14 +282,14 @@ impl PriceGuardConfig {
         self.upper_tolerance_bps
     }
 
-    /// Whether to allow on provider error, if set.
-    pub fn allow_on_provider_error(&self) -> Option<bool> {
-        self.allow_on_provider_error
+    /// Whether to fail on provider error, if set.
+    pub fn fail_on_provider_error(&self) -> Option<bool> {
+        self.fail_on_provider_error
     }
 
-    /// Whether to allow on token price not found, if set.
-    pub fn allow_on_token_price_not_found(&self) -> Option<bool> {
-        self.allow_on_token_price_not_found
+    /// Whether to fail on token not found, if set.
+    pub fn fail_on_token_price_not_found(&self) -> Option<bool> {
+        self.fail_on_token_price_not_found
     }
 
     /// Whether price guard is enabled, if set.
@@ -1555,11 +1554,11 @@ mod conversions {
             if let Some(bps) = self.upper_tolerance_bps {
                 config = config.with_upper_tolerance_bps(bps);
             }
-            if let Some(allow) = self.allow_on_provider_error {
-                config = config.with_allow_on_provider_error(allow);
+            if let Some(fail) = self.fail_on_provider_error {
+                config = config.with_fail_on_provider_error(fail);
             }
-            if let Some(allow) = self.allow_on_token_price_not_found {
-                config = config.with_allow_on_token_price_not_found(allow);
+            if let Some(fail) = self.fail_on_token_price_not_found {
+                config = config.with_fail_on_token_price_not_found(fail);
             }
             if let Some(enabled) = self.enabled {
                 config = config.with_enabled(enabled);
@@ -1898,13 +1897,13 @@ mod conversions {
             let dto = PriceGuardConfig::default()
                 .with_lower_tolerance_bps(200)
                 .with_upper_tolerance_bps(5000)
-                .with_allow_on_provider_error(true)
+                .with_fail_on_provider_error(false)
                 .with_enabled(false);
 
             let core: fynd_core::PriceGuardConfig = dto.into();
             assert_eq!(core.lower_tolerance_bps(), 200);
             assert_eq!(core.upper_tolerance_bps(), 5000);
-            assert!(core.allow_on_provider_error());
+            assert!(!core.fail_on_provider_error());
             assert!(!core.enabled());
         }
 
@@ -1916,7 +1915,7 @@ mod conversions {
             assert_eq!(core.lower_tolerance_bps(), 100);
             // Unset fields get core defaults
             assert_eq!(core.upper_tolerance_bps(), 10_000);
-            assert!(!core.allow_on_provider_error());
+            assert!(!core.fail_on_provider_error());
             assert!(!core.enabled());
         }
 

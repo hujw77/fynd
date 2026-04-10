@@ -581,19 +581,19 @@
         "type": "object",
         "description": "Per-request overrides for price guard validation.\n\nAll fields are optional. When `None`, the server's configured defaults are used.",
         "properties": {
-          "allow_on_provider_error": {
+          "fail_on_provider_error": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "Whether to let solutions pass when no provider can return a price."
+            "description": "Whether to reject solutions when no provider can return a price."
           },
-          "allow_on_token_price_not_found": {
+          "fail_on_token_price_not_found": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "Whether to let solutions pass when no provider returns price for token pair."
+            "description": "Whether to reject solutions when no provider returns price for token pair."
           },
           "enabled": {
             "type": [
