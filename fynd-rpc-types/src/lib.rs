@@ -168,9 +168,6 @@ pub struct QuoteOptions {
     max_gas: Option<BigUint>,
     /// Options during encoding. If None, quote will be returned without calldata.
     encoding_options: Option<EncodingOptions>,
-    /// Per-request price guard overrides. If `None`, uses server defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    price_guard: Option<PriceGuardConfig>,
 }
 
 impl QuoteOptions {
@@ -218,16 +215,6 @@ impl QuoteOptions {
         self.encoding_options.as_ref()
     }
 
-    /// Set per-request price guard overrides.
-    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard = Some(config);
-        self
-    }
-
-    /// Per-request price guard config, if set.
-    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
-        self.price_guard.as_ref()
-    }
 }
 
 /// Per-request overrides for price guard validation.
@@ -464,6 +451,9 @@ pub struct EncodingOptions {
     /// Client fee configuration. When absent, no fee is charged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_fee_params: Option<ClientFeeParams>,
+    /// Per-request price guard overrides. If `None`, uses server defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_guard: Option<PriceGuardConfig>,
 }
 
 impl EncodingOptions {
@@ -475,6 +465,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
+            price_guard: None,
         }
     }
 
@@ -520,6 +511,17 @@ impl EncodingOptions {
     /// Client fee params, if set.
     pub fn client_fee_params(&self) -> Option<&ClientFeeParams> {
         self.client_fee_params.as_ref()
+    }
+
+    /// Set per-request price guard overrides.
+    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
+        self.price_guard = Some(config);
+        self
+    }
+
+    /// Per-request price guard config, if set.
+    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
+        self.price_guard.as_ref()
     }
 }
 
@@ -1540,9 +1542,6 @@ mod conversions {
             if let Some(enc) = self.encoding_options {
                 opts = opts.with_encoding_options(enc.into());
             }
-            if let Some(pg) = self.price_guard {
-                opts = opts.with_price_guard(pg.into());
-            }
             opts
         }
     }
@@ -1580,6 +1579,9 @@ mod conversions {
             }
             if let Some(fee) = self.client_fee_params {
                 opts = opts.with_client_fee_params(fee.into());
+            }
+            if let Some(pg) = self.price_guard {
+                opts = opts.with_price_guard(pg.into());
             }
             opts
         }
@@ -1812,7 +1814,6 @@ mod conversions {
                     min_responses: None,
                     max_gas: None,
                     encoding_options: None,
-                    price_guard: None,
                 },
             };
 
@@ -1920,7 +1921,9 @@ mod conversions {
         }
 
         #[test]
-        fn test_quote_options_with_price_guard_roundtrip() {
+        fn test_encoding_options_with_price_guard_roundtrip() {
+            let enc = EncodingOptions::new(0.01)
+                .with_price_guard(PriceGuardConfig::default().with_enabled(false));
             let dto = QuoteRequest {
                 orders: vec![Order {
                     id: "pg-test".to_string(),
@@ -1931,13 +1934,14 @@ mod conversions {
                     sender: make_address(0xAA),
                     receiver: None,
                 }],
-                options: QuoteOptions::default()
-                    .with_price_guard(PriceGuardConfig::default().with_enabled(false)),
+                options: QuoteOptions::default().with_encoding_options(enc),
             };
 
             let core: fynd_core::QuoteRequest = dto.into();
             let pg = core
                 .options()
+                .encoding_options()
+                .expect("encoding_options should be set")
                 .price_guard()
                 .expect("price_guard should be set");
             assert!(!pg.enabled());

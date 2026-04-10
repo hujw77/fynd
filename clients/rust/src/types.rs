@@ -269,6 +269,7 @@ pub struct EncodingOptions {
     pub(crate) permit: Option<PermitSingle>,
     pub(crate) permit2_signature: Option<Bytes>,
     pub(crate) client_fee_params: Option<ClientFeeParams>,
+    pub(crate) price_guard: Option<PriceGuardConfig>,
 }
 
 impl EncodingOptions {
@@ -283,6 +284,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
+            price_guard: None,
         }
     }
 
@@ -320,6 +322,14 @@ impl EncodingOptions {
     /// Attach client fee configuration with a pre-signed EIP-712 signature.
     pub fn with_client_fee(mut self, params: ClientFeeParams) -> Self {
         self.client_fee_params = Some(params);
+        self
+    }
+
+    /// Override server-side price guard defaults for this request.
+    ///
+    /// Fields left as `None` in [`PriceGuardConfig`] inherit the server defaults.
+    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
+        self.price_guard = Some(config);
         self
     }
 }
@@ -454,7 +464,6 @@ pub struct QuoteOptions {
     pub(crate) min_responses: Option<usize>,
     pub(crate) max_gas: Option<BigUint>,
     pub(crate) encoding_options: Option<EncodingOptions>,
-    pub(crate) price_guard: Option<PriceGuardConfig>,
 }
 
 impl QuoteOptions {
@@ -486,16 +495,6 @@ impl QuoteOptions {
         self
     }
 
-    /// Override server-side price guard defaults for this request.
-    ///
-    /// When the server has the price guard enabled, this allows per-request
-    /// tuning of tolerance thresholds and fail-open behavior. Fields left as
-    /// `None` in [`PriceGuardConfig`] inherit the server defaults.
-    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard = Some(config);
-        self
-    }
-
     /// The configured timeout in milliseconds, or `None` if using the server default.
     pub fn timeout_ms(&self) -> Option<u64> {
         self.timeout_ms
@@ -511,10 +510,6 @@ impl QuoteOptions {
         self.max_gas.as_ref()
     }
 
-    /// Per-request price guard overrides, or `None` if using server defaults.
-    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
-        self.price_guard.as_ref()
-    }
 }
 
 /// All inputs needed to call [`FyndClient::quote`](crate::FyndClient::quote).

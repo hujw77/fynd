@@ -147,9 +147,13 @@ impl WorkerPoolRouter {
             .collect();
 
         // Validate against external prices if enabled.
-        // Per-request config overrides the server default.
+        // Per-request config (inside encoding_options) overrides the server default.
         if let Some(ref guard) = self.price_guard {
-            let config = if let Some(request_config) = request.options().price_guard() {
+            let request_config = request
+                .options()
+                .encoding_options()
+                .and_then(|e| e.price_guard());
+            let config = if let Some(request_config) = request_config {
                 debug!("using request price guard config: {:?}", request_config);
                 request_config.clone()
             } else if let Some(default_config) = &self.price_guard_config {

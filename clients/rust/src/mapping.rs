@@ -137,9 +137,6 @@ impl TryFrom<QuoteOptions> for dto::QuoteOptions {
         if let Some(enc) = opts.encoding_options {
             dto_opts = dto_opts.with_encoding_options(dto::EncodingOptions::try_from(enc)?);
         }
-        if let Some(pg) = opts.price_guard {
-            dto_opts = dto_opts.with_price_guard(pg);
-        }
         Ok(dto_opts)
     }
 }
@@ -171,6 +168,9 @@ impl TryFrom<EncodingOptions> for dto::EncodingOptions {
                         .as_ref(),
                 ),
             ));
+        }
+        if let Some(pg) = opts.price_guard {
+            dto_opts = dto_opts.with_price_guard(pg);
         }
         Ok(dto_opts)
     }
