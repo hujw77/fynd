@@ -138,9 +138,9 @@ impl PriceGuard {
             return false;
         }
         if has_provider_error {
-            config.fail_on_provider_error()
+            !config.fail_on_provider_error()
         } else {
-            config.fail_on_token_price_not_found()
+            !config.fail_on_token_price_not_found()
         }
     }
 
