@@ -335,7 +335,12 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub(crate) fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
+    /// Create a new transaction from the given parameters.
+    /// 
+    /// - `to`: 20-byte contract address to call.
+    /// - `value`: native token value to send with the transaction.
+    /// - `data`: ABI-encoded calldata.
+    pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
         Self { to, value, data }
     }
 
