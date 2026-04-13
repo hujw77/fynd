@@ -1,3 +1,22 @@
+## [0.50.0](https://github.com/propeller-heads/fynd/compare/0.49.1...0.50.0) (2026-04-13)
+
+
+### Features
+
+* Enable using PriceGuard in FyndBuilder ([35e80d2](https://github.com/propeller-heads/fynd/commit/35e80d2360bf751217c96964f6e6ed01c52f2dcf))
+
+
+### Bug Fixes
+
+* After merge fixes ([d9e5f20](https://github.com/propeller-heads/fynd/commit/d9e5f208786671b7b32eb47a3fd62ebb20b23d2f))
+* correct price guard fallback logic ([4d08c75](https://github.com/propeller-heads/fynd/commit/4d08c75c249dc3b2a24bc661be48318275a75e6c))
+* default price guard allow flags to false so they can be toggled via CLI ([2a6ff1e](https://github.com/propeller-heads/fynd/commit/2a6ff1e139c7abe9d525d25f7d37a88b848228e9))
+* move the price guard into the encoding options ([9e5932a](https://github.com/propeller-heads/fynd/commit/9e5932aeea959a4ad433d15d5a154c0dc495d7af))
+* rename for clarity ([125f3e9](https://github.com/propeller-heads/fynd/commit/125f3e9dab07656158fa1eee491ab82fe703fe8c))
+* return PriceNotFound instead of TokenNotFound when cannot resolve price ([c7e6e26](https://github.com/propeller-heads/fynd/commit/c7e6e26be900ee3edd99e0bcaabee04e7f12ca16))
+* revert cli flags for backwards compatibility ([132864b](https://github.com/propeller-heads/fynd/commit/132864b5a1d26eaa4fb820d4f47de61d1a5315ce))
+* set price_guard_config only when price_guard is set and prioritize request config ([294af2d](https://github.com/propeller-heads/fynd/commit/294af2d856493e3dbfdd7b5e4e997c1e98f6f00c))
+
 ## [0.49.1](https://github.com/propeller-heads/fynd/compare/0.49.0...0.49.1) (2026-04-07)
 
 ## [0.49.0](https://github.com/propeller-heads/fynd/compare/0.48.0...0.49.0) (2026-04-06)
