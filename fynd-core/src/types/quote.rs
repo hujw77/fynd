@@ -86,9 +86,6 @@ pub struct QuoteOptions {
     /// Options for encoding the solution into an on-chain transaction.
     /// If `None`, the solution is returned without an encoded transaction.
     encoding_options: Option<EncodingOptions>,
-    /// Per-request price guard overrides. If `None`, uses server defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    price_guard: Option<PriceGuardConfig>,
 }
 
 impl QuoteOptions {
@@ -134,17 +131,6 @@ impl QuoteOptions {
     /// Returns the encoding options.
     pub fn encoding_options(&self) -> Option<&EncodingOptions> {
         self.encoding_options.as_ref()
-    }
-
-    /// Sets per-request price guard config.
-    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard = Some(config);
-        self
-    }
-
-    /// Returns the per-request price guard config.
-    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
-        self.price_guard.as_ref()
     }
 }
 
@@ -279,6 +265,9 @@ pub struct EncodingOptions {
     /// Client fee configuration. When absent, no client fee is charged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_fee_params: Option<ClientFeeParams>,
+    /// Per-request price guard overrides. If `None`, uses server defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_guard: Option<PriceGuardConfig>,
 }
 
 impl EncodingOptions {
@@ -290,6 +279,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
+            price_guard: None,
         }
     }
 
@@ -340,6 +330,17 @@ impl EncodingOptions {
     /// Returns the client fee params, if set.
     pub fn client_fee_params(&self) -> Option<&ClientFeeParams> {
         self.client_fee_params.as_ref()
+    }
+
+    /// Sets per-request price guard config.
+    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
+        self.price_guard = Some(config);
+        self
+    }
+
+    /// Returns the per-request price guard config.
+    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
+        self.price_guard.as_ref()
     }
 }
 

@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.35.0"
+    "version": "0.49.1"
   },
   "paths": {
     "/v1/health": {
@@ -236,6 +236,17 @@
             ],
             "description": "Permit2 signature (65 bytes, hex-encoded). Required when `permit` is set.",
             "example": "0xabcd..."
+          },
+          "price_guard": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PriceGuardConfig",
+                "description": "Per-request price guard overrides. If `None`, uses server defaults."
+              }
+            ]
           },
           "slippage": {
             "type": "number",
@@ -581,26 +592,26 @@
         "type": "object",
         "description": "Per-request overrides for price guard validation.\n\nAll fields are optional. When `None`, the server's configured defaults are used.",
         "properties": {
-          "allow_on_provider_error": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether to let solutions pass when no provider can return a price."
-          },
-          "allow_on_token_price_not_found": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether to let solutions pass when no provider returns price for token pair."
-          },
           "enabled": {
             "type": [
               "boolean",
               "null"
             ],
             "description": "Whether price guard validation is enabled."
+          },
+          "fail_on_provider_error": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether to reject solutions when no provider can return a price."
+          },
+          "fail_on_token_price_not_found": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether to reject solutions when no provider returns price for token pair."
           },
           "lower_tolerance_bps": {
             "type": [
@@ -684,17 +695,6 @@
             ],
             "description": "Minimum number of solver responses to wait for before returning.\nIf `None` or `0`, waits for all solvers to respond (or timeout).\n\nUse the `/health` endpoint to check `num_solver_pools` before setting this value.\nValues exceeding the number of active solver pools are clamped internally.",
             "minimum": 0
-          },
-          "price_guard": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/PriceGuardConfig",
-                "description": "Per-request price guard overrides. If `None`, uses server defaults."
-              }
-            ]
           },
           "timeout_ms": {
             "type": [

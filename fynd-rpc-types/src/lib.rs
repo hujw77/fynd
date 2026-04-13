@@ -168,9 +168,6 @@ pub struct QuoteOptions {
     max_gas: Option<BigUint>,
     /// Options during encoding. If None, quote will be returned without calldata.
     encoding_options: Option<EncodingOptions>,
-    /// Per-request price guard overrides. If `None`, uses server defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    price_guard: Option<PriceGuardConfig>,
 }
 
 impl QuoteOptions {
@@ -217,17 +214,6 @@ impl QuoteOptions {
     pub fn encoding_options(&self) -> Option<&EncodingOptions> {
         self.encoding_options.as_ref()
     }
-
-    /// Set per-request price guard overrides.
-    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard = Some(config);
-        self
-    }
-
-    /// Per-request price guard config, if set.
-    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
-        self.price_guard.as_ref()
-    }
 }
 
 /// Per-request overrides for price guard validation.
@@ -244,12 +230,12 @@ pub struct PriceGuardConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(example = 10000))]
     upper_tolerance_bps: Option<u32>,
-    /// Whether to let solutions pass when no provider can return a price.
+    /// Whether to reject solutions when no provider can return a price.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    allow_on_provider_error: Option<bool>,
-    /// Whether to let solutions pass when no provider returns price for token pair.
+    fail_on_provider_error: Option<bool>,
+    /// Whether to reject solutions when no provider returns price for token pair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    allow_on_token_price_not_found: Option<bool>,
+    fail_on_token_price_not_found: Option<bool>,
     /// Whether price guard validation is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
@@ -268,15 +254,15 @@ impl PriceGuardConfig {
         self
     }
 
-    /// Set whether to allow solutions when providers error.
-    pub fn with_allow_on_provider_error(mut self, allow: bool) -> Self {
-        self.allow_on_provider_error = Some(allow);
+    /// Set whether to reject solutions when providers error.
+    pub fn with_fail_on_provider_error(mut self, fail: bool) -> Self {
+        self.fail_on_provider_error = Some(fail);
         self
     }
 
-    /// Set whether to allow solutions when no provider returns price for token pair.
-    pub fn with_allow_on_token_price_not_found(mut self, allow: bool) -> Self {
-        self.allow_on_token_price_not_found = Some(allow);
+    /// Set whether to reject solutions when no provider returns price for token pair.
+    pub fn with_fail_on_token_price_not_found(mut self, fail: bool) -> Self {
+        self.fail_on_token_price_not_found = Some(fail);
         self
     }
 
@@ -296,14 +282,14 @@ impl PriceGuardConfig {
         self.upper_tolerance_bps
     }
 
-    /// Whether to allow on provider error, if set.
-    pub fn allow_on_provider_error(&self) -> Option<bool> {
-        self.allow_on_provider_error
+    /// Whether to fail on provider error, if set.
+    pub fn fail_on_provider_error(&self) -> Option<bool> {
+        self.fail_on_provider_error
     }
 
-    /// Whether to allow on token price not found, if set.
-    pub fn allow_on_token_price_not_found(&self) -> Option<bool> {
-        self.allow_on_token_price_not_found
+    /// Whether to fail on token not found, if set.
+    pub fn fail_on_token_price_not_found(&self) -> Option<bool> {
+        self.fail_on_token_price_not_found
     }
 
     /// Whether price guard is enabled, if set.
@@ -464,6 +450,9 @@ pub struct EncodingOptions {
     /// Client fee configuration. When absent, no fee is charged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_fee_params: Option<ClientFeeParams>,
+    /// Per-request price guard overrides. If `None`, uses server defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_guard: Option<PriceGuardConfig>,
 }
 
 impl EncodingOptions {
@@ -475,6 +464,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
+            price_guard: None,
         }
     }
 
@@ -520,6 +510,17 @@ impl EncodingOptions {
     /// Client fee params, if set.
     pub fn client_fee_params(&self) -> Option<&ClientFeeParams> {
         self.client_fee_params.as_ref()
+    }
+
+    /// Set per-request price guard overrides.
+    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
+        self.price_guard = Some(config);
+        self
+    }
+
+    /// Per-request price guard config, if set.
+    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
+        self.price_guard.as_ref()
     }
 }
 
@@ -1540,9 +1541,6 @@ mod conversions {
             if let Some(enc) = self.encoding_options {
                 opts = opts.with_encoding_options(enc.into());
             }
-            if let Some(pg) = self.price_guard {
-                opts = opts.with_price_guard(pg.into());
-            }
             opts
         }
     }
@@ -1556,11 +1554,11 @@ mod conversions {
             if let Some(bps) = self.upper_tolerance_bps {
                 config = config.with_upper_tolerance_bps(bps);
             }
-            if let Some(allow) = self.allow_on_provider_error {
-                config = config.with_allow_on_provider_error(allow);
+            if let Some(fail) = self.fail_on_provider_error {
+                config = config.with_fail_on_provider_error(fail);
             }
-            if let Some(allow) = self.allow_on_token_price_not_found {
-                config = config.with_allow_on_token_price_not_found(allow);
+            if let Some(fail) = self.fail_on_token_price_not_found {
+                config = config.with_fail_on_token_price_not_found(fail);
             }
             if let Some(enabled) = self.enabled {
                 config = config.with_enabled(enabled);
@@ -1580,6 +1578,9 @@ mod conversions {
             }
             if let Some(fee) = self.client_fee_params {
                 opts = opts.with_client_fee_params(fee.into());
+            }
+            if let Some(pg) = self.price_guard {
+                opts = opts.with_price_guard(pg.into());
             }
             opts
         }
@@ -1812,7 +1813,6 @@ mod conversions {
                     min_responses: None,
                     max_gas: None,
                     encoding_options: None,
-                    price_guard: None,
                 },
             };
 
@@ -1897,13 +1897,13 @@ mod conversions {
             let dto = PriceGuardConfig::default()
                 .with_lower_tolerance_bps(200)
                 .with_upper_tolerance_bps(5000)
-                .with_allow_on_provider_error(true)
+                .with_fail_on_provider_error(false)
                 .with_enabled(false);
 
             let core: fynd_core::PriceGuardConfig = dto.into();
             assert_eq!(core.lower_tolerance_bps(), 200);
             assert_eq!(core.upper_tolerance_bps(), 5000);
-            assert!(core.allow_on_provider_error());
+            assert!(!core.fail_on_provider_error());
             assert!(!core.enabled());
         }
 
@@ -1915,12 +1915,14 @@ mod conversions {
             assert_eq!(core.lower_tolerance_bps(), 100);
             // Unset fields get core defaults
             assert_eq!(core.upper_tolerance_bps(), 10_000);
-            assert!(!core.allow_on_provider_error());
+            assert!(!core.fail_on_provider_error());
             assert!(!core.enabled());
         }
 
         #[test]
-        fn test_quote_options_with_price_guard_roundtrip() {
+        fn test_encoding_options_with_price_guard_roundtrip() {
+            let enc = EncodingOptions::new(0.01)
+                .with_price_guard(PriceGuardConfig::default().with_enabled(false));
             let dto = QuoteRequest {
                 orders: vec![Order {
                     id: "pg-test".to_string(),
@@ -1931,13 +1933,14 @@ mod conversions {
                     sender: make_address(0xAA),
                     receiver: None,
                 }],
-                options: QuoteOptions::default()
-                    .with_price_guard(PriceGuardConfig::default().with_enabled(false)),
+                options: QuoteOptions::default().with_encoding_options(enc),
             };
 
             let core: fynd_core::QuoteRequest = dto.into();
             let pg = core
                 .options()
+                .encoding_options()
+                .expect("encoding_options should be set")
                 .price_guard()
                 .expect("price_guard should be set");
             assert!(!pg.enabled());

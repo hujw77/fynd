@@ -142,6 +142,7 @@ export interface components {
              * @example 0xabcd...
              */
             permit2_signature?: string | null;
+            price_guard?: null | components["schemas"]["PriceGuardConfig"];
             /**
              * Format: double
              * @example 0.001
@@ -377,12 +378,12 @@ export interface components {
          *     All fields are optional. When `None`, the server's configured defaults are used.
          */
         PriceGuardConfig: {
-            /** @description Whether to let solutions pass when no provider can return a price. */
-            allow_on_provider_error?: boolean | null;
-            /** @description Whether to let solutions pass when no provider returns price for token pair. */
-            allow_on_token_price_not_found?: boolean | null;
             /** @description Whether price guard validation is enabled. */
             enabled?: boolean | null;
+            /** @description Whether to reject solutions when no provider can return a price. */
+            fail_on_provider_error?: boolean | null;
+            /** @description Whether to reject solutions when no provider returns price for token pair. */
+            fail_on_token_price_not_found?: boolean | null;
             /**
              * Format: int32
              * @description Maximum allowed deviation when `amount_out < expected`, in basis points.
@@ -433,7 +434,6 @@ export interface components {
              *     Values exceeding the number of active solver pools are clamped internally.
              */
             min_responses?: number | null;
-            price_guard?: null | components["schemas"]["PriceGuardConfig"];
             /**
              * Format: int64
              * @description Timeout in milliseconds. If `None`, uses server default.
