@@ -509,7 +509,6 @@ impl QuoteOptions {
     pub fn max_gas(&self) -> Option<&BigUint> {
         self.max_gas.as_ref()
     }
-
 }
 
 /// All inputs needed to call [`FyndClient::quote`](crate::FyndClient::quote).

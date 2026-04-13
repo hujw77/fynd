@@ -132,7 +132,6 @@ impl QuoteOptions {
     pub fn encoding_options(&self) -> Option<&EncodingOptions> {
         self.encoding_options.as_ref()
     }
-
 }
 
 /// Client fee configuration for the Tycho Router.
