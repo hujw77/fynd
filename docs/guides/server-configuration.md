@@ -93,6 +93,11 @@ Run `fynd serve --help` for the full list.
 | `--gas-refresh-interval-secs`      | —                     | `30`                       | Gas price refresh interval                                                                                                                                                                                     |
 | `--reconnect-delay-secs`           | —                     | `5`                        | Reconnect delay on connection failure                                                                                                                                                                          |
 | `--gas-price-stale-threshold-secs` | —                     | _(disabled)_               | Health returns 503 when gas price exceeds this age. Disabled by default.                                                                                                                                       |
+| `--enable-price-guard`                       | —        | `false`      | Enable [price guard](encoding-options.md#price-guard) validation against external price sources.                                                                       |
+| `--price-guard-lower-tolerance-bps`          | —        | `300`        | Max allowed deviation (bps) when the quote's output is below the provider's expected amount.                                                                           |
+| `--price-guard-upper-tolerance-bps`          | —        | `10000`      | Max allowed deviation (bps) when the quote's output is above the provider's expected amount.                                                                           |
+| `--price-guard-fail-on-provider-error`       | —        | `false`      | Reject quotes when all price providers fail with infrastructure errors.                                                                                                |
+| `--price-guard-fail-on-token-price-not-found`| —        | `false`      | Reject quotes when no provider lists the token.                                                                                                                        |
 
 ## Worker pools (`worker_pools.toml`)
 
