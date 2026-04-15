@@ -124,7 +124,7 @@ metrics-exporter-prometheus = "0.16"
 
 # Tycho
 tycho-simulation = ">=0.254.0"
-tycho-execution = ">=0.171.2"
+tycho-execution = "<=0.175.0"
 typetag = "0.2"
 
 # Graph algorithms
