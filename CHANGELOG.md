@@ -1,3 +1,15 @@
+## [0.51.0](https://github.com/propeller-heads/fynd/compare/0.50.0...0.51.0) (2026-04-15)
+
+
+### Features
+
+* Cap tycho-execution version ([3342b9e](https://github.com/propeller-heads/fynd/commit/3342b9e099424965fca26561ec12bbfe4d0e201b))
+
+
+### Bug Fixes
+
+* patch rustls-webpki CVEs and drop unused dotenv dev-dep ([af92385](https://github.com/propeller-heads/fynd/commit/af92385c96d9563160d820837c288f9a322a62e6))
+
 ## [0.50.0](https://github.com/propeller-heads/fynd/compare/0.49.1...0.50.0) (2026-04-13)
 
 
