@@ -15,10 +15,12 @@ solve path, `get_expected_out()` reads from cache — no blocking API calls duri
 
 ## Enabling the price guard
 
-The guard is disabled by default. Users enable it server-side with `--enable-price-guard`
-(see [server configuration](server-configuration.md)); tolerances and fallback behavior can be
-tuned via the matching `--price-guard-*` flags. When enabled without further overrides, the server
-uses the defaults shown in the table below.
+The guard is disabled by default. Users enable it server-side with `--enable-price-guard`;
+tolerances and fallback behavior can be tuned via the matching `--price-guard-*` flags, which use
+the same names as the fields below with a `--price-guard-` prefix (e.g. `lower_tolerance_bps` →
+`--price-guard-lower-tolerance-bps`). See [server configuration](server-configuration.md) for the
+full list. When enabled without further overrides, the server uses the defaults shown in the table
+below.
 
 Clients can override the configuration per request through `encoding_options.price_guard`
 (see [encoding options](encoding-options.md)). When present, the request config **replaces** the
@@ -50,28 +52,25 @@ deviation_bps = abs(expected - actual) * 10000 / expected
 - `amount_out < expected` → reject if deviation exceeds `lower_tolerance_bps`
 - `amount_out >= expected` → reject if deviation exceeds `upper_tolerance_bps`
 
-By default the lower bound is much stricter (`300` bps = 3%) than the upper bound (`10000` bps =
-100%). The lower bound catches under-delivery — the user getting less than expected. The upper
-bound catches cases where Fynd's price is significantly better than the external price, which may
-indicate a pricing bug that would fail to land on-chain. The default of `10000` allows `amount_out`
-up to twice the expected amount; lower it to catch suspicious outputs.
+The lower bound is stricter by default (`300` bps = 3%) to catch under-delivery — the user getting
+less than expected. The upper bound is looser (`10000` bps = 100%, allowing `amount_out` up to
+twice the expected) to catch suspicious over-delivery that may indicate a pricing bug; lower it for
+stricter checks.
 
 ## Fallback behavior
 
-The fallback flags apply only when every provider response is an error or "not found" — in other
-words, no provider returned a price at all. If any provider returns an in-tolerance price, the
-quote passes regardless of these flags; if any provider returns a price but none are within
-tolerance, the quote is rejected regardless of these flags.
+The fallback flags apply only when no provider returned a price — every response was either an
+infrastructure error or `price_not_found`. If any provider returned a price, the quote is judged
+purely on tolerance regardless of these flags: in-tolerance passes, out-of-tolerance rejects.
 
-- **`fail_on_provider_error`** — controls behavior when all providers fail with an infrastructure
-  error (network issue, API down, rate-limited). `false` (default) lets the quote pass; `true`
-  rejects it.
-- **`fail_on_token_price_not_found`** — controls behavior when every provider was reached but no
-  provider lists the token (it is not traded on that venue). `false` (default) lets the quote
-  pass; `true` rejects it.
+- **`fail_on_provider_error`** — applies when all providers failed with an infrastructure error
+  (network issue, API down, rate-limited). `false` (default) lets the quote pass; `true` rejects it.
+- **`fail_on_token_price_not_found`** — applies when every provider was reached but none list the
+  token. `false` (default) lets the quote pass; `true` rejects it.
 
-When responses are mixed — some `price_not_found`, some infrastructure errors — the guard treats
-the pair as potentially supported but unreachable and falls back to `fail_on_provider_error`.
+When responses mix `price_not_found` with infrastructure errors, the token might be listed on one
+of the unreachable providers, so the guard applies `fail_on_provider_error` rather than
+`fail_on_token_price_not_found`.
 
 ## Custom providers
 
