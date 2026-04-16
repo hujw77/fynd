@@ -4,30 +4,16 @@ icon: shield-check
 
 # Price Guard
 
-The price guard validates each successful quote's `amount_out` against external price providers
-(Hyperliquid and Binance by default), catching mispriced quotes before they are encoded into
-transactions and submitted on-chain. Providers are queried concurrently, and a quote passes if
-**at least one** provider returns a price within tolerance. When validation fails, the quote's
-status is set to `price_check_failed`; other orders in the same batch are unaffected.
+Fynd quotes can carry a concrete `min_amount_out` that commits the user to a trade. A mispriced
+quote — caused by stale pool data, a bug, or manipulated liquidity — can lock the user into an
+unfavorable execution. The price guard catches these before they reach the caller.
 
-Each provider runs a background worker that continuously populates an in-memory cache. On the
-solve path, `get_expected_out()` reads from cache — no blocking API calls during solving.
+It sits between solving and encoding in the order pipeline, querying multiple independent price
+oracles (Hyperliquid and Binance by default) concurrently and rejecting any solution whose
+`amount_out` falls outside the tolerance interval. When validation fails, the quote's status is set
+to `price_check_failed`; other orders in the same batch are unaffected.
 
-## Enabling the price guard
-
-The guard is disabled by default. Users enable it server-side with `--enable-price-guard`;
-tolerances and fallback behavior can be tuned via the matching `--price-guard-*` flags, which use
-the same names as the fields below with a `--price-guard-` prefix (e.g. `lower_tolerance_bps` →
-`--price-guard-lower-tolerance-bps`). See [server configuration](server-configuration.md) for the
-full list. When enabled without further overrides, the server uses the defaults shown in the table
-below.
-
-Clients can override the configuration per request through `encoding_options.price_guard`
-(see [encoding options](encoding-options.md)). When present, the request config **replaces** the
-server config entirely — any field omitted from the request falls back to the default in the table
-below, not to the server's configured value. Set every field whose server default you do not want.
-
-## Fields
+## Configuration
 
 | Field                            | Type      | Default | Description                                                                                                                   |
 |----------------------------------|-----------|---------|-------------------------------------------------------------------------------------------------------------------------------|
@@ -36,6 +22,24 @@ below, not to the server's configured value. Set every field whose server defaul
 | `upper_tolerance_bps`            | `integer` | `10000` | Max allowed deviation in basis points when the quote's `amount_out` is above the provider's expected amount out.              |
 | `fail_on_provider_error`         | `boolean` | `false` | See [fallback behavior](#fallback-behavior).                                                                                  |
 | `fail_on_token_price_not_found`  | `boolean` | `false` | See [fallback behavior](#fallback-behavior).                                                                                  |
+
+These fields can be set in two places: server-side (as defaults for all requests) or per-request
+(as client overrides).
+
+### Server-side
+
+The guard is disabled by default. Enable it with `--enable-price-guard`; tolerances and fallback
+behavior can be tuned via the matching `--price-guard-*` flags, which use the same names as the
+fields above with a `--price-guard-` prefix (e.g. `lower_tolerance_bps` →
+`--price-guard-lower-tolerance-bps`). See [server configuration](server-configuration.md) for the
+full list.
+
+### Per-request
+
+Clients can override the configuration per request through `encoding_options.price_guard`
+(see [encoding options](encoding-options.md)). When present, the request config **replaces** the
+server config entirely — any field omitted from the request falls back to the default in the table
+above, not to the server's configured value.
 
 ## Tolerance
 
@@ -74,8 +78,8 @@ of the unreachable providers, so the guard applies `fail_on_provider_error` rath
 
 ## Custom providers
 
-The `PriceProvider` trait, `ExternalPrice`, and `PriceProviderError` are public and re-exported
-from `fynd-core`. Implement the trait to add your own price source and register it via
+The `PriceProvider` trait, `ExternalPrice`, and `PriceProviderError` are public. Implement the
+trait to add your own price provider and register it via
 `FyndBuilder::register_price_provider()`:
 
 ```rust
@@ -89,14 +93,27 @@ let solver = FyndBuilder::new(chain, tycho_url, rpc_url, protocols, min_tvl)
 ```
 
 Providers follow a worker+cache pattern: `start()` spawns a background task that populates an
-in-memory cache, and `get_expected_out()` reads from that cache synchronously without blocking or
-making network calls.
+in-memory cache, and `get_expected_out()` reads from that cache without blocking or making network
+calls.
 
-If no providers are registered before `build()`, the two built-in providers (Hyperliquid, Binance)
-are added automatically. Calling `register_price_provider()` before `build()` skips the defaults —
-register only what you need.
+If no providers are registered before `build()`, the built-in providers (Hyperliquid, Binance) are
+added automatically. Calling `register_price_provider()` skips the defaults — register only what
+you need.
 
-## Example
+To keep the defaults **and** add a custom provider, call `add_default_price_providers()` first:
+
+```rust
+let solver = FyndBuilder::new(chain, tycho_url, rpc_url, protocols, min_tvl)
+    .add_default_price_providers()
+    .register_price_provider(Box::new(MyCustomProvider::new()))
+    .price_guard_config(
+        PriceGuardConfig::default().with_enabled(true),
+    )
+    .build()
+    .await?;
+```
+
+## Example Quote with Price Guard protection
 
 Enable the price guard with a tight lower bound and fail-closed on unknown tokens:
 
@@ -124,8 +141,10 @@ Enable the price guard with a tight lower bound and fail-closed on unknown token
 }
 ```
 
-To disable the price guard on a server that has it enabled, set `price_guard` inside
-`encoding_options`:
+### Disabling per-request
+
+To disable the price guard on a server that has it enabled, send `enabled: false` in
+`encoding_options.price_guard`:
 
 ```json
 "encoding_options": {
