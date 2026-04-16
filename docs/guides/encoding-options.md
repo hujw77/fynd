@@ -20,6 +20,7 @@ For full details on how the TychoRouter contract works, see the
 | `permit`            | `PermitSingle`    | no       | —                 | Permit2 authorization. Required when `transfer_type` is `"transfer_from_permit2"`.                              |
 | `permit2_signature` | `string`          | no       | —                 | Hex-encoded 65-byte signature over the permit. Required when `permit` is set.                                   |
 | `client_fee_params` | `ClientFeeParams` | no       | —                 | Optional integrator fee. See the [client fees guide](client-fees.md).                                           |
+| `price_guard`       | `PriceGuardConfig`| no       | —                 | Per-request overrides for price-guard validation. See the [price guard guide](price-guard.md).                  |
 
 ## Transfer types
 
