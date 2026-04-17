@@ -29,7 +29,9 @@ pub mod derived;
 pub mod encoding;
 /// Market data feed: Tycho WebSocket integration, gas price fetching, and protocol registry.
 pub mod feed;
-pub(crate) mod graph;
+/// Graph management for algorithms. Provides [`GraphManager`](graph::GraphManager)
+/// trait and the reusable [`PetgraphStableDiGraphManager`](graph::PetgraphStableDiGraphManager).
+pub mod graph;
 /// External price validation for quotes.
 pub mod price_guard;
 /// [`FyndBuilder`](solver::FyndBuilder) assembles the full pipeline and returns a
