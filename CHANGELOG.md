@@ -1,3 +1,10 @@
+## [0.52.0](https://github.com/propeller-heads/fynd/compare/0.51.0...0.52.0) (2026-04-17)
+
+
+### Features
+
+* rewrite custom algorithm example with standalone implementation ([4aec8a2](https://github.com/propeller-heads/fynd/commit/4aec8a2604054d408cc038371fbac87234f307d8)), closes [#188](https://github.com/propeller-heads/fynd/issues/188)
+
 ## [0.51.0](https://github.com/propeller-heads/fynd/compare/0.50.0...0.51.0) (2026-04-15)
 
 
