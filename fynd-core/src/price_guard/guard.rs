@@ -20,6 +20,9 @@ pub enum PriceGuardError {
     /// Price guard is enabled but no providers are registered.
     #[error("price guard is enabled but no providers are registered")]
     NoProviders,
+    /// Received an empty candidates list.
+    #[error("received empty candidates list")]
+    EmptyQuoteCandidates,
 }
 
 /// Validates solver outputs against external price sources.
@@ -48,43 +51,68 @@ impl PriceGuard {
         Self { registry, worker_handles }
     }
 
-    /// Validates a list of order quotes against external prices.
+    /// Validates ranked quote candidates against external prices.
     ///
-    /// For each successful quote with a route:
-    /// 1. Checks that the quote has a well-formed route
-    /// 2. Queries all registered providers
-    /// 3. Passes if at least one provider validates within BPS tolerance
-    ///
-    /// Failures are always per-quote: the quote's status is set to
-    /// `PriceCheckFailed` and processing continues. Never aborts the batch.
+    /// Each inner `Vec<OrderQuote>` contains ranked candidates for a single order
+    /// (sorted by `amount_out_net_gas` descending). For each order, returns the
+    /// first candidate that passes price validation. If none pass, returns the
+    /// last candidate with status `PriceCheckFailed`.
     pub fn validate(
         &self,
-        mut quotes: Vec<OrderQuote>,
+        ranked_quotes: Vec<Vec<OrderQuote>>,
         config: &PriceGuardConfig,
     ) -> Result<Vec<OrderQuote>, PriceGuardError> {
         if !config.enabled() {
-            return Ok(quotes);
+            return Ok(ranked_quotes
+                .into_iter()
+                .filter_map(|candidates| candidates.into_iter().next())
+                .collect());
         }
 
         if self.registry.is_empty() {
             return Err(PriceGuardError::NoProviders);
         }
 
-        for quote in &mut quotes {
-            if quote.status() != QuoteStatus::Success {
+        let mut results = Vec::with_capacity(ranked_quotes.len());
+        for candidates in ranked_quotes {
+            results.push(self.select_first_valid(candidates, config)?);
+        }
+        Ok(results)
+    }
+
+    /// Returns the first candidate that passes price validation, or the last
+    /// one marked as `PriceCheckFailed`.
+    fn select_first_valid(
+        &self,
+        candidates: Vec<OrderQuote>,
+        config: &PriceGuardConfig,
+    ) -> Result<OrderQuote, PriceGuardError> {
+        let mut last = None;
+        for candidate in candidates {
+            if candidate.status() != QuoteStatus::Success {
+                last = Some(candidate);
                 continue;
             }
-            let Some((token_in, token_out)) = self.validated_token_pair(quote) else {
-                // This should not happen.
-                quote.set_status(QuoteStatus::NoRouteFound);
+            let Some((token_in, token_out)) = self.validated_token_pair(&candidate) else {
+                last = Some(candidate);
                 continue;
             };
-            if !self.check_price(quote, &token_in, &token_out, config) {
-                quote.set_status(QuoteStatus::PriceCheckFailed);
+            if self.check_price(&candidate, &token_in, &token_out, config) {
+                return Ok(candidate);
             }
+            last = Some(candidate);
         }
 
-        Ok(quotes)
+        if let Some(mut order_quote) = last {
+            if order_quote.status() == QuoteStatus::Success {
+                order_quote.set_status(QuoteStatus::PriceCheckFailed);
+            }
+            Ok(order_quote)
+        } else {
+            // should never happen since the solver should always return at least one candidate per
+            // order
+            Err(PriceGuardError::EmptyQuoteCandidates)
+        }
     }
 
     /// Checks that a successful quote has a route with input/output tokens.
@@ -355,7 +383,7 @@ mod tests {
         let guard = price_guard(vec![mock_provider(provider_amount)]);
 
         let result = guard
-            .validate(vec![make_quote(fynd_amount)], &config)
+            .validate(vec![vec![make_quote(fynd_amount)]], &config)
             .unwrap();
 
         let expected_status =
@@ -374,7 +402,7 @@ mod tests {
         let guard = price_guard(vec![Box::new(FailingProvider), Box::new(FailingProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(500)], &config)
+            .validate(vec![vec![make_quote(500)]], &config)
             .unwrap();
 
         let want = if should_pass { QuoteStatus::Success } else { QuoteStatus::PriceCheckFailed };
@@ -390,7 +418,7 @@ mod tests {
         let guard = price_guard(vec![mock_provider(10_000)]);
 
         let result = guard
-            .validate(vec![make_quote(50)], &config)
+            .validate(vec![vec![make_quote(50)]], &config)
             .unwrap();
 
         assert_eq!(result.len(), 1);
@@ -410,7 +438,7 @@ mod tests {
         let guard = price_guard(vec![mock_provider(1000), mock_provider(970)]);
 
         let result = guard
-            .validate(vec![make_quote(960)], &config)
+            .validate(vec![vec![make_quote(960)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::Success);
@@ -424,7 +452,7 @@ mod tests {
         let guard = price_guard(vec![Box::new(FailingProvider), mock_provider(1000)]);
 
         let result = guard
-            .validate(vec![make_quote(980)], &config)
+            .validate(vec![vec![make_quote(980)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::Success);
@@ -440,7 +468,7 @@ mod tests {
         quote.set_status(QuoteStatus::NoRouteFound);
 
         let result = guard
-            .validate(vec![quote], &config)
+            .validate(vec![vec![quote]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::NoRouteFound);
@@ -451,26 +479,58 @@ mod tests {
         let config = PriceGuardConfig::default().with_enabled(true);
         let guard = price_guard(vec![]);
 
-        let result = guard.validate(vec![make_quote(1000)], &config);
+        let result = guard.validate(vec![vec![make_quote(1000)]], &config);
 
         assert!(matches!(result, Err(PriceGuardError::NoProviders)));
     }
 
     #[test]
-    fn test_multiple_quotes() {
-        // Test that multiple quotes get statuses independent of each other.
-        // For example - one passes and one fails.
+    fn test_multiple_orders() {
+        // Test that multiple orders get statuses independent of each other.
         let config = PriceGuardConfig::default()
             .with_enabled(true)
             .with_lower_tolerance_bps(300);
         let guard = price_guard(vec![mock_provider(1000)]);
 
         let result = guard
-            .validate(vec![make_quote(980), make_quote(500)], &config)
+            .validate(vec![vec![make_quote(980)], vec![make_quote(500)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::Success);
         assert_eq!(result[1].status(), QuoteStatus::PriceCheckFailed);
+    }
+
+    #[test]
+    fn test_ranked_fallback() {
+        // Best candidate fails price check, second-best passes.
+        let config = PriceGuardConfig::default()
+            .with_enabled(true)
+            .with_lower_tolerance_bps(300)
+            .with_upper_tolerance_bps(300);
+        let guard = price_guard(vec![mock_provider(1000)]);
+
+        let result = guard
+            .validate(vec![vec![make_quote(1100), make_quote(980)]], &config)
+            .unwrap();
+
+        // Should fall back to the second candidate (980) which passes
+        assert_eq!(result[0].status(), QuoteStatus::Success);
+        assert_eq!(*result[0].amount_out(), BigUint::from(980u64));
+    }
+
+    #[test]
+    fn test_ranked_all_fail() {
+        // All candidates fail price check — last one gets PriceCheckFailed.
+        let config = PriceGuardConfig::default()
+            .with_enabled(true)
+            .with_lower_tolerance_bps(100);
+        let guard = price_guard(vec![mock_provider(1000)]);
+
+        let result = guard
+            .validate(vec![vec![make_quote(600), make_quote(500)]], &config)
+            .unwrap();
+
+        assert_eq!(result[0].status(), QuoteStatus::PriceCheckFailed);
     }
 
     #[rstest]
@@ -485,7 +545,7 @@ mod tests {
             price_guard(vec![Box::new(PriceNotFoundProvider), Box::new(PriceNotFoundProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(500)], &config)
+            .validate(vec![vec![make_quote(500)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), result_status);
@@ -503,7 +563,7 @@ mod tests {
         let guard = price_guard(vec![Box::new(PriceNotFoundProvider), Box::new(FailingProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(500)], &config)
+            .validate(vec![vec![make_quote(500)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::PriceCheckFailed);
@@ -521,7 +581,7 @@ mod tests {
         let guard = price_guard(vec![mock_provider(1000), Box::new(PriceNotFoundProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(980)], &config)
+            .validate(vec![vec![make_quote(980)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::Success);
@@ -539,7 +599,7 @@ mod tests {
         let guard = price_guard(vec![mock_provider(1000), Box::new(PriceNotFoundProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(500)], &config)
+            .validate(vec![vec![make_quote(500)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::PriceCheckFailed);
@@ -556,7 +616,7 @@ mod tests {
             price_guard(vec![Box::new(PriceNotFoundProvider), Box::new(PriceNotFoundProvider)]);
 
         let result = guard
-            .validate(vec![make_quote(500)], &config)
+            .validate(vec![vec![make_quote(500)]], &config)
             .unwrap();
 
         assert_eq!(result[0].status(), QuoteStatus::PriceCheckFailed);
