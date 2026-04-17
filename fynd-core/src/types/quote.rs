@@ -1164,8 +1164,9 @@ pub struct Swap {
 }
 
 impl Swap {
+    /// Creates a new swap.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         component_id: ComponentId,
         protocol: String,
         token_in: Address,
@@ -1189,9 +1190,8 @@ impl Swap {
             split: 0.0,
         }
     }
-    /// Sets the split of this Swap
-    #[allow(dead_code)]
-    pub(crate) fn with_split(mut self, split: f64) -> Self {
+    /// Sets the split fraction for this swap (e.g. 0.5 means 50% of a split route).
+    pub fn with_split(mut self, split: f64) -> Self {
         self.split = split;
         self
     }

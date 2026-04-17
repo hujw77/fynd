@@ -22,56 +22,119 @@ Your algorithm receives a read-only reference to the routing graph and shared ma
 From [`fynd-core/examples/custom_algorithm.rs`](../../fynd-core/examples/custom_algorithm.rs):
 
 ```rust
-/// A custom algorithm that wraps [`MostLiquidAlgorithm`].
+/// A naive algorithm that finds a direct pool between two tokens.
 ///
-/// Replace the delegation in [`Algorithm::find_best_route`] with your own routing
-/// logic to use a fully custom algorithm.
-struct MyAlgorithm {
-    inner: MostLiquidAlgorithm,
+/// This iterates through all edges in the routing graph, finds one that
+/// connects `token_in` to `token_out`, simulates the swap, and returns
+/// the first successful result. It only supports single-hop (direct) routes.
+struct DirectPoolAlgorithm {
+    timeout: Duration,
 }
 
-impl MyAlgorithm {
-    fn new(config: AlgorithmConfig) -> Self {
-        let inner =
-            MostLiquidAlgorithm::with_config(config).expect("invalid algorithm configuration");
-        Self { inner }
+impl DirectPoolAlgorithm {
+    fn new(_config: fynd_core::AlgorithmConfig) -> Self {
+        Self { timeout: Duration::from_millis(100) }
     }
 }
 
-impl Algorithm for MyAlgorithm {
-    // Reuse the built-in graph type and manager so the worker infrastructure
-    // (graph initialisation, event handling, edge weight updates) works unchanged.
-    type GraphType = <MostLiquidAlgorithm as Algorithm>::GraphType;
-    type GraphManager = <MostLiquidAlgorithm as Algorithm>::GraphManager;
+impl Algorithm for DirectPoolAlgorithm {
+    // Reuse the built-in petgraph manager — it handles graph initialization and
+    // market event updates automatically. We just need a simple graph with no
+    // edge weights (unit `()` type).
+    type GraphType = StableDiGraph<()>;
+    type GraphManager = PetgraphStableDiGraphManager<()>;
 
     fn name(&self) -> &str {
-        "my_custom_algo"
+        "direct_pool"
     }
 
     async fn find_best_route(
         &self,
         graph: &Self::GraphType,
         market: SharedMarketDataRef,
-        derived: Option<SharedDerivedDataRef>,
+        _derived: Option<SharedDerivedDataRef>,
         order: &Order,
     ) -> Result<RouteResult, AlgorithmError> {
-        // Delegate to the inner algorithm. Replace this with custom logic.
-        self.inner
-            .find_best_route(graph, market, derived, order)
-            .await
+        let market = market.read().await;
+
+        let gas_price = market
+            .gas_price()
+            .ok_or(AlgorithmError::Other("gas price not available".to_string()))?
+            .effective_gas_price()
+            .clone();
+
+        // Walk every edge looking for one that goes token_in → token_out.
+        for edge_idx in graph.edge_indices() {
+            let Some((src_idx, dst_idx)) = graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
+            let (src_addr, dst_addr) = (&graph[src_idx], &graph[dst_idx]);
+
+            if src_addr != order.token_in() || dst_addr != order.token_out() {
+                continue;
+            }
+
+            let component_id = &graph
+                .edge_weight(edge_idx)
+                .expect("edge exists")
+                .component_id;
+
+            // Look up component metadata and simulation state.
+            let Some(component) = market.get_component(component_id) else {
+                continue;
+            };
+            let Some(state) = market.get_simulation_state(component_id) else {
+                continue;
+            };
+            let Some(token_in) = market.get_token(order.token_in()) else {
+                continue;
+            };
+            let Some(token_out) = market.get_token(order.token_out()) else {
+                continue;
+            };
+
+            // Simulate the swap.
+            let result = match state.get_amount_out(order.amount().clone(), token_in, token_out) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            let swap = Swap::new(
+                component_id.clone(),
+                component.protocol_system.clone(),
+                token_in.address.clone(),
+                token_out.address.clone(),
+                order.amount().clone(),
+                result.amount.clone(),
+                result.gas,
+                component.clone(),
+                state.clone_box(),
+            );
+
+            let route = Route::new(vec![swap]);
+            let net_amount_out = BigInt::from(result.amount);
+
+            return Ok(RouteResult::new(route, net_amount_out, gas_price));
+        }
+
+        Err(AlgorithmError::Other(format!(
+            "no direct pool from {:?} to {:?}",
+            order.token_in(),
+            order.token_out()
+        )))
     }
 
     fn computation_requirements(&self) -> ComputationRequirements {
-        self.inner.computation_requirements()
+        ComputationRequirements::default()
     }
 
     fn timeout(&self) -> Duration {
-        self.inner.timeout()
+        self.timeout
     }
 }
 ```
 
-Replace the delegation in `find_best_route` with your own routing logic. The `GraphType` and `GraphManager` associated types can also be replaced if you need a different graph structure.
+The example uses `PetgraphStableDiGraphManager<()>` so the worker infrastructure handles graph maintenance automatically. The algorithm walks graph edges to find a pool connecting the two tokens, simulates the swap, and constructs a `Swap` → `Route` → `RouteResult`.
 
 ## Wire it up
 
@@ -86,7 +149,7 @@ Pass your algorithm factory to `FyndBuilder::with_algorithm()` instead of the st
         10.0,
     )
     .tycho_api_key(tycho_api_key)
-    .with_algorithm("my_custom_algo", MyAlgorithm::new)
+    .with_algorithm("direct_pool", DirectPoolAlgorithm::new)
     .build()?;
 ```
 
@@ -107,6 +170,6 @@ export RPC_URL="https://your-rpc-provider.com"
 cargo run --package fynd-core --example custom_algorithm
 ```
 
-The example connects to Tycho, loads market data, and solves a 1000 USDC → WBTC order using `MyAlgorithm`.
+The example connects to Tycho, loads market data, and solves a 1000 USDC → WBTC order using `DirectPoolAlgorithm`.
 
 For the complete runnable example, see [`fynd-core/examples/custom_algorithm.rs`](../../fynd-core/examples/custom_algorithm.rs).
