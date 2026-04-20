@@ -80,36 +80,31 @@ impl PriceGuard {
         Ok(results)
     }
 
-    /// Returns the first candidate that passes price validation, or the last
+    /// Returns the first candidate that passes price validation, or the first
     /// one marked as `PriceCheckFailed`.
     fn select_first_valid(
         &self,
         candidates: Vec<OrderQuote>,
         config: &PriceGuardConfig,
     ) -> Result<OrderQuote, PriceGuardError> {
-        let mut last = None;
+        let mut first = None;
         for candidate in candidates {
             if candidate.status() != QuoteStatus::Success {
                 return Ok(candidate);
             }
-            let Some((token_in, token_out)) = self.validated_token_pair(&candidate) else {
-                last = Some(candidate);
-                continue;
-            };
-            if self.check_price(&candidate, &token_in, &token_out, config) {
-                return Ok(candidate);
+            if let Some((token_in, token_out)) = self.validated_token_pair(&candidate) {
+                if self.check_price(&candidate, &token_in, &token_out, config) {
+                    return Ok(candidate);
+                }
             }
-            last = Some(candidate);
+            first.get_or_insert(candidate);
         }
 
-        if let Some(mut order_quote) = last {
-            order_quote.set_status(QuoteStatus::PriceCheckFailed);
-            Ok(order_quote)
-        } else {
-            // should never happen since the solver should always return at least one candidate per
-            // order
-            Err(PriceGuardError::EmptyQuoteCandidates)
-        }
+        // should never happen since the solver should always return at least one candidate per
+        // order
+        let mut order_quote = first.ok_or(PriceGuardError::EmptyQuoteCandidates)?;
+        order_quote.set_status(QuoteStatus::PriceCheckFailed);
+        Ok(order_quote)
     }
 
     /// Checks that a successful quote has a route with input/output tokens.
