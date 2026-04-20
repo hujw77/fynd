@@ -90,8 +90,7 @@ impl PriceGuard {
         let mut last = None;
         for candidate in candidates {
             if candidate.status() != QuoteStatus::Success {
-                last = Some(candidate);
-                continue;
+                return Ok(candidate);
             }
             let Some((token_in, token_out)) = self.validated_token_pair(&candidate) else {
                 last = Some(candidate);
@@ -104,9 +103,7 @@ impl PriceGuard {
         }
 
         if let Some(mut order_quote) = last {
-            if order_quote.status() == QuoteStatus::Success {
-                order_quote.set_status(QuoteStatus::PriceCheckFailed);
-            }
+            order_quote.set_status(QuoteStatus::PriceCheckFailed);
             Ok(order_quote)
         } else {
             // should never happen since the solver should always return at least one candidate per
