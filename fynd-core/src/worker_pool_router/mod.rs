@@ -371,7 +371,7 @@ impl WorkerPoolRouter {
 
         // No valid quote found - return a NoRouteFound response
         // Try to get any response to extract block info, or create a placeholder
-        let placeholder = if let Some((_, any_q)) = responses.quotes.first() {
+        let fallback = if let Some((_, any_q)) = responses.quotes.first() {
             counter!("worker_router_orders_total", "status" => "no_route").increment(1);
             OrderQuote::new(
                 responses.order_id.clone(),
@@ -430,7 +430,7 @@ impl WorkerPoolRouter {
                 Bytes::default(),
             )
         };
-        vec![placeholder]
+        vec![fallback]
     }
 
     /// Returns the effective timeout for a request.
