@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Controls tolerance thresholds, fail-open behavior, and whether validation
 /// is enabled at all. All fields have sensible defaults via [`Default`].
+///
+/// On the wire (JSON), every field is optional — omitted fields fall back to
+/// these defaults. See `fynd-rpc-types` for the wire representation.
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceGuardConfig {

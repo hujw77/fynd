@@ -15,31 +15,46 @@ to `price_check_failed`; other orders in the same batch are unaffected.
 
 ## Configuration
 
+The server controls only whether the guard is on or off. All other parameters — tolerance
+thresholds and fallback behavior — are set per-request by the client. Omitted fields fall back to
+struct defaults.
+
+### Server-side
+
+The guard is disabled by default. Enable it with `--enable-price-guard`:
+
+```bash
+fynd --enable-price-guard
+```
+
+When enabled, price providers (Hyperliquid, Binance) are started in the background so their
+caches stay warm. Validation only runs for requests where the client sets `enabled: true` in
+`encoding_options.price_guard`. When disabled, no providers are started and requests that set
+`enabled: true` return an error.
+
+### Per-request
+
+Clients configure tolerance and fallback behavior through `encoding_options.price_guard`
+(see [encoding options](encoding-options.md)). Omitted fields use the defaults shown below.
+
 | Field                            | Type      | Default | Description                                                                                                                   |
 |----------------------------------|-----------|---------|-------------------------------------------------------------------------------------------------------------------------------|
-| `enabled`                        | `boolean` | `false` | Turns the guard on or off. When off, all other fields are ignored and every quote passes through unchecked.                   |
+| `enabled`                        | `boolean` | `false` | Set to `true` to run price guard validation for this request. Requires the server to have `--enable-price-guard`.             |
 | `lower_tolerance_bps`            | `integer` | `300`   | Max allowed deviation in basis points when the quote's `amount_out` is below the provider's expected amount out.              |
 | `upper_tolerance_bps`            | `integer` | `10000` | Max allowed deviation in basis points when the quote's `amount_out` is above the provider's expected amount out.              |
 | `fail_on_provider_error`         | `boolean` | `false` | See [fallback behavior](#fallback-behavior).                                                                                  |
 | `fail_on_token_price_not_found`  | `boolean` | `false` | See [fallback behavior](#fallback-behavior).                                                                                  |
 
-These fields can be set in two places: server-side (as defaults for all requests) or per-request
-(as client overrides).
+```bash
+fynd --enable-price-guard
+```
 
-### Server-side
+**Development** — leave the guard disabled on the server. No providers are started and no resources
+are used.
 
-The guard is disabled by default. Enable it with `--enable-price-guard`; tolerances and fallback
-behavior can be tuned via the matching `--price-guard-*` flags, which use the same names as the
-fields above with a `--price-guard-` prefix (e.g. `lower_tolerance_bps` →
-`--price-guard-lower-tolerance-bps`). See [server configuration](server-configuration.md) for the
-full list.
-
-### Per-request
-
-Clients can override the configuration per request through `encoding_options.price_guard`
-(see [encoding options](encoding-options.md)). When present, the request config **replaces** the
-server config entirely — any field omitted from the request falls back to the default in the table
-above, not to the server's configured value.
+```bash
+fynd  # no --enable-price-guard
+```
 
 ## Tolerance
 
@@ -85,9 +100,7 @@ trait to add your own price provider and register it via
 ```rust
 let solver = FyndBuilder::new(chain, tycho_url, rpc_url, protocols, min_tvl)
     .register_price_provider(Box::new(MyCustomProvider::new()))
-    .price_guard_config(
-        PriceGuardConfig::default().with_enabled(true),
-    )
+    .price_guard_enabled(true)
     .build()
     .await?;
 ```
@@ -106,16 +119,15 @@ To keep the defaults **and** add a custom provider, call `add_default_price_prov
 let solver = FyndBuilder::new(chain, tycho_url, rpc_url, protocols, min_tvl)
     .add_default_price_providers()
     .register_price_provider(Box::new(MyCustomProvider::new()))
-    .price_guard_config(
-        PriceGuardConfig::default().with_enabled(true),
-    )
+    .price_guard_enabled(true)
     .build()
     .await?;
 ```
 
 ## Example Quote with Price Guard protection
 
-Enable the price guard with a tight lower bound and fail-closed on unknown tokens:
+Enable the price guard server-side, then tighten the lower bound and fail-closed on unknown tokens
+for a specific request:
 
 ```json
 {
@@ -151,3 +163,4 @@ To disable the price guard on a server that has it enabled, send `enabled: false
   "price_guard": { "enabled": false }
 }
 ```
+

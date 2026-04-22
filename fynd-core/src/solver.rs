@@ -34,8 +34,7 @@ use crate::{
     },
     graph::EdgeWeightUpdaterWithDerived,
     price_guard::{
-        config::PriceGuardConfig, guard::PriceGuard, provider::PriceProvider,
-        provider_registry::PriceProviderRegistry,
+        guard::PriceGuard, provider::PriceProvider, provider_registry::PriceProviderRegistry,
     },
     types::constants::native_token,
     worker_pool::{
@@ -298,7 +297,7 @@ pub struct FyndBuilder {
     router_min_responses: usize,
     encoder: Option<Encoder>,
     pools: Vec<PoolEntry>,
-    price_guard_config: PriceGuardConfig,
+    price_guard_enabled: bool,
     price_providers: Vec<Box<dyn PriceProvider>>,
 }
 
@@ -329,7 +328,7 @@ impl FyndBuilder {
             router_min_responses: defaults::ROUTER_MIN_RESPONSES,
             encoder: None,
             pools: Vec::new(),
-            price_guard_config: PriceGuardConfig::default(),
+            price_guard_enabled: false,
             price_providers: Vec::new(),
         }
     }
@@ -478,12 +477,14 @@ impl FyndBuilder {
         self
     }
 
-    /// Sets the server-side default [`PriceGuardConfig`].
+    /// Enables or disables the price guard.
     ///
-    /// This config is used when a quote request does not include per-request
-    /// price guard overrides. Defaults to [`PriceGuardConfig::default`].
-    pub fn price_guard_config(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard_config = config;
+    /// When enabled, providers are started and caches stay warm. Validation
+    /// only runs for requests where the client sets `enabled: true` in
+    /// `PriceGuardConfig`. When disabled, no providers are started and
+    /// per-request attempts to use the guard return an error.
+    pub fn price_guard_enabled(mut self, enabled: bool) -> Self {
+        self.price_guard_enabled = enabled;
         self
     }
 
@@ -637,23 +638,23 @@ impl FyndBuilder {
         let chain = self.chain;
         let router_address = encoder.router_address().clone();
 
-        // Start price providers and construct the guard.
-        // Providers are started even when `enabled: false` so caches stay warm
-        // for per-request opt-in. The `enabled` flag only controls whether
-        // validation runs at request time.
+        // Only start price providers when the guard is enabled.
+        // When disabled, per-request attempts to enable the guard return an error.
         let router_config = WorkerPoolRouterConfig::default()
             .with_timeout(self.router_timeout)
             .with_min_responses(self.router_min_responses);
         let mut router = WorkerPoolRouter::new(solver_pool_handles, router_config, encoder);
 
-        let mut registry = PriceProviderRegistry::new();
-        let mut worker_handles = Vec::new();
-        for mut provider in self.price_providers {
-            worker_handles.push(provider.start(Arc::clone(&market_data)));
-            registry = registry.register(provider);
+        if self.price_guard_enabled {
+            let mut registry = PriceProviderRegistry::new();
+            let mut worker_handles = Vec::new();
+            for mut provider in self.price_providers {
+                worker_handles.push(provider.start(Arc::clone(&market_data)));
+                registry = registry.register(provider);
+            }
+            let price_guard = PriceGuard::new(registry, worker_handles);
+            router = router.with_price_guard(price_guard);
         }
-        let price_guard = PriceGuard::new(registry, worker_handles);
-        router = router.with_price_guard(price_guard, self.price_guard_config);
 
         let feed_handle = tokio::spawn(async move {
             if let Err(e) = tycho_feed.run().await {
