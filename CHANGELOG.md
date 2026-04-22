@@ -1,3 +1,16 @@
+## [0.53.0](https://github.com/propeller-heads/fynd/compare/0.52.0...0.53.0) (2026-04-22)
+
+
+### Features
+
+* keep ranked quote candidates for price guard fallback ([b0bdfa3](https://github.com/propeller-heads/fynd/commit/b0bdfa39c3dd05cbf106c0f4ea11d3d8ae5b6ba0))
+
+
+### Bug Fixes
+
+* exit early if no successful quotes ([495e3e2](https://github.com/propeller-heads/fynd/commit/495e3e26b16af544d15b12e222af602fe15ac67f))
+* return first quote if all quotes failed the price check ([164ba00](https://github.com/propeller-heads/fynd/commit/164ba008e9a83f58a87d266af88fffca82cd47c1))
+
 ## [0.52.0](https://github.com/propeller-heads/fynd/compare/0.51.0...0.52.0) (2026-04-17)
 
 
