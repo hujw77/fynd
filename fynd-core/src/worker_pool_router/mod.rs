@@ -153,13 +153,6 @@ impl WorkerPoolRouter {
             .map(|e| e.price_guard())
             .filter(|c| c.enabled());
 
-        if price_guard_config.is_some() && self.price_guard.is_none() {
-            return Err(SolveError::Internal(
-                "price guard config provided but price guard is not enabled on this server"
-                    .to_string(),
-            ));
-        }
-
         let mut order_quotes: Vec<OrderQuote> = match (&self.price_guard, price_guard_config) {
             (Some(guard), Some(config)) => guard
                 .validate(ranked_quotes, config)
@@ -167,6 +160,12 @@ impl WorkerPoolRouter {
                     warn!(error = %e, "price guard validation error");
                     SolveError::Internal(e.to_string())
                 })?,
+            (None, Some(_)) => {
+                return Err(SolveError::Internal(
+                    "price guard config provided but price guard is not enabled on this server"
+                        .to_string(),
+                ));
+            }
             _ => ranked_quotes
                 .into_iter()
                 .filter_map(|candidates| candidates.into_iter().next())
