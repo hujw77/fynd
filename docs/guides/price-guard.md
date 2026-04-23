@@ -91,6 +91,19 @@ When responses mix `price_not_found` with infrastructure errors, the token might
 of the unreachable providers, so the guard applies `fail_on_provider_error` rather than
 `fail_on_token_price_not_found`.
 
+## Symbol collisions and long-tail tokens
+
+Price providers (Binance, Hyperliquid) identify tokens by their trading symbol — e.g. "ETH",
+"LINK", "PEPE". On-chain, symbols are not unique: any token can declare itself "PEPE", and
+multiple unrelated tokens on the same chain may share a symbol. The guard resolves tokens by
+matching the on-chain symbol from `SharedMarketData` to a provider's symbol, so a long-tail token
+whose symbol collides with a well-known token will be priced as if it were that token.
+
+In practice this means the guard works reliably for major tokens listed on CEXs, but may produce
+false rejections (or false passes) for obscure tokens that happen to share a symbol with a listed
+asset. Clients trading long-tail tokens should consider leaving `enabled: false` for those
+requests.
+
 ## Custom providers
 
 The `PriceProvider` trait, `ExternalPrice`, and `PriceProviderError` are public. Implement the
