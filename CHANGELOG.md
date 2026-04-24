@@ -1,3 +1,12 @@
+## [0.55.0](https://github.com/propeller-heads/fynd/compare/0.54.0...0.55.0) (2026-04-24)
+
+
+### Features
+
+* **fynd-client:** make Quote::new and BlockInfo::new public ([c2f0e36](https://github.com/propeller-heads/fynd/commit/c2f0e368fb0567125ddebd529d60556767ac7059))
+* **fynd-client:** make Route::new and Swap::new public ([7e0e9d4](https://github.com/propeller-heads/fynd/commit/7e0e9d447da88c0691faa7ab6f25b7679d3610cd))
+* Make Transaction constructor pub ([4d7f082](https://github.com/propeller-heads/fynd/commit/4d7f082274b4a7cdeb849fb2ea3aec141ded895a))
+
 ## [0.54.0](https://github.com/propeller-heads/fynd/compare/0.53.0...0.54.0) (2026-04-24)
 
 
