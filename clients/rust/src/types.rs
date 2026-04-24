@@ -345,7 +345,12 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub(crate) fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
+    /// Create a new transaction from the given parameters.
+    ///
+    /// - `to`: 20-byte contract address to call.
+    /// - `value`: native token value to send with the transaction.
+    /// - `data`: ABI-encoded calldata.
+    pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
         Self { to, value, data }
     }
 
@@ -602,7 +607,8 @@ impl BlockInfo {
         self.timestamp
     }
 
-    pub(crate) fn new(number: u64, hash: String, timestamp: u64) -> Self {
+    /// Create a new [`BlockInfo`].
+    pub fn new(number: u64, hash: String, timestamp: u64) -> Self {
         Self { number, hash, timestamp }
     }
 }
@@ -657,8 +663,9 @@ impl Swap {
         &self.gas_estimate
     }
 
+    /// Create a new [`Swap`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         component_id: String,
         protocol: String,
         token_in: Bytes,
@@ -695,7 +702,8 @@ impl Route {
         &self.swaps
     }
 
-    pub(crate) fn new(swaps: Vec<Swap>) -> Self {
+    /// Create a new [`Route`] from a list of swaps.
+    pub fn new(swaps: Vec<Swap>) -> Self {
         Self { swaps }
     }
 }
@@ -868,8 +876,9 @@ impl Quote {
         self.solve_time_ms
     }
 
+    /// Create a new [`Quote`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         order_id: String,
         status: QuoteStatus,
         backend: BackendKind,
