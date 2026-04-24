@@ -336,7 +336,7 @@ pub struct Transaction {
 
 impl Transaction {
     /// Create a new transaction from the given parameters.
-    /// 
+    ///
     /// - `to`: 20-byte contract address to call.
     /// - `value`: native token value to send with the transaction.
     /// - `data`: ABI-encoded calldata.
