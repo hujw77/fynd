@@ -39,7 +39,7 @@ This modular architecture allows users to:
 │                         Async I/O - Non-blocking                            │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                           RouterApi                                  │   │
-│  │  POST /v1/quote    GET /v1/health    GET /v1/info    GET /metrics    │   │
+│  │        POST /v1/quote      GET /v1/health      GET /v1/info          │   │
 │  └───────────────────────────────┬──────────────────────────────────────┘   │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │

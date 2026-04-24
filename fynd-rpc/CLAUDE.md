@@ -42,6 +42,7 @@ infrastructure.
 `FyndRPCBuilder` delegates all solver configuration to `FyndBuilder` and adds:
 - `http_host` / `http_port` (defaults: `0.0.0.0:3000`)
 - `gas_price_stale_threshold` (health returns 503 when exceeded)
+- `price_guard_enabled(bool)` (delegates to `FyndBuilder`; default `false`)
 
 The builder calls `FyndBuilder::build()` → `Solver::into_parts()` → wraps the router in
 `AppState` → starts an Actix `HttpServer`.

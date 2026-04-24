@@ -1,4 +1,4 @@
-<!-- docs-synced-at: 55b446762d25462cf184f9ea653050ae0a0b8dbd -->
+<!-- docs-synced-at: 353a6a831f91313b1b8d5b66985f91b0385da4dc -->
 # Fynd Codebase Guide
 
 High-performance DeFi route-finding engine built on Tycho. Finds optimal swap routes across
@@ -75,7 +75,7 @@ See `docs/ARCHITECTURE.md` for the full architecture diagram and detailed compon
 2. `WorkerPoolRouter` fans out each order to all worker pools in parallel
 3. Each pool's `TaskQueue` dispatches to a `SolverWorker` on a dedicated OS thread
 4. Worker calls `Algorithm::find_best_route` with its local graph + shared market/derived data
-5. `WorkerPoolRouter` collects results, selects best by `amount_out_net_gas`
+5. `WorkerPoolRouter` collects results, ranks candidates by `amount_out_net_gas` descending; if price guard is enabled it validates in rank order
 6. If `EncodingOptions` provided, `Encoder` produces ABI-encoded calldata
 7. Returns `Quote` response
 
@@ -104,7 +104,7 @@ See `docs/ARCHITECTURE.md` for the full architecture diagram and detailed compon
 
 | Command | Purpose |
 |---|---|
-| `serve` | Run the solver: Tycho feed + HTTP RPC server |
+| `serve` | Run the solver: Tycho feed + HTTP RPC server. Notable flags: `--enable-price-guard` (default `false`) |
 | `openapi` | Print the OpenAPI spec JSON to stdout |
 
 ### Config Files
@@ -112,7 +112,7 @@ See `docs/ARCHITECTURE.md` for the full architecture diagram and detailed compon
 | File | Purpose |
 |---|---|
 | `worker_pools.toml` | Worker pool definitions: algorithm, num_workers, hop limits, timeout. Optional — binary falls back to embedded defaults if not found |
-| `blocklist.toml` | Pool IDs to exclude from routing. Optional — falls back to tycho-simulation defaults if not found |
+| `blocklist.toml` | Component IDs to exclude from the Tycho stream. Optional — falls back to tycho-simulation defaults if not found |
 
 ## Testing
 
