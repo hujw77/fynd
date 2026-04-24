@@ -373,9 +373,9 @@ export interface components {
             spender: string;
         };
         /**
-         * @description Per-request overrides for price guard validation.
+         * @description Per-request price guard configuration.
          *
-         *     All fields are optional. When `None`, the server's configured defaults are used.
+         *     All fields are optional. When `None`, struct defaults are used.
          */
         PriceGuardConfig: {
             /** @description Whether price guard validation is enabled. */

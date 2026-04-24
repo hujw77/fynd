@@ -325,9 +325,9 @@ impl EncodingOptions {
         self
     }
 
-    /// Override server-side price guard defaults for this request.
+    /// Configure price guard tolerance and fallback behavior for this request.
     ///
-    /// Fields left as `None` in [`PriceGuardConfig`] inherit the server defaults.
+    /// Fields left as `None` in [`PriceGuardConfig`] use struct defaults.
     pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
         self.price_guard = Some(config);
         self
@@ -449,9 +449,9 @@ impl Order {
     }
 }
 
-/// Per-request overrides for price guard validation.
+/// Per-request price guard configuration.
 ///
-/// All fields are optional. When `None`, the server's configured defaults are used.
+/// All fields are optional. When `None`, struct defaults are used.
 /// Re-exported from `fynd-rpc-types` for wire compatibility.
 pub use fynd_rpc_types::PriceGuardConfig;
 

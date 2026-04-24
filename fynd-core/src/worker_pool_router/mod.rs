@@ -31,10 +31,9 @@ use tracing::{debug, warn};
 use tycho_simulation::tycho_common::Bytes;
 
 use crate::{
-    encoding::encoder::Encoder,
-    price_guard::{config::PriceGuardConfig, guard::PriceGuard},
-    worker_pool::task_queue::TaskQueueHandle,
-    BlockInfo, Order, OrderQuote, Quote, QuoteOptions, QuoteRequest, QuoteStatus, SolveError,
+    encoding::encoder::Encoder, price_guard::guard::PriceGuard,
+    worker_pool::task_queue::TaskQueueHandle, BlockInfo, Order, OrderQuote, Quote, QuoteOptions,
+    QuoteRequest, QuoteStatus, SolveError,
 };
 
 /// Handle to a solver pool for dispatching orders.
@@ -84,9 +83,8 @@ pub struct WorkerPoolRouter {
     /// Encoder for encoding solutions into on-chain transactions.
     encoder: Encoder,
     /// Validates solution outputs against external price sources.
+    /// Present when the server has price guard enabled; `None` when disabled.
     price_guard: Option<PriceGuard>,
-    /// Server-side default config for the price guard.
-    price_guard_config: Option<PriceGuardConfig>,
 }
 
 impl WorkerPoolRouter {
@@ -96,13 +94,15 @@ impl WorkerPoolRouter {
         config: WorkerPoolRouterConfig,
         encoder: Encoder,
     ) -> Self {
-        Self { solver_pools, config, encoder, price_guard: None, price_guard_config: None }
+        Self { solver_pools, config, encoder, price_guard: None }
     }
 
-    /// Enables price guard validation with a custom configuration.
-    pub fn with_price_guard(mut self, price_guard: PriceGuard, config: PriceGuardConfig) -> Self {
+    /// Makes price guard validation available for this router.
+    ///
+    /// Providers are started and caches stay warm. Validation only runs for
+    /// requests where the client sets `enabled: true` in `PriceGuardConfig`.
+    pub fn with_price_guard(mut self, price_guard: PriceGuard) -> Self {
         self.price_guard = Some(price_guard);
-        self.price_guard_config = Some(config);
         self
     }
 
@@ -146,35 +146,30 @@ impl WorkerPoolRouter {
             .map(|responses| self.rank_quotes(&responses, request.options()))
             .collect();
 
-        // Validate against external prices if enabled.
-        // Per-request config (inside encoding_options) overrides the server default.
-        let mut order_quotes: Vec<OrderQuote> = if let Some(ref guard) = self.price_guard {
-            let price_guard_config = request
-                .options()
-                .encoding_options()
-                .and_then(|e| e.price_guard());
-            let config = if let Some(request_config) = price_guard_config {
-                debug!("using request price guard config: {:?}", request_config);
-                request_config.clone()
-            } else if let Some(default_config) = &self.price_guard_config {
-                debug!("using default price guard config: {:?}", default_config);
-                default_config.clone()
-            } else {
-                return Err(SolveError::Internal("no price guard config available".to_string()));
-            };
+        // Validate against external prices when the client explicitly enables it.
+        let price_guard_config = request
+            .options()
+            .encoding_options()
+            .map(|e| e.price_guard())
+            .filter(|c| c.enabled());
 
-            match guard.validate(ranked_quotes, &config) {
-                Ok(validated) => validated,
-                Err(e) => {
+        let mut order_quotes: Vec<OrderQuote> = match (&self.price_guard, price_guard_config) {
+            (Some(guard), Some(config)) => guard
+                .validate(ranked_quotes, config)
+                .map_err(|e| {
                     warn!(error = %e, "price guard validation error");
-                    return Err(SolveError::Internal(e.to_string()));
-                }
+                    SolveError::Internal(e.to_string())
+                })?,
+            (None, Some(_)) => {
+                return Err(SolveError::Internal(
+                    "price guard config provided but price guard is not enabled on this server"
+                        .to_string(),
+                ));
             }
-        } else {
-            ranked_quotes
+            _ => ranked_quotes
                 .into_iter()
                 .filter_map(|candidates| candidates.into_iter().next())
-                .collect()
+                .collect(),
         };
 
         // Encode solutions if encoding_options is set

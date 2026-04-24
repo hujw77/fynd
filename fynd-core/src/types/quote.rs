@@ -265,9 +265,9 @@ pub struct EncodingOptions {
     /// Client fee configuration. When absent, no client fee is charged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_fee_params: Option<ClientFeeParams>,
-    /// Per-request price guard overrides. If `None`, uses server defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    price_guard: Option<PriceGuardConfig>,
+    /// Per-request price guard configuration. Defaults to disabled.
+    #[serde(default)]
+    price_guard: PriceGuardConfig,
 }
 
 impl EncodingOptions {
@@ -279,7 +279,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
-            price_guard: None,
+            price_guard: PriceGuardConfig::default(),
         }
     }
 
@@ -332,15 +332,15 @@ impl EncodingOptions {
         self.client_fee_params.as_ref()
     }
 
-    /// Sets per-request price guard config.
+    /// Sets per-request price guard configuration.
     pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
-        self.price_guard = Some(config);
+        self.price_guard = config;
         self
     }
 
-    /// Returns the per-request price guard config.
-    pub fn price_guard(&self) -> Option<&PriceGuardConfig> {
-        self.price_guard.as_ref()
+    /// Returns the per-request price guard configuration.
+    pub fn price_guard(&self) -> &PriceGuardConfig {
+        &self.price_guard
     }
 }
 

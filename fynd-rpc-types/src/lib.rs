@@ -216,9 +216,9 @@ impl QuoteOptions {
     }
 }
 
-/// Per-request overrides for price guard validation.
+/// Per-request price guard configuration.
 ///
-/// All fields are optional. When `None`, the server's configured defaults are used.
+/// All fields are optional. When `None`, struct defaults are used.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PriceGuardConfig {
@@ -450,7 +450,7 @@ pub struct EncodingOptions {
     /// Client fee configuration. When absent, no fee is charged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_fee_params: Option<ClientFeeParams>,
-    /// Per-request price guard overrides. If `None`, uses server defaults.
+    /// Per-request price guard configuration. If `None`, struct defaults are used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     price_guard: Option<PriceGuardConfig>,
 }
@@ -512,7 +512,7 @@ impl EncodingOptions {
         self.client_fee_params.as_ref()
     }
 
-    /// Set per-request price guard overrides.
+    /// Set per-request price guard configuration.
     pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
         self.price_guard = Some(config);
         self
@@ -1900,23 +1900,11 @@ mod conversions {
                 .with_fail_on_provider_error(false)
                 .with_enabled(false);
 
-            let core: fynd_core::PriceGuardConfig = dto.into();
-            assert_eq!(core.lower_tolerance_bps(), 200);
-            assert_eq!(core.upper_tolerance_bps(), 5000);
-            assert!(!core.fail_on_provider_error());
-            assert!(!core.enabled());
-        }
-
-        #[test]
-        fn test_price_guard_config_defaults_preserved() {
-            let dto = PriceGuardConfig::default().with_lower_tolerance_bps(100);
-            let core: fynd_core::PriceGuardConfig = dto.into();
-
-            assert_eq!(core.lower_tolerance_bps(), 100);
-            // Unset fields get core defaults
-            assert_eq!(core.upper_tolerance_bps(), 10_000);
-            assert!(!core.fail_on_provider_error());
-            assert!(!core.enabled());
+            let config: fynd_core::PriceGuardConfig = dto.into();
+            assert_eq!(config.lower_tolerance_bps(), 200);
+            assert_eq!(config.upper_tolerance_bps(), 5000);
+            assert!(!config.fail_on_provider_error());
+            assert!(!config.enabled());
         }
 
         #[test]
@@ -1937,13 +1925,12 @@ mod conversions {
             };
 
             let core: fynd_core::QuoteRequest = dto.into();
-            let pg = core
+            let config = core
                 .options()
                 .encoding_options()
                 .expect("encoding_options should be set")
-                .price_guard()
-                .expect("price_guard should be set");
-            assert!(!pg.enabled());
+                .price_guard();
+            assert!(!config.enabled());
         }
 
         #[test]
