@@ -45,6 +45,7 @@ FyndClientBuilder::new(fynd_url, rpc_url)
 
 **`FyndClient`**
 - `quote(params: QuoteParams) -> Result<Quote, FyndError>` — request a swap quote
+- `batch_quote(params: BatchQuoteParams) -> Result<Vec<Quote>, FyndError>` — request multiple quotes in one call
 - `health() -> Result<HealthStatus, FyndError>` — check solver health
 - `info() -> Result<InstanceInfo, FyndError>` — fetch static instance metadata (cached)
 - `swap_payload(quote, signer, hints) -> Result<SwapPayload, FyndError>` — EIP-712 sign a quote
@@ -56,6 +57,13 @@ FyndClientBuilder::new(fynd_url, rpc_url)
 
 **`StorageOverrides`** — Dry-run execution with simulated ERC-20 balances/approvals (storage slot
 overrides for `eth_call`).
+
+**`ApprovalParams`** — `new(token, allowance_check: AllowanceCheck)` where `AllowanceCheck` is
+`Skip` (always build approval) or `AtLeast(BigUint)` (check current allowance first; skip if
+sufficient).
+
+**`BatchQuoteParams`**, **`PriceGuardConfig`** — exported from the crate root alongside other
+client types (`Quote`, `Order`, `QuoteParams`, etc.).
 
 ### Backend Detection
 
@@ -79,7 +87,7 @@ pnpm workspace at `clients/typescript/` with two packages:
 ```bash
 pnpm --dir clients/typescript install --frozen-lockfile
 pnpm --dir clients/typescript --filter @fynd/autogen run build
-pnpm --dir clients/typescript --filter @fynd/client run typecheck
-pnpm --dir clients/typescript --filter @fynd/client run lint
-pnpm --dir clients/typescript --filter @fynd/client run test
+pnpm --dir clients/typescript --filter @kayibal/fynd-client run typecheck
+pnpm --dir clients/typescript --filter @kayibal/fynd-client run lint
+pnpm --dir clients/typescript --filter @kayibal/fynd-client run test
 ```

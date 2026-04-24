@@ -10,10 +10,10 @@ applications.
 | `algorithm/`          | `Algorithm` trait + built-in `MostLiquidAlgorithm`, `BellmanFordAlgorithm`. Pluggable via associated graph types. `AlgorithmConfig` shared by both                                 |
 | `solver.rs`           | `FyndBuilder` assembles the full pipeline (feed + gas + computations + pools + encoder + router). `Solver` runs it                                                                 |
 | `worker_pool/`        | `WorkerPool` manages dedicated OS threads. `SolverWorker` runs a prioritized select loop (shutdown > market events > derived events > tasks). `TaskQueue` is `async_channel`-based |
-| `worker_pool_router/` | `WorkerPoolRouter` fans out orders to all pools, selects best by `amount_out_net_gas`, optionally encodes                                                                          |
+| `worker_pool_router/` | `WorkerPoolRouter` fans out orders to all pools, ranks candidates by `amount_out_net_gas` descending; price guard (if enabled) validates in rank order; optionally encodes          |
 | `feed/`               | `TychoFeed` (WebSocket → SharedMarketData), `GasPriceFetcher`, `MarketEvent` broadcasting, `ProtocolRegistry`                                                                      |
 | `derived/`            | `ComputationManager` runs `SpotPriceComputation`, `PoolDepthComputation`, `TokenGasPriceComputation` in dependency order. `ReadinessTracker` gates workers until data is fresh     |
-| `graph/`              | `pub(crate)` — `GraphManager` trait (initialize + incremental update), `PetgraphStableDiGraphManager`, `EdgeWeightUpdaterWithDerived`, `Path` type                                 |
+| `graph/`              | `pub` — `GraphManager` trait (initialize + incremental update), `PetgraphStableDiGraphManager`, `StableDiGraph` (re-exported), `EdgeWeightUpdaterWithDerived`, `Path` type           |
 | `price_guard/`        | Price guard: external price validation for quotes. Sub-modules: `guard` (validation logic), `binance_ws` (Binance WebSocket price provider), `hyperliquid` (Hyperliquid oracle provider), `provider_registry`, `config`, `utils` |
 | `encoding/`           | `Encoder` wraps `tycho-execution` to produce ABI-encoded calldata (singleSwap, sequentialSwap, Permit2 variants). Computes `FeeBreakdown` mirroring on-chain `FeeCalculator` logic |
 | `types/`              | Core types: `Order`, `Route`, `Swap`, `Quote`, `QuoteRequest`, `BlockInfo`, `EncodingOptions`, `FeeBreakdown`, error types                                                         |
@@ -55,6 +55,9 @@ pub trait EdgeWeightUpdaterWithDerived {
 **`FyndBuilder`** (`solver.rs`): Assembles feed + gas + computations + pools + encoder + router.
 Returns a `Solver` that can `quote()` directly. For standalone (non-HTTP) use.
 
+Price guard methods: `price_guard_enabled(bool)`, `register_price_provider(Box<dyn PriceProvider>)`,
+`add_default_price_providers()` (registers Binance WS + Hyperliquid providers).
+
 ## Adding a Custom Algorithm
 
 1. Implement `Algorithm` with your `GraphType` and `GraphManager`
@@ -62,7 +65,7 @@ Returns a `Solver` that can `quote()` directly. For standalone (non-HTTP) use.
    `WorkerPoolBuilder::with_algorithm("name", factory)`
 3. No changes to fynd-core required
 
-See `examples/custom_algorithm.rs` for a walkthrough.
+See `fynd-core/examples/custom_algorithm.rs` for a walkthrough.
 
 ## Data Flow
 

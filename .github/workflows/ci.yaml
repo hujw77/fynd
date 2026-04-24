@@ -138,9 +138,9 @@ jobs:
           cache: "pnpm"
           cache-dependency-path: clients/typescript/pnpm-lock.yaml
       - run: pnpm --dir clients/typescript install --frozen-lockfile
-      - run: pnpm --dir clients/typescript --filter @fynd/client run typecheck
-      - run: pnpm --dir clients/typescript --filter @fynd/client run lint
-      - run: pnpm --dir clients/typescript --filter @fynd/client run test
+      - run: pnpm --dir clients/typescript --filter @kayibal/fynd-client run typecheck
+      - run: pnpm --dir clients/typescript --filter @kayibal/fynd-client run lint
+      - run: pnpm --dir clients/typescript --filter @kayibal/fynd-client run test
 
   security_audit:
     name: Security Audit
