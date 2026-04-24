@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Controls tolerance thresholds, fail-open behavior, and whether validation
 /// is enabled at all. All fields have sensible defaults via [`Default`].
+///
+/// On the wire (JSON), every field is optional — omitted fields fall back to
+/// these defaults. See `fynd-rpc-types` for the wire representation.
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceGuardConfig {
@@ -20,18 +23,18 @@ pub struct PriceGuardConfig {
 
     /// Controls behavior when all providers error for reasons unrelated to pricing
     /// (network issues, API down).
-    /// `false` (default): reject solutions when no provider can return a price.
-    /// `true`: let solutions pass through when no provider can be reached.
-    allow_on_provider_error: bool,
+    /// `true`: reject solutions when no provider can return a price.
+    /// `false` (default): let solutions pass through when no provider can be reached.
+    fail_on_provider_error: bool,
 
     /// Controls behavior when every provider returns `PriceNotFound` for the
     /// requested token pair.
-    /// `false` (default): reject solutions for unknown token pairs.
-    /// `true`: let solutions pass through when no provider has a price.
-    allow_on_token_price_not_found: bool,
+    /// `true`: reject solutions for unknown token pairs.
+    /// `false` (default): let solutions pass through when no provider has a price.
+    fail_on_token_price_not_found: bool,
 
     /// Whether the price guard is enabled.
-    /// Default: `true`.
+    /// Default: `false`.
     enabled: bool,
 }
 
@@ -40,8 +43,8 @@ impl Default for PriceGuardConfig {
         Self {
             lower_tolerance_bps: 300,
             upper_tolerance_bps: 10_000,
-            allow_on_provider_error: false,
-            allow_on_token_price_not_found: false,
+            fail_on_provider_error: false,
+            fail_on_token_price_not_found: false,
             enabled: false,
         }
     }
@@ -58,14 +61,14 @@ impl PriceGuardConfig {
         self.upper_tolerance_bps
     }
 
-    /// Whether solutions pass through when all providers are unreachable.
-    pub fn allow_on_provider_error(&self) -> bool {
-        self.allow_on_provider_error
+    /// Whether solutions are rejected when all providers are unreachable.
+    pub fn fail_on_provider_error(&self) -> bool {
+        self.fail_on_provider_error
     }
 
-    /// Whether solutions pass through when no provider has a price for the pair.
-    pub fn allow_on_token_price_not_found(&self) -> bool {
-        self.allow_on_token_price_not_found
+    /// Whether solutions are rejected when no provider has a price for the pair.
+    pub fn fail_on_token_price_not_found(&self) -> bool {
+        self.fail_on_token_price_not_found
     }
 
     /// Whether price-guard validation is enabled.
@@ -85,15 +88,15 @@ impl PriceGuardConfig {
         self
     }
 
-    /// Set whether solutions pass through when all providers error.
-    pub fn with_allow_on_provider_error(mut self, allow: bool) -> Self {
-        self.allow_on_provider_error = allow;
+    /// Set whether solutions are rejected when all providers error.
+    pub fn with_fail_on_provider_error(mut self, fail: bool) -> Self {
+        self.fail_on_provider_error = fail;
         self
     }
 
-    /// Set whether solutions pass through when no provider has a price.
-    pub fn with_allow_on_token_price_not_found(mut self, allow: bool) -> Self {
-        self.allow_on_token_price_not_found = allow;
+    /// Set whether solutions are rejected when no provider has a price.
+    pub fn with_fail_on_token_price_not_found(mut self, fail: bool) -> Self {
+        self.fail_on_token_price_not_found = fail;
         self
     }
 

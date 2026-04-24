@@ -292,6 +292,7 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
     };
 
     builder = builder.blocklist(blocklist);
+    builder = builder.price_guard_enabled(args.enable_price_guard);
 
     // Build and start solver
     let solver = builder

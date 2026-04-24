@@ -269,6 +269,7 @@ pub struct EncodingOptions {
     pub(crate) permit: Option<PermitSingle>,
     pub(crate) permit2_signature: Option<Bytes>,
     pub(crate) client_fee_params: Option<ClientFeeParams>,
+    pub(crate) price_guard: Option<PriceGuardConfig>,
 }
 
 impl EncodingOptions {
@@ -283,6 +284,7 @@ impl EncodingOptions {
             permit: None,
             permit2_signature: None,
             client_fee_params: None,
+            price_guard: None,
         }
     }
 
@@ -320,6 +322,14 @@ impl EncodingOptions {
     /// Attach client fee configuration with a pre-signed EIP-712 signature.
     pub fn with_client_fee(mut self, params: ClientFeeParams) -> Self {
         self.client_fee_params = Some(params);
+        self
+    }
+
+    /// Configure price guard tolerance and fallback behavior for this request.
+    ///
+    /// Fields left as `None` in [`PriceGuardConfig`] use struct defaults.
+    pub fn with_price_guard(mut self, config: PriceGuardConfig) -> Self {
+        self.price_guard = Some(config);
         self
     }
 }
@@ -444,6 +454,12 @@ impl Order {
     }
 }
 
+/// Per-request price guard configuration.
+///
+/// All fields are optional. When `None`, struct defaults are used.
+/// Re-exported from `fynd-rpc-types` for wire compatibility.
+pub use fynd_rpc_types::PriceGuardConfig;
+
 /// Optional parameters that tune solving behaviour for a [`QuoteParams`] request.
 ///
 /// Build via the builder methods; unset options use server defaults.
@@ -560,6 +576,8 @@ pub enum QuoteStatus {
     Timeout,
     /// No solver workers are initialised yet (e.g. market data not loaded).
     NotReady,
+    /// The solution failed external price validation.
+    PriceCheckFailed,
 }
 
 /// Ethereum block at which a quote was computed.

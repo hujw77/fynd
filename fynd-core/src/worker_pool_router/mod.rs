@@ -31,8 +31,9 @@ use tracing::{debug, warn};
 use tycho_simulation::tycho_common::Bytes;
 
 use crate::{
-    encoding::encoder::Encoder, worker_pool::task_queue::TaskQueueHandle, BlockInfo, Order,
-    OrderQuote, Quote, QuoteOptions, QuoteRequest, QuoteStatus, SolveError,
+    encoding::encoder::Encoder, price_guard::guard::PriceGuard,
+    worker_pool::task_queue::TaskQueueHandle, BlockInfo, Order, OrderQuote, Quote, QuoteOptions,
+    QuoteRequest, QuoteStatus, SolveError,
 };
 
 /// Handle to a solver pool for dispatching orders.
@@ -81,6 +82,9 @@ pub struct WorkerPoolRouter {
     config: WorkerPoolRouterConfig,
     /// Encoder for encoding solutions into on-chain transactions.
     encoder: Encoder,
+    /// Validates solution outputs against external price sources.
+    /// Present when the server has price guard enabled; `None` when disabled.
+    price_guard: Option<PriceGuard>,
 }
 
 impl WorkerPoolRouter {
@@ -90,7 +94,16 @@ impl WorkerPoolRouter {
         config: WorkerPoolRouterConfig,
         encoder: Encoder,
     ) -> Self {
-        Self { solver_pools, config, encoder }
+        Self { solver_pools, config, encoder, price_guard: None }
+    }
+
+    /// Makes price guard validation available for this router.
+    ///
+    /// Providers are started and caches stay warm. Validation only runs for
+    /// requests where the client sets `enabled: true` in `PriceGuardConfig`.
+    pub fn with_price_guard(mut self, price_guard: PriceGuard) -> Self {
+        self.price_guard = Some(price_guard);
+        self
     }
 
     /// Returns the number of registered solver pools.
@@ -127,11 +140,37 @@ impl WorkerPoolRouter {
 
         let order_responses = futures::future::join_all(order_futures).await;
 
-        // Select best quote for each order
-        let mut order_quotes: Vec<OrderQuote> = order_responses
+        // Rank quotes for each order (sorted by amount_out_net_gas descending)
+        let ranked_quotes: Vec<Vec<OrderQuote>> = order_responses
             .into_iter()
-            .map(|responses| self.select_best(&responses, request.options()))
+            .map(|responses| self.rank_quotes(&responses, request.options()))
             .collect();
+
+        // Validate against external prices when the client explicitly enables it.
+        let price_guard_config = request
+            .options()
+            .encoding_options()
+            .map(|e| e.price_guard())
+            .filter(|c| c.enabled());
+
+        let mut order_quotes: Vec<OrderQuote> = match (&self.price_guard, price_guard_config) {
+            (Some(guard), Some(config)) => guard
+                .validate(ranked_quotes, config)
+                .map_err(|e| {
+                    warn!(error = %e, "price guard validation error");
+                    SolveError::Internal(e.to_string())
+                })?,
+            (None, Some(_)) => {
+                return Err(SolveError::Internal(
+                    "price guard config provided but price guard is not enabled on this server"
+                        .to_string(),
+                ));
+            }
+            _ => ranked_quotes
+                .into_iter()
+                .filter_map(|candidates| candidates.into_iter().next())
+                .collect(),
+        };
 
         // Encode solutions if encoding_options is set
         if let Some(encoding_options) = request.options().encoding_options() {
@@ -263,6 +302,7 @@ impl WorkerPoolRouter {
                 SolveError::NoRouteFound { .. } => "no_route",
                 SolveError::QueueFull => "queue_full",
                 SolveError::Internal(_) => "internal",
+                SolveError::PriceCheckFailed { .. } => "price_check_failed",
                 _ => "other",
             };
             counter!("worker_router_solver_failures_total", "pool" => pool_name.clone(), "error_type" => error_type).increment(1);
@@ -285,18 +325,16 @@ impl WorkerPoolRouter {
         OrderResponses { order_id, quotes, failed_solvers }
     }
 
-    /// Selects the best quote from collected responses.
+    /// Returns all valid quotes for an order, ranked by `amount_out_net_gas` descending.
     ///
-    /// Selection criteria:
-    /// 1. Filter by constraints (e.g., max_gas)
-    /// 2. Select by maximum `amount_out_net_gas`
-    fn select_best(&self, responses: &OrderResponses, options: &QuoteOptions) -> OrderQuote {
-        let valid_quotes: Vec<_> = responses
+    /// If no valid quotes exist, returns a single-element vec with a placeholder
+    /// (`NoRouteFound` or `Timeout`) so that downstream always has at least one
+    /// candidate per order.
+    fn rank_quotes(&self, responses: &OrderResponses, options: &QuoteOptions) -> Vec<OrderQuote> {
+        let mut valid_quotes: Vec<_> = responses
             .quotes
             .iter()
-            // Only consider successful quotes
             .filter(|(_, q)| q.status() == QuoteStatus::Success)
-            // Filter by max_gas constraint if specified
             .filter(|(_, q)| {
                 options
                     .max_gas()
@@ -305,27 +343,30 @@ impl WorkerPoolRouter {
             })
             .collect();
 
-        // Select by max amount_out_net_gas
-        if let Some((pool_name, best)) = valid_quotes
-            .into_iter()
-            .max_by_key(|(_, q)| q.amount_out_net_gas())
-        {
-            // Record metrics for successful selection
-            counter!("worker_router_orders_total", "status" => "success").increment(1);
-            counter!("worker_router_best_quote_pool", "pool" => pool_name.clone()).increment(1);
+        // Sort descending by amount_out_net_gas
+        valid_quotes.sort_by(|(_, a), (_, b)| {
+            b.amount_out_net_gas()
+                .cmp(a.amount_out_net_gas())
+        });
 
+        if !valid_quotes.is_empty() {
+            counter!("worker_router_orders_total", "status" => "success").increment(1);
+            let (pool_name, best) = valid_quotes[0];
+            counter!("worker_router_best_quote_pool", "pool" => pool_name.clone()).increment(1);
             debug!(
                 order_id = %best.order_id(),
-                pool = %pool_name,
-                amount_out_net_gas = %best.amount_out_net_gas(),
-                "selected best quote"
+                number_of_candidates = valid_quotes.len(),
+                "ranked quotes"
             );
-            return best.clone();
+            return valid_quotes
+                .into_iter()
+                .map(|(_, q)| q.clone())
+                .collect();
         }
 
         // No valid quote found - return a NoRouteFound response
         // Try to get any response to extract block info, or create a placeholder
-        if let Some((_, any_q)) = responses.quotes.first() {
+        let fallback = if let Some((_, any_q)) = responses.quotes.first() {
             counter!("worker_router_orders_total", "status" => "no_route").increment(1);
             OrderQuote::new(
                 responses.order_id.clone(),
@@ -383,7 +424,8 @@ impl WorkerPoolRouter {
                 Bytes::default(),
                 Bytes::default(),
             )
-        }
+        };
+        vec![fallback]
     }
 
     /// Returns the effective timeout for a request.
@@ -682,12 +724,12 @@ mod tests {
 
         let worker_router =
             WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), default_encoder());
-        let result = worker_router.select_best(&responses, &options);
+        let result = worker_router.rank_quotes(&responses, &options);
 
         if should_pass {
-            assert_eq!(result.status(), QuoteStatus::Success);
+            assert_eq!(result[0].status(), QuoteStatus::Success);
         } else {
-            assert_eq!(result.status(), QuoteStatus::NoRouteFound);
+            assert_eq!(result[0].status(), QuoteStatus::NoRouteFound);
         }
     }
 
@@ -717,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_best_all_timeouts_returns_timeout_status() {
+    fn test_rank_quotes_all_timeouts_returns_timeout_status() {
         let responses = OrderResponses {
             order_id: "test".to_string(),
             quotes: vec![],
@@ -729,13 +771,14 @@ mod tests {
 
         let worker_router =
             WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), default_encoder());
-        let result = worker_router.select_best(&responses, &QuoteOptions::default());
+        let result = worker_router.rank_quotes(&responses, &QuoteOptions::default());
 
-        assert_eq!(result.status(), QuoteStatus::Timeout);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status(), QuoteStatus::Timeout);
     }
 
     #[test]
-    fn test_select_best_mixed_failures_returns_no_route_found() {
+    fn test_rank_quotes_mixed_failures_returns_no_route_found() {
         let responses = OrderResponses {
             order_id: "test".to_string(),
             quotes: vec![],
@@ -747,22 +790,70 @@ mod tests {
 
         let worker_router =
             WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), default_encoder());
-        let result = worker_router.select_best(&responses, &QuoteOptions::default());
+        let result = worker_router.rank_quotes(&responses, &QuoteOptions::default());
 
-        // Mixed failures (not all timeouts) should return NoRouteFound
-        assert_eq!(result.status(), QuoteStatus::NoRouteFound);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status(), QuoteStatus::NoRouteFound);
     }
 
     #[test]
-    fn test_select_best_no_failures_returns_no_route_found() {
+    fn test_rank_quotes_no_failures_returns_no_route_found() {
         let responses =
             OrderResponses { order_id: "test".to_string(), quotes: vec![], failed_solvers: vec![] };
 
         let worker_router =
             WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), default_encoder());
-        let result = worker_router.select_best(&responses, &QuoteOptions::default());
+        let result = worker_router.rank_quotes(&responses, &QuoteOptions::default());
 
-        // No failures but also no quotes means NoRouteFound
-        assert_eq!(result.status(), QuoteStatus::NoRouteFound);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status(), QuoteStatus::NoRouteFound);
+    }
+
+    #[test]
+    fn test_rank_quotes_returns_sorted_candidates() {
+        let responses = OrderResponses {
+            order_id: "test".to_string(),
+            quotes: vec![
+                (
+                    "pool_a".to_string(),
+                    OrderQuote::new(
+                        "test".to_string(),
+                        QuoteStatus::Success,
+                        BigUint::from(1000u64),
+                        BigUint::from(800u64),
+                        BigUint::from(100_000u64),
+                        BigUint::from(800u64),
+                        BlockInfo::new(1, "0x123".to_string(), 1000),
+                        "test".to_string(),
+                        Bytes::from(make_address(0xAA).as_ref()),
+                        Bytes::from(make_address(0xAA).as_ref()),
+                    ),
+                ),
+                (
+                    "pool_b".to_string(),
+                    OrderQuote::new(
+                        "test".to_string(),
+                        QuoteStatus::Success,
+                        BigUint::from(1000u64),
+                        BigUint::from(950u64),
+                        BigUint::from(100_000u64),
+                        BigUint::from(950u64),
+                        BlockInfo::new(1, "0x123".to_string(), 1000),
+                        "test".to_string(),
+                        Bytes::from(make_address(0xAA).as_ref()),
+                        Bytes::from(make_address(0xAA).as_ref()),
+                    ),
+                ),
+            ],
+            failed_solvers: vec![],
+        };
+
+        let worker_router =
+            WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), default_encoder());
+        let result = worker_router.rank_quotes(&responses, &QuoteOptions::default());
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(*result[0].amount_out_net_gas(), BigUint::from(950u64));
+        assert_eq!(*result[1].amount_out_net_gas(), BigUint::from(800u64));
     }
 }

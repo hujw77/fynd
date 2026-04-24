@@ -8,7 +8,7 @@ pub mod petgraph;
 
 use std::collections::HashMap;
 
-pub use petgraph::{EdgeData, PetgraphStableDiGraphManager};
+pub use petgraph::{EdgeData, PetgraphStableDiGraphManager, StableDiGraph};
 use thiserror::Error;
 use tycho_simulation::{
     tycho_common::{models::Address, simulation::protocol_sim::ProtocolSim},
@@ -84,15 +84,20 @@ impl<'a, D> Path<'a, D> {
     }
 }
 
+/// Errors that can occur during graph operations.
 #[derive(Error, Debug)]
 pub enum GraphError {
+    /// Token address not found as a node in the graph.
     #[error("Token not found in graph: {0:?}")]
     TokenNotFound(Address),
+    /// One or more components were not found in the graph.
     #[error("Components not found in graph: {0:?}")]
     ComponentsNotFound(Vec<ComponentId>),
+    /// Components with fewer than 2 tokens cannot form edges.
     #[error("Components with less then 2 tokens cannot be added: {0:?}")]
     InvalidComponents(Vec<ComponentId>),
-    #[cfg(test)] // only used in set_edge_weight which is only tested atm
+    /// No edge exists between the given tokens for this component (test-only).
+    #[cfg(test)]
     #[error("No edge found between tokens {0:?} and {1:?} for component {2}")]
     MissingComponentBetweenTokens(Address, Address, ComponentId),
 }

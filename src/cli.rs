@@ -109,6 +109,11 @@ pub struct ServeArgs {
     /// Disabled by default.
     #[arg(long)]
     pub gas_price_stale_threshold_secs: Option<u64>,
+
+    /// Enable price guard validation against external price sources.
+    /// Disabled by default.
+    #[arg(long)]
+    pub enable_price_guard: bool,
 }
 
 #[cfg(test)]

@@ -1,12 +1,12 @@
 //! Custom algorithm example for fynd-core
 //!
-//! Demonstrates how to implement the [`Algorithm`] trait for a custom type and plug it
+//! Demonstrates how to implement the [`Algorithm`] trait from scratch and plug it
 //! into [`FyndBuilder`] via [`FyndBuilder::with_algorithm`], without modifying
 //! fynd-core itself.
 //!
-//! [`MyAlgorithm`] here is a thin wrapper around [`MostLiquidAlgorithm`]. In a real
-//! integration you would replace the delegation in [`Algorithm::find_best_route`] with
-//! your own routing logic.
+//! [`DirectPoolAlgorithm`] is a naive algorithm that finds a single pool containing
+//! both the input and output tokens, simulates the swap, and returns the result.
+//! It only finds direct (1-hop) routes — no multi-hop routing.
 //!
 //! # Prerequisites
 //!
@@ -20,11 +20,15 @@
 use std::{env, str::FromStr, time::Duration};
 
 use fynd_core::{
-    derived::SharedDerivedDataRef, feed::market_data::SharedMarketDataRef, types::RouteResult,
-    Algorithm, AlgorithmConfig, AlgorithmError, ComputationRequirements, EncodingOptions,
-    FyndBuilder, MostLiquidAlgorithm, Order, OrderQuote, OrderSide, QuoteOptions, QuoteRequest,
+    derived::SharedDerivedDataRef,
+    feed::market_data::SharedMarketDataRef,
+    graph::{PetgraphStableDiGraphManager, StableDiGraph},
+    types::RouteResult,
+    Algorithm, AlgorithmError, ComputationRequirements, EncodingOptions, FyndBuilder, Order,
+    OrderQuote, OrderSide, QuoteOptions, QuoteRequest, Route, Swap,
 };
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint};
+use tracing_subscriber::EnvFilter;
 use tycho_simulation::{evm::tycho_models::Chain, tycho_core::Bytes};
 
 // =============================================================================
@@ -32,51 +36,114 @@ use tycho_simulation::{evm::tycho_models::Chain, tycho_core::Bytes};
 // =============================================================================
 
 // [doc:start custom-algo-impl]
-/// A custom algorithm that wraps [`MostLiquidAlgorithm`].
+/// A naive algorithm that finds a direct pool between two tokens.
 ///
-/// Replace the delegation in [`Algorithm::find_best_route`] with your own routing
-/// logic to use a fully custom algorithm.
-struct MyAlgorithm {
-    inner: MostLiquidAlgorithm,
+/// This iterates through all edges in the routing graph, finds one that
+/// connects `token_in` to `token_out`, simulates the swap, and returns
+/// the first successful result. It only supports single-hop (direct) routes.
+struct DirectPoolAlgorithm {
+    timeout: Duration,
 }
 
-impl MyAlgorithm {
-    fn new(config: AlgorithmConfig) -> Self {
-        let inner =
-            MostLiquidAlgorithm::with_config(config).expect("invalid algorithm configuration");
-        Self { inner }
+impl DirectPoolAlgorithm {
+    fn new(_config: fynd_core::AlgorithmConfig) -> Self {
+        Self { timeout: Duration::from_millis(100) }
     }
 }
 
-impl Algorithm for MyAlgorithm {
-    // Reuse the built-in graph type and manager so the worker infrastructure
-    // (graph initialisation, event handling, edge weight updates) works unchanged.
-    type GraphType = <MostLiquidAlgorithm as Algorithm>::GraphType;
-    type GraphManager = <MostLiquidAlgorithm as Algorithm>::GraphManager;
+impl Algorithm for DirectPoolAlgorithm {
+    // Reuse the built-in petgraph manager — it handles graph initialization and
+    // market event updates automatically. We just need a simple graph with no
+    // edge weights (unit `()` type).
+    type GraphType = StableDiGraph<()>;
+    type GraphManager = PetgraphStableDiGraphManager<()>;
 
     fn name(&self) -> &str {
-        "my_custom_algo"
+        "direct_pool"
     }
 
     async fn find_best_route(
         &self,
         graph: &Self::GraphType,
         market: SharedMarketDataRef,
-        derived: Option<SharedDerivedDataRef>,
+        _derived: Option<SharedDerivedDataRef>,
         order: &Order,
     ) -> Result<RouteResult, AlgorithmError> {
-        // Delegate to the inner algorithm. Replace this with custom logic.
-        self.inner
-            .find_best_route(graph, market, derived, order)
-            .await
+        let market = market.read().await;
+
+        let gas_price = market
+            .gas_price()
+            .ok_or(AlgorithmError::Other("gas price not available".to_string()))?
+            .effective_gas_price()
+            .clone();
+
+        // Walk every edge looking for one that goes token_in → token_out.
+        for edge_idx in graph.edge_indices() {
+            let Some((src_idx, dst_idx)) = graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
+            let (src_addr, dst_addr) = (&graph[src_idx], &graph[dst_idx]);
+
+            if src_addr != order.token_in() || dst_addr != order.token_out() {
+                continue;
+            }
+
+            let component_id = &graph
+                .edge_weight(edge_idx)
+                .expect("edge exists")
+                .component_id;
+
+            // Look up component metadata and simulation state.
+            let Some(component) = market.get_component(component_id) else {
+                continue;
+            };
+            let Some(state) = market.get_simulation_state(component_id) else {
+                continue;
+            };
+            let Some(token_in) = market.get_token(order.token_in()) else {
+                continue;
+            };
+            let Some(token_out) = market.get_token(order.token_out()) else {
+                continue;
+            };
+
+            // Simulate the swap.
+            let result = match state.get_amount_out(order.amount().clone(), token_in, token_out) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            let swap = Swap::new(
+                component_id.clone(),
+                component.protocol_system.clone(),
+                token_in.address.clone(),
+                token_out.address.clone(),
+                order.amount().clone(),
+                result.amount.clone(),
+                result.gas,
+                component.clone(),
+                state.clone_box(),
+            );
+
+            let route = Route::new(vec![swap]);
+            let net_amount_out = BigInt::from(result.amount);
+
+            return Ok(RouteResult::new(route, net_amount_out, gas_price));
+        }
+
+        Err(AlgorithmError::Other(format!(
+            "no direct pool from {:?} to {:?}",
+            order.token_in(),
+            order.token_out()
+        )))
     }
 
     fn computation_requirements(&self) -> ComputationRequirements {
-        self.inner.computation_requirements()
+        ComputationRequirements::default()
     }
 
     fn timeout(&self) -> Duration {
-        self.inner.timeout()
+        self.timeout
     }
 }
 // [doc:end custom-algo-impl]
@@ -87,6 +154,11 @@ impl Algorithm for MyAlgorithm {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .init();
+
     let tycho_url = env::var("TYCHO_URL")
         .unwrap_or_else(|_| "tycho-fynd-ethereum.propellerheads.xyz".to_string());
     let tycho_api_key = env::var("TYCHO_API_KEY").expect("TYCHO_API_KEY env var not set");
@@ -101,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         10.0,
     )
     .tycho_api_key(tycho_api_key)
-    .with_algorithm("my_custom_algo", MyAlgorithm::new)
+    .with_algorithm("direct_pool", DirectPoolAlgorithm::new)
     .build()?;
     // [doc:end custom-algo-wire]
 

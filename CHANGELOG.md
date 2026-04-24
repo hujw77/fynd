@@ -1,3 +1,54 @@
+## [0.53.0](https://github.com/propeller-heads/fynd/compare/0.52.0...0.53.0) (2026-04-22)
+
+
+### Features
+
+* keep ranked quote candidates for price guard fallback ([b0bdfa3](https://github.com/propeller-heads/fynd/commit/b0bdfa39c3dd05cbf106c0f4ea11d3d8ae5b6ba0))
+
+
+### Bug Fixes
+
+* exit early if no successful quotes ([495e3e2](https://github.com/propeller-heads/fynd/commit/495e3e26b16af544d15b12e222af602fe15ac67f))
+* return first quote if all quotes failed the price check ([164ba00](https://github.com/propeller-heads/fynd/commit/164ba008e9a83f58a87d266af88fffca82cd47c1))
+
+## [0.52.0](https://github.com/propeller-heads/fynd/compare/0.51.0...0.52.0) (2026-04-17)
+
+
+### Features
+
+* rewrite custom algorithm example with standalone implementation ([4aec8a2](https://github.com/propeller-heads/fynd/commit/4aec8a2604054d408cc038371fbac87234f307d8)), closes [#188](https://github.com/propeller-heads/fynd/issues/188)
+
+## [0.51.0](https://github.com/propeller-heads/fynd/compare/0.50.0...0.51.0) (2026-04-15)
+
+
+### Features
+
+* Cap tycho-execution version ([3342b9e](https://github.com/propeller-heads/fynd/commit/3342b9e099424965fca26561ec12bbfe4d0e201b))
+
+
+### Bug Fixes
+
+* patch rustls-webpki CVEs and drop unused dotenv dev-dep ([af92385](https://github.com/propeller-heads/fynd/commit/af92385c96d9563160d820837c288f9a322a62e6))
+
+## [0.50.0](https://github.com/propeller-heads/fynd/compare/0.49.1...0.50.0) (2026-04-13)
+
+
+### Features
+
+* Enable using PriceGuard in FyndBuilder ([35e80d2](https://github.com/propeller-heads/fynd/commit/35e80d2360bf751217c96964f6e6ed01c52f2dcf))
+
+
+### Bug Fixes
+
+* After merge fixes ([d9e5f20](https://github.com/propeller-heads/fynd/commit/d9e5f208786671b7b32eb47a3fd62ebb20b23d2f))
+* correct price guard fallback logic ([4d08c75](https://github.com/propeller-heads/fynd/commit/4d08c75c249dc3b2a24bc661be48318275a75e6c))
+* default price guard allow flags to false so they can be toggled via CLI ([2a6ff1e](https://github.com/propeller-heads/fynd/commit/2a6ff1e139c7abe9d525d25f7d37a88b848228e9))
+* move the price guard into the encoding options ([9e5932a](https://github.com/propeller-heads/fynd/commit/9e5932aeea959a4ad433d15d5a154c0dc495d7af))
+* rename for clarity ([125f3e9](https://github.com/propeller-heads/fynd/commit/125f3e9dab07656158fa1eee491ab82fe703fe8c))
+* return PriceNotFound instead of TokenNotFound when cannot resolve price ([c7e6e26](https://github.com/propeller-heads/fynd/commit/c7e6e26be900ee3edd99e0bcaabee04e7f12ca16))
+* revert cli flags for backwards compatibility ([132864b](https://github.com/propeller-heads/fynd/commit/132864b5a1d26eaa4fb820d4f47de61d1a5315ce))
+* set price_guard_config only when price_guard is set and prioritize request config ([294af2d](https://github.com/propeller-heads/fynd/commit/294af2d856493e3dbfdd7b5e4e997c1e98f6f00c))
+
 ## [0.49.1](https://github.com/propeller-heads/fynd/compare/0.49.0...0.49.1) (2026-04-07)
 
 ## [0.49.0](https://github.com/propeller-heads/fynd/compare/0.48.0...0.49.0) (2026-04-06)
