@@ -1,3 +1,10 @@
+## [0.54.0](https://github.com/propeller-heads/fynd/compare/0.53.0...0.54.0) (2026-04-24)
+
+
+### Features
+
+* simplify price guard config ([eb37af0](https://github.com/propeller-heads/fynd/commit/eb37af01cf7ed99d70c19e9b0c6534a9ae9787ff))
+
 ## [0.53.0](https://github.com/propeller-heads/fynd/compare/0.52.0...0.53.0) (2026-04-22)
 
 
