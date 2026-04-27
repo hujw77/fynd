@@ -12,6 +12,16 @@
 //! - **SPFA (Shortest Path Faster Algorithm) queuing**: Only re-relaxes edges from nodes whose
 //!   amount improved
 //! - **Forbid revisits**: Skips edges that would revisit a token or pool already in the path
+//!
+//! # Known limitation: SPFA order-dependence
+//!
+//! SPFA reads and writes the same `amount[]` array within a round (unlike
+//! textbook Bellman-Ford which snapshots between rounds). Processing node B
+//! before node C can update intermediate amounts that C then builds on,
+//! producing different routes depending on iteration order. Active nodes are
+//! sorted by `NodeIndex` for determinism, but the chosen ordering is not
+//! guaranteed to find the globally optimal route. A proper fix would be to
+//! snapshot amounts between rounds or use a priority-based processing order.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -531,6 +541,11 @@ impl Algorithm for BellmanFordAlgorithm {
             }
 
             active_nodes = next_active.into_iter().collect();
+            // Deterministic order: HashSet iteration is random per process.
+            // This pins SPFA to a fixed propagation order. The chosen order
+            // may not yield the optimal route (see module docs), but the
+            // previous random order was statistically no better.
+            active_nodes.sort_unstable();
         }
 
         // Check if destination was reached
