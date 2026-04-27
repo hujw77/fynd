@@ -67,6 +67,24 @@ cargo run --release serve --chain base
 
 See the [full quickstart](https://docs.fynd.xyz/get-started/quickstart) for Docker, build-from-source, and client SDK examples (Rust & TypeScript).
 
+## Build features
+
+The `fynd` binary exposes the following Cargo features:
+
+| Feature   | Default | What it enables                                                                            |
+| --------- | ------- | ------------------------------------------------------------------------------------------ |
+| `metrics` | on      | Prometheus `/metrics` endpoint on a separate HTTP server (port 9898). Pulls in Actix-Web.  |
+
+```bash
+# Default build (metrics on)
+cargo install fynd
+cargo build --release
+
+# Build without the metrics exporter (smaller binary, no /metrics endpoint)
+cargo install fynd --no-default-features
+cargo build --release --no-default-features
+```
+
 ## Documentation
 
 For API reference, configuration options, encoding, client fees, custom algorithms, architecture, and more, visit the full documentation at **[docs.fynd.xyz](https://docs.fynd.xyz/)**.
