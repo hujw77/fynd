@@ -531,6 +531,8 @@ impl Algorithm for BellmanFordAlgorithm {
             }
 
             active_nodes = next_active.into_iter().collect();
+            // Deterministic order: HashSet iteration is random per process.
+            active_nodes.sort_unstable();
         }
 
         // Check if destination was reached
