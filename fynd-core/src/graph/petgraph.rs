@@ -166,7 +166,11 @@ impl<D: Clone> PetgraphStableDiGraphManager<D> {
         let mut invalid_components = Vec::new();
         let mut skipped_duplicates = 0usize;
 
-        for (comp_id, tokens) in components {
+        // Sort components for deterministic node/edge insertion order.
+        let mut sorted_components: Vec<_> = components.iter().collect();
+        sorted_components.sort_by_key(|(id, _)| *id);
+
+        for (comp_id, tokens) in sorted_components {
             if self.edge_map.contains_key(comp_id) {
                 trace!(component_id = %comp_id, "skipping already-tracked component");
                 skipped_duplicates += 1;
@@ -177,12 +181,12 @@ impl<D: Clone> PetgraphStableDiGraphManager<D> {
                 invalid_components.push(comp_id.clone());
                 continue;
             }
-            // Ensure all tokens are added as nodes (or get existing ones) and collect their indices
-            let node_indices: Vec<NodeIndex> = tokens
+            let mut sorted_tokens: Vec<&Address> = tokens.iter().collect();
+            sorted_tokens.sort();
+            let node_indices: Vec<NodeIndex> = sorted_tokens
                 .iter()
                 .map(|token| self.get_or_create_node(token))
                 .collect();
-            // Add edges for all token pairs in this component
             self.add_component_edges(comp_id, &node_indices);
         }
 
@@ -388,23 +392,33 @@ impl<D: Clone + Send + Sync> GraphManager<StableDiGraph<D>> for PetgraphStableDi
         self.edge_map.clear();
         self.node_map.clear();
 
-        let unique_tokens: HashSet<Address> = component_topology
+        // Sort tokens for deterministic NodeIndex assignment across processes.
+        // HashMap/HashSet iteration order varies per process (random SipHash
+        // seeds), which would otherwise give different graph structure each run.
+        let mut unique_tokens: Vec<Address> = component_topology
             .values()
             .flat_map(|v| v.iter())
             .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect();
+        unique_tokens.sort();
 
-        // Add all nodes (tokens) to the graph
         for token in unique_tokens {
             let node_idx = self.graph.add_node(token.clone());
             self.node_map.insert(token, node_idx);
         }
 
-        // Add edges between all tokens in each component
-        for (comp_id, tokens) in component_topology {
-            let node_indices: Vec<NodeIndex> = tokens
+        // Sort components for deterministic edge insertion order.
+        let mut sorted_components: Vec<_> = component_topology.iter().collect();
+        sorted_components.sort_by_key(|(id, _)| *id);
+
+        for (comp_id, tokens) in sorted_components {
+            let mut sorted_tokens: Vec<&Address> = tokens.iter().collect();
+            sorted_tokens.sort();
+            let node_indices: Vec<NodeIndex> = sorted_tokens
                 .iter()
-                .map(|token| self.node_map[token])
+                .map(|token| self.node_map[*token])
                 .collect();
             self.add_component_edges(comp_id, &node_indices);
         }
