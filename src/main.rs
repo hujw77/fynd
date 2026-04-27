@@ -30,6 +30,7 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "metrics")]
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anyhow::anyhow;
 use clap::Parser;
@@ -40,6 +41,7 @@ use fynd_rpc::{
 };
 mod cli;
 use cli::{Cli, Commands};
+#[cfg(feature = "metrics")]
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
@@ -144,6 +146,8 @@ fn create_tracing_subscriber() -> Option<TracerProvider> {
 /// Creates and runs the Prometheus metrics exporter using Actix Web.
 ///
 /// This exposes the metrics on the '/metrics' endpoint on a separate HTTP server on port 9898.
+/// Compiled only when the `metrics` feature is enabled.
+#[cfg(feature = "metrics")]
 fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
     let exporter_builder = PrometheusBuilder::new();
     let handle = exporter_builder
@@ -307,6 +311,7 @@ async fn run_solver(args: cli::ServeArgs) -> Result<(), SolverError> {
     let provider = create_tracing_subscriber();
     info!("Starting Fynd");
 
+    #[cfg(feature = "metrics")]
     let _metrics_task = create_metrics_exporter();
 
     // Setup solver, but allow SIGINT to cancel it for fast exit during startup

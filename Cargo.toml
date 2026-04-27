@@ -8,6 +8,13 @@ edition = "2021"
 description = "High-performance DeFi route-finding engine — embeddable library and CLI"
 license = "MIT"
 
+[features]
+default = ["metrics"]
+# Enables the Prometheus metrics exporter on a separate HTTP server.
+# Disable with `--no-default-features` to omit Actix-Web and the Prometheus
+# recorder from the binary (e.g. for embedded/minimal builds).
+metrics = ["dep:actix-web", "dep:metrics-exporter-prometheus"]
+
 [dependencies]
 fynd-rpc = { workspace = true }
 fynd-core = { workspace = true }
@@ -22,8 +29,8 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
-# HTTP (for metrics server)
-actix-web = { workspace = true }
+# HTTP (for metrics server, gated behind the `metrics` feature)
+actix-web = { workspace = true, optional = true }
 
 # Observability
 tracing = { workspace = true }
@@ -32,7 +39,7 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 tracing-opentelemetry = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Serialization (for OpenAPI spec output)
 serde_json = { workspace = true }
