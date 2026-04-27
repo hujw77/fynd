@@ -1,3 +1,11 @@
+## [0.56.1](https://github.com/propeller-heads/fynd/compare/0.56.0...0.56.1) (2026-04-27)
+
+
+### Bug Fixes
+
+* clarify determinism comments per PR review ([047a1ab](https://github.com/propeller-heads/fynd/commit/047a1ab1ff02f3934e1fe414cb3f14f2023adce4))
+* make graph construction and SPFA relaxation deterministic ([342bff6](https://github.com/propeller-heads/fynd/commit/342bff664de7f143cd5fcddb674a4710b6a1974a))
+
 ## [0.56.0](https://github.com/propeller-heads/fynd/compare/0.55.0...0.56.0) (2026-04-27)
 
 
