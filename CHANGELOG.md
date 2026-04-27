@@ -1,3 +1,10 @@
+## [0.56.0](https://github.com/propeller-heads/fynd/compare/0.55.0...0.56.0) (2026-04-27)
+
+
+### Features
+
+* gate Prometheus metrics behind a Cargo feature ([a980ba0](https://github.com/propeller-heads/fynd/commit/a980ba03b0e9701020e3c0dd3adc121c49044ed7))
+
 ## [0.55.0](https://github.com/propeller-heads/fynd/compare/0.54.0...0.55.0) (2026-04-24)
 
 
