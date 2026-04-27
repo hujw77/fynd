@@ -392,9 +392,10 @@ impl<D: Clone + Send + Sync> GraphManager<StableDiGraph<D>> for PetgraphStableDi
         self.edge_map.clear();
         self.node_map.clear();
 
-        // Sort tokens for deterministic NodeIndex assignment across processes.
-        // HashMap/HashSet iteration order varies per process (random SipHash
-        // seeds), which would otherwise give different graph structure each run.
+        // Sort tokens for deterministic NodeIndex assignment across processes
+        // given the same input. HashMap/HashSet iteration order varies per
+        // process (random SipHash seeds), which would otherwise give different
+        // graph structure each run.
         let mut unique_tokens: Vec<Address> = component_topology
             .values()
             .flat_map(|v| v.iter())
