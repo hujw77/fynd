@@ -15,7 +15,7 @@ cargo nextest run -p fynd-core --test integration
 | Test | What it checks |
 |------|---------------|
 | `test_all_expected_pairs_return_solutions` | Pairs that succeeded in the baseline also succeed in replay |
-| `test_quality_within_expected_baseline` | Output amounts stay within 20% of baseline (regressions only) |
+| `test_quality_within_expected_baseline` | Output amounts stay within 1% of baseline (regressions only) |
 | `test_quality_invariants` | Successful quotes have positive output, gas, and a route |
 | `test_unknown_token_returns_error` | Fake token addresses return error, not panic |
 | `test_all_derived_fields_computed` | Spot prices, pool depths, token prices all present |

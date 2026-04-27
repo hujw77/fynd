@@ -96,7 +96,7 @@ async fn test_unknown_token_returns_error() {
     }
 }
 
-/// Quality: each pair's amount_out_net_gas should be within 20% of expected baseline.
+/// Quality: each pair's amount_out_net_gas should be within 1% of expected baseline.
 #[tokio::test]
 async fn test_quality_within_expected_baseline() {
     let harness = TestHarness::from_fixture().await;
@@ -126,16 +126,14 @@ async fn test_quality_within_expected_baseline() {
 
                 // Use BigUint arithmetic to avoid f64 precision loss on
                 // large wei-denominated values (>2^53).
-                // Allow 20% variance: the solver is non-deterministic due to
-                // async derived-data computation timing. This threshold catches
-                // real algorithmic regressions while tolerating run-to-run jitter.
+                // Regression = actual * 100 < expected * 99 (i.e. >1% drop).
                 if expected.gt(&num_bigint::BigUint::ZERO) {
                     let actual_scaled = actual * &num_bigint::BigUint::from(100u32);
-                    let threshold = expected * &num_bigint::BigUint::from(80u32);
+                    let threshold = expected * &num_bigint::BigUint::from(99u32);
 
                     if actual_scaled < threshold {
                         regressions.push(format!(
-                            "{}: degraded >20% (expected {}, got {})",
+                            "{}: degraded >1% (expected {}, got {})",
                             scenario.name, expected, actual,
                         ));
                     }
@@ -146,9 +144,104 @@ async fn test_quality_within_expected_baseline() {
 
     assert!(
         regressions.is_empty(),
-        "quality regressions (>20% degradation):\n{}",
+        "quality regressions (>1% degradation):\n{}",
         regressions.join("\n")
     );
+}
+
+/// Regenerate expected_outputs.json from the existing recording.
+///
+/// Run manually after algorithm changes:
+///   cargo nextest run -p fynd-core --test integration regenerate_expected --all-features
+/// --run-ignored ignored-only
+#[tokio::test]
+#[ignore]
+async fn regenerate_expected_outputs() {
+    let harness = TestHarness::from_fixture().await;
+    let scenarios = scenarios();
+    let mut expected_scenarios = Vec::new();
+
+    for scenario in &scenarios {
+        let order = scenario.to_order();
+        let result = harness.quote(vec![order]).await;
+
+        let expected = match result {
+            Ok(quote) => {
+                let oq = &quote.orders()[0];
+                fynd_test_fixtures::ExpectedOutput {
+                    status: oq.status(),
+                    amount_out_net_gas: oq.amount_out_net_gas().clone(),
+                    gas_estimate: oq.gas_estimate().clone(),
+                    num_swaps: oq
+                        .route()
+                        .map(|r| r.hop_count())
+                        .unwrap_or(0),
+                    solve_time_ms: quote.solve_time_ms(),
+                }
+            }
+            Err(_) => fynd_test_fixtures::ExpectedOutput {
+                status: QuoteStatus::NoRouteFound,
+                amount_out_net_gas: num_bigint::BigUint::ZERO,
+                gas_estimate: num_bigint::BigUint::ZERO,
+                num_swaps: 0,
+                solve_time_ms: 0,
+            },
+        };
+
+        eprintln!("{}: {:?}", scenario.name, expected.status);
+
+        expected_scenarios
+            .push(fynd_test_fixtures::ExpectedScenario { scenario: scenario.clone(), expected });
+    }
+
+    let derived_metrics = {
+        let derived_ref = harness.solver().derived_data();
+        let d = derived_ref.read().await;
+        let spot_price_pools = d
+            .spot_prices()
+            .map(|sp| {
+                sp.keys()
+                    .map(|(id, _, _)| id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            })
+            .unwrap_or(0);
+        let pool_depth_pools = d
+            .pool_depths()
+            .map(|pd| {
+                pd.keys()
+                    .map(|(id, _, _)| id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            })
+            .unwrap_or(0);
+        let token_prices = d
+            .token_prices()
+            .map(|tp| tp.len())
+            .unwrap_or(0);
+        fynd_test_fixtures::DerivedDataMetrics { spot_price_pools, pool_depth_pools, token_prices }
+    };
+
+    let market_ref = harness.solver().market_data();
+    let market = market_ref.read().await;
+    let num_pools = market.component_topology().len();
+    let num_tokens = market.token_registry_ref().len();
+    drop(market);
+
+    let expected_file = fynd_test_fixtures::ExpectedFile {
+        metadata: fynd_test_fixtures::ExpectedMetadata {
+            block_number: 0,
+            num_pools,
+            num_tokens,
+            fynd_version: env!("CARGO_PKG_VERSION").to_string(),
+            derived_data: Some(derived_metrics),
+        },
+        scenarios: expected_scenarios,
+    };
+
+    let json = serde_json::to_string_pretty(&expected_file).expect("serialization failed");
+    std::fs::write(expected_path(), json).expect("failed to write expected_outputs.json");
+    eprintln!("wrote {}", expected_path().display());
 }
 
 /// Quality invariant: all successful quotes should have positive net output.
