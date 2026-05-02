@@ -145,10 +145,10 @@ fn create_tracing_subscriber() -> Option<TracerProvider> {
 
 /// Creates and runs the Prometheus metrics exporter using Actix Web.
 ///
-/// This exposes the metrics on the '/metrics' endpoint on a separate HTTP server on port 9898.
+/// Exposes `/metrics` on a dedicated HTTP server bound to `port`.
 /// Compiled only when the `metrics` feature is enabled.
 #[cfg(feature = "metrics")]
-fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
+fn create_metrics_exporter(port: u16) -> tokio::task::JoinHandle<()> {
     let exporter_builder = PrometheusBuilder::new();
     let handle = exporter_builder
         .install_recorder()
@@ -171,7 +171,7 @@ fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
                 }),
             )
         })
-        .bind(("0.0.0.0", 9898))
+        .bind(("0.0.0.0", port))
         .expect("Failed to bind metrics server")
         .run()
         .await
@@ -312,7 +312,7 @@ async fn run_solver(args: cli::ServeArgs) -> Result<(), SolverError> {
     info!("Starting Fynd");
 
     #[cfg(feature = "metrics")]
-    let _metrics_task = create_metrics_exporter();
+    let _metrics_task = create_metrics_exporter(args.metrics_port);
 
     // Setup solver, but allow SIGINT to cancel it for fast exit during startup
     let solver = tokio::select! {
