@@ -802,6 +802,11 @@ impl OrderQuote {
         self.transaction = Some(transaction);
     }
 
+    /// Sets the gas_estimate in place
+    pub fn set_gas_estimate(&mut self, gas_estimate: BigUint) {
+        self.gas_estimate = gas_estimate;
+    }
+
     /// Returns the order ID.
     pub fn order_id(&self) -> &str {
         &self.order_id
@@ -1109,7 +1114,7 @@ impl Route {
             .collect()
     }
 
-    /// Returns the total gas estimate for all swaps in this route.
+    /// Returns the total gas estimate for all swaps in this route (naive approach).
     pub fn total_gas(&self) -> BigUint {
         self.swaps
             .iter()
