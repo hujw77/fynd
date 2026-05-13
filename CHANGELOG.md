@@ -1,3 +1,10 @@
+## [0.57.0](https://github.com/propeller-heads/fynd/compare/0.56.1...0.57.0) (2026-05-13)
+
+
+### Features
+
+* add --metrics-port flag to serve command ([b8967b7](https://github.com/propeller-heads/fynd/commit/b8967b716e53fc9d88ab21441f302149646e23c3))
+
 ## [0.56.1](https://github.com/propeller-heads/fynd/compare/0.56.0...0.56.1) (2026-04-27)
 
 
