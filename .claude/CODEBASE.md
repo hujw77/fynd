@@ -99,6 +99,7 @@ See `docs/ARCHITECTURE.md` for the full architecture diagram and detailed compon
 | `WORKER_POOLS_CONFIG` | Worker pools config file (default: `worker_pools.toml`) |
 | `BLOCKLIST_CONFIG` | Blocklist config file |
 | `RUST_LOG` | Tracing filter (e.g. `info,fynd=debug`) |
+| `METRICS_PORT` | Prometheus metrics server port (default: `9898`, requires `metrics` feature) |
 
 ### CLI Commands
 

@@ -98,6 +98,7 @@ Run `fynd serve --help` for the full list.
 | `--price-guard-upper-tolerance-bps`          | —        | `10000`      | Max allowed deviation (bps) when the quote's output is above the provider's expected amount.                                                                           |
 | `--price-guard-fail-on-provider-error`       | —        | `false`      | Reject quotes when all price providers fail with infrastructure errors.                                                                                                |
 | `--price-guard-fail-on-token-price-not-found`| —        | `false`      | Reject quotes when no provider lists the token.                                                                                                                        |
+| `--metrics-port`                             | `METRICS_PORT` | `9898`  | Port for the Prometheus metrics HTTP server. Requires the `metrics` feature (enabled by default).                                                                      |
 
 ## Worker pools (`worker_pools.toml`)
 
@@ -172,7 +173,19 @@ RUST_LOG=info,fynd_core=trace fynd serve ...
 
 ### Prometheus metrics
 
-***
+Fynd exposes Prometheus metrics on a dedicated HTTP server (enabled by default via the `metrics` feature). Scrape the `/metrics` endpoint with Prometheus or any compatible tool:
+
+```
+http://localhost:9898/metrics
+```
+
+The port defaults to `9898` and can be changed with `--metrics-port` or the `METRICS_PORT` environment variable:
+
+```bash
+fynd serve --metrics-port 9090
+```
+
+Available metrics include solve duration, response counts, failure types, and pool performance.
 
 ## Tuning tips
 
@@ -187,5 +200,3 @@ RUST_LOG=info,fynd_core=trace fynd serve ...
 ### Request routing
 
 * **Lower `--worker-router-min-responses`** = faster response with multiple pools — set to `1` to return as soon as the first pool finishes, at the cost of potentially missing a better result from a slower pool.
-
-Metrics are exposed at `http://localhost:9898/metrics` (always on). Scrape this endpoint with Prometheus or any compatible tool. Available metrics: solve duration, response counts, failure types, and pool performance.

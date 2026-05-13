@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use fynd_rpc::config::defaults;
 
+#[cfg(feature = "metrics")]
+pub(crate) const METRICS_PORT: u16 = 9898;
+
 /// Fynd - High-performance DEX solver built on Tycho
 ///
 /// Finds optimal swap routes across multiple protocols using real-time market data.
@@ -114,6 +117,11 @@ pub struct ServeArgs {
     /// Disabled by default.
     #[arg(long)]
     pub enable_price_guard: bool,
+
+    /// Port for the Prometheus metrics HTTP server (requires `metrics` feature).
+    #[cfg(feature = "metrics")]
+    #[arg(long, default_value_t = METRICS_PORT, env)]
+    pub metrics_port: u16,
 }
 
 #[cfg(test)]
@@ -188,6 +196,8 @@ mod cli_tests {
         assert_eq!(args.worker_router_timeout_ms, 100);
         assert_eq!(args.worker_router_min_responses, 0);
         assert_eq!(args.blocklist_config, None);
+        #[cfg(feature = "metrics")]
+        assert_eq!(args.metrics_port, METRICS_PORT);
     }
 
     #[test]

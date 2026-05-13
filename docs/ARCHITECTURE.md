@@ -143,7 +143,7 @@ Actix Web HTTP handlers. Validates requests, delegates to WorkerPoolRouter, retu
 * `POST /v1/quote` -- Submit quote requests
 * `GET /v1/health` -- Health check (data freshness, derived data readiness, pool count)
 * `GET /v1/info` -- Instance info (chain ID, router address, Permit2 address)
-* `GET /metrics` -- Prometheus metrics (separate server, port 9898)
+* `GET /metrics` -- Prometheus metrics (separate server, port 9898 by default)
 
 ***
 
