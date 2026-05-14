@@ -127,6 +127,38 @@ All pools solve every incoming order in parallel. Fynd picks the best result acr
 | `max_hops`            | `3`             | Maximum number of hops permitted for routing                           |
 | `timeout_ms`          | `100`           | Maximum time in milliseconds allowed per order processing in this pool |
 | `max_routes`          | _(no limit)_    | Maximum number of candidate routes to evaluate per order               |
+| `connector_tokens`    | _(no restriction)_ | Allowlist of `"0x..."`-prefixed token addresses permitted as intermediate hops. Source and destination are always allowed regardless. Absent = all tokens reachable. |
+
+### Connector tokens
+
+By default Fynd routes through any token reachable in the pool graph. On live markets this can expose routes to illiquid or long-tail intermediates, which increases reversion risk: price impact at the intermediate hop can push slippage over the tolerance threshold, causing the transaction to revert.
+
+`connector_tokens` restricts intermediate hops to a trusted set. It is most useful for deployments that are particularly sensitive to reverts:
+
+```toml
+[pools.bellman_ford_safe]
+algorithm  = "bellman_ford"
+max_hops   = 3
+timeout_ms = 500
+connector_tokens = [
+    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",  # WETH
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT
+    "0x6b175474e89094c44da98b954eedeac495271d0f",  # DAI
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",  # WBTC
+    "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",  # wstETH
+]
+```
+
+Use `fynd derive-connector-tokens` to generate a ranked list for your chain from live Tycho data:
+
+```bash
+fynd derive-connector-tokens --chain Ethereum --top-n 10 --output toml
+```
+
+The command scores every token by pool count and outputs a ready-to-paste TOML snippet. Run `fynd derive-connector-tokens --help` for all options.
+
+> **Tradeoff:** A narrower allowlist reduces reversion risk but may also reduce route quality — routes through unlisted tokens are never explored. For most chains, 5–10 highly liquid tokens cover the vast majority of pairs.
 
 To use a custom config file:
 
