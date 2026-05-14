@@ -62,6 +62,7 @@ pub struct BellmanFordAlgorithm {
     max_hops: usize,
     timeout: Duration,
     gas_aware: bool,
+    connector_tokens: Option<HashSet<Address>>,
 }
 
 impl BellmanFordAlgorithm {
@@ -70,6 +71,7 @@ impl BellmanFordAlgorithm {
             max_hops: config.max_hops(),
             timeout: config.timeout(),
             gas_aware: config.gas_aware(),
+            connector_tokens: config.connector_tokens().cloned(),
         })
     }
 
@@ -472,6 +474,19 @@ impl Algorithm for BellmanFordAlgorithm {
                     // Single predecessor walk: skip if target token or pool already in path
                     if Self::path_has_conflict(u, *v, component_id, &predecessor) {
                         continue;
+                    }
+
+                    // Skip disallowed connector tokens. Endpoints (token_in / token_out) are
+                    // always permitted regardless of the allowlist.
+                    if let (Some(tokens), Some(v_addr)) =
+                        (&self.connector_tokens, node_address.get(v))
+                    {
+                        if v_addr != order.token_in() &&
+                            v_addr != order.token_out() &&
+                            !tokens.contains(v_addr)
+                        {
+                            continue;
+                        }
                     }
 
                     let Some(token_v) = token_map.get(v) else { continue };
@@ -1294,6 +1309,105 @@ mod tests {
         assert_eq!(result.route().swaps().len(), 2);
         assert_eq!(result.route().swaps()[0].component_id(), "pool_ab");
         assert_eq!(result.route().swaps()[1].component_id(), "pool_bd");
+    }
+
+    // ==================== Connector token tests ====================
+
+    /// Build a BellmanFord algorithm whose config includes a specific connector token allowlist.
+    fn bf_algorithm_with_connectors(
+        max_hops: usize,
+        timeout_ms: u64,
+        connector_tokens: HashSet<Address>,
+    ) -> BellmanFordAlgorithm {
+        BellmanFordAlgorithm::with_config(
+            AlgorithmConfig::new(1, max_hops, Duration::from_millis(timeout_ms), None)
+                .unwrap()
+                .with_connector_tokens(connector_tokens),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_connector_tokens_blocks_disallowed_intermediate() {
+        // Diamond: A->B->D (2x * 2x = 4x) vs A->C->D (3x * 3x = 9x).
+        // C is in the allowlist; B is not.
+        // Expect A->C->D to be found; B-path is pruned.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+        let token_d = token(0x04, "D");
+
+        let (market, manager) = setup_market_bf(vec![
+            ("pool_ab", &token_a, &token_b, MockProtocolSim::new(2.0)),
+            ("pool_bd", &token_b, &token_d, MockProtocolSim::new(2.0)),
+            ("pool_ac", &token_a, &token_c, MockProtocolSim::new(3.0)),
+            ("pool_cd", &token_c, &token_d, MockProtocolSim::new(3.0)),
+        ]);
+
+        let connectors: HashSet<Address> = [token_c.address.clone()].into();
+        let algo = bf_algorithm_with_connectors(3, 1000, connectors);
+        let ord = order(&token_a, &token_d, 100, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(manager.graph(), market, None, &ord)
+            .await
+            .unwrap();
+
+        // Only A->C->D is reachable; B was pruned.
+        assert_eq!(result.route().swaps().len(), 2);
+        assert_eq!(result.route().swaps()[0].component_id(), "pool_ac");
+        assert_eq!(result.route().swaps()[1].component_id(), "pool_cd");
+    }
+
+    #[tokio::test]
+    async fn test_connector_tokens_allows_endpoints_even_if_not_listed() {
+        // token_in (A) and token_out (B) must be reachable even when connector list is empty.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let (market, manager) =
+            setup_market_bf(vec![("pool_ab", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+
+        // Empty allowlist — no intermediate tokens allowed, but direct hop A->B should work.
+        let algo = bf_algorithm_with_connectors(1, 1000, HashSet::new());
+        let ord = order(&token_a, &token_b, 100, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(manager.graph(), market, None, &ord)
+            .await
+            .unwrap();
+
+        assert_eq!(result.route().swaps().len(), 1);
+        assert_eq!(result.route().swaps()[0].amount_out(), &BigUint::from(200u64));
+    }
+
+    #[tokio::test]
+    async fn test_connector_tokens_none_is_unrestricted() {
+        // No connector_tokens set: both A->B->D and A->C->D are evaluated.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+        let token_d = token(0x04, "D");
+
+        let (market, manager) = setup_market_bf(vec![
+            ("pool_ab", &token_a, &token_b, MockProtocolSim::new(2.0)),
+            ("pool_bd", &token_b, &token_d, MockProtocolSim::new(3.0)),
+            ("pool_ac", &token_a, &token_c, MockProtocolSim::new(1.0)),
+            ("pool_cd", &token_c, &token_d, MockProtocolSim::new(1.0)),
+        ]);
+
+        let algo = bf_algorithm(3, 1000);
+        let ord = order(&token_a, &token_d, 100, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(manager.graph(), market, None, &ord)
+            .await
+            .unwrap();
+
+        // Best path is A->B->D = 100*2*3 = 600
+        assert_eq!(result.route().swaps()[0].component_id(), "pool_ab");
+        assert_eq!(result.route().swaps()[1].component_id(), "pool_bd");
+        assert_eq!(result.route().swaps()[1].amount_out(), &BigUint::from(600u64));
     }
 
     #[test]

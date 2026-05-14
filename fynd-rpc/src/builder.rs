@@ -6,7 +6,9 @@ use std::{
 
 use actix_web::{dev::ServerHandle, App, HttpServer};
 use anyhow::{Context, Result};
-use fynd_core::{encoding::encoder::Encoder, worker_pool::pool::WorkerPool, FyndBuilder};
+use fynd_core::{
+    encoding::encoder::Encoder, worker_pool::pool::WorkerPool, FyndBuilder, SolverBuildError,
+};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tycho_simulation::tycho_common::models::Chain;
@@ -33,28 +35,33 @@ impl FyndRPCBuilder {
     ///
     /// All solver configuration options have sensible defaults and can be overridden via the
     /// setter methods below.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError`] if any pool's `connector_tokens` contains a malformed hex
+    /// address.
     pub fn new(
         chain: Chain,
         pools: HashMap<String, PoolConfig>,
         tycho_url: String,
         rpc_url: String,
         protocols: Vec<String>,
-    ) -> Self {
+    ) -> Result<Self, SolverBuildError> {
         // Override FyndBuilder's generous 10 s standalone router timeout with the tighter
         // HTTP service default; callers can still override via worker_router_timeout().
         let fynd_builder = pools
             .iter()
-            .fold(
+            .try_fold(
                 FyndBuilder::new(chain, tycho_url, rpc_url, protocols, defaults::MIN_TVL),
                 |sb, (name, cfg)| sb.add_pool(name, cfg),
-            )
+            )?
             .worker_router_timeout(Duration::from_millis(defaults::WORKER_ROUTER_TIMEOUT_MS));
-        Self {
+        Ok(Self {
             fynd_builder,
             http_host: defaults::HTTP_HOST.to_owned(),
             http_port: defaults::HTTP_PORT,
             gas_price_stale_threshold: None,
-        }
+        })
     }
 
     /// Sets the HTTP host (default: "0.0.0.0").

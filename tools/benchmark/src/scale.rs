@@ -184,8 +184,9 @@ fn build_solver(
 
     let pools = HashMap::from([(pool_name.to_string(), pool)]);
 
-    let mut builder = FyndRPCBuilder::new(chain, pools, args.tycho_url.clone(), rpc_url, protocols)
-        .http_port(args.http_port);
+    let mut builder =
+        FyndRPCBuilder::new(chain, pools, args.tycho_url.clone(), rpc_url, protocols)?
+            .http_port(args.http_port);
 
     if let Some(ref key) = args.tycho_api_key {
         builder = builder.tycho_api_key(key.clone());

@@ -50,6 +50,10 @@ utoipa = { workspace = true }
 # Tycho (for Chain type in CLI)
 tycho-simulation = { workspace = true }
 
+# Encoding/formatting for derive-connector-tokens
+chrono = { workspace = true }
+hex = { workspace = true }
+
 [dev-dependencies]
 rstest = { workspace = true }
 reqwest = { workspace = true }

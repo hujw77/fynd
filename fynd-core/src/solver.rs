@@ -10,7 +10,7 @@
 //!     .algorithm("most_liquid")
 //!     .build()?;
 //! ```
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use num_cpus;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
 use tycho_simulation::{
     tycho_common::{models::Chain, Bytes},
+    tycho_core::models::Address,
     tycho_ethereum::rpc::EthereumRpcClient,
 };
 
@@ -101,6 +102,22 @@ fn default_algo_timeout_ms() -> u64 {
     defaults::POOL_TIMEOUT_MS
 }
 
+fn parse_connector_tokens(
+    raw: Option<&[String]>,
+) -> Result<Option<HashSet<Address>>, SolverBuildError> {
+    let Some(strings) = raw else {
+        return Ok(None);
+    };
+    let mut set = HashSet::with_capacity(strings.len());
+    for s in strings {
+        let addr = Address::from_str(s).map_err(|e| AlgorithmError::InvalidConfiguration {
+            reason: format!("connector_tokens: invalid address {s:?}: {e}"),
+        })?;
+        set.insert(addr);
+    }
+    Ok(Some(set))
+}
+
 /// Per-pool configuration for [`FyndBuilder::add_pool`].
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +142,10 @@ pub struct PoolConfig {
     /// Maximum number of paths to simulate per solve. `None` simulates all scored paths.
     #[serde(default)]
     max_routes: Option<usize>,
+    /// Lowercase hex addresses (e.g. `"0xc02aaa…"`) allowed as intermediate routing hops.
+    /// Absent = no restriction. Typically 3–10 entries (e.g. WETH, USDC, USDT, DAI).
+    #[serde(default)]
+    connector_tokens: Option<Vec<String>>,
 }
 
 impl PoolConfig {
@@ -138,6 +159,7 @@ impl PoolConfig {
             max_hops: defaults::POOL_MAX_HOPS,
             timeout_ms: defaults::POOL_TIMEOUT_MS,
             max_routes: None,
+            connector_tokens: None,
         }
     }
 
@@ -211,6 +233,18 @@ impl PoolConfig {
     pub fn max_routes(&self) -> Option<usize> {
         self.max_routes
     }
+
+    /// Restricts intermediate hops to the given token addresses (hex strings with or without `0x`
+    /// prefix). Absent = no restriction.
+    pub fn with_connector_tokens(mut self, tokens: Vec<String>) -> Self {
+        self.connector_tokens = Some(tokens);
+        self
+    }
+
+    /// Returns the raw connector token address strings, or `None` if unrestricted.
+    pub fn connector_tokens(&self) -> Option<&[String]> {
+        self.connector_tokens.as_deref()
+    }
 }
 
 /// Error returned by [`Solver::wait_until_ready`].
@@ -258,6 +292,7 @@ enum PoolEntry {
         max_hops: usize,
         timeout_ms: u64,
         max_routes: Option<usize>,
+        connector_tokens: Option<HashSet<Address>>,
     },
     Custom(CustomPoolEntry),
 }
@@ -422,6 +457,7 @@ impl FyndBuilder {
             max_hops: defaults::POOL_MAX_HOPS,
             timeout_ms: defaults::POOL_TIMEOUT_MS,
             max_routes: None,
+            connector_tokens: None,
         });
         self
     }
@@ -489,7 +525,17 @@ impl FyndBuilder {
     }
 
     /// Adds a named pool using the given [`PoolConfig`].
-    pub fn add_pool(mut self, name: impl Into<String>, config: &PoolConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError::AlgorithmConfig`] if any address in `connector_tokens` is not
+    /// valid hex.
+    pub fn add_pool(
+        mut self,
+        name: impl Into<String>,
+        config: &PoolConfig,
+    ) -> Result<Self, SolverBuildError> {
+        let connector_tokens = parse_connector_tokens(config.connector_tokens())?;
         self.pools.push(PoolEntry::BuiltIn {
             name: name.into(),
             algorithm: config.algorithm().to_string(),
@@ -499,8 +545,9 @@ impl FyndBuilder {
             max_hops: config.max_hops(),
             timeout_ms: config.timeout_ms(),
             max_routes: config.max_routes(),
+            connector_tokens,
         });
-        self
+        Ok(self)
     }
 
     /// Assembles and starts all solver components.
@@ -578,13 +625,17 @@ impl FyndBuilder {
                     max_hops,
                     timeout_ms,
                     max_routes,
+                    connector_tokens,
                 } => {
-                    let algo_cfg = AlgorithmConfig::new(
+                    let mut algo_cfg = AlgorithmConfig::new(
                         min_hops,
                         max_hops,
                         Duration::from_millis(timeout_ms),
                         max_routes,
                     )?;
+                    if let Some(tokens) = connector_tokens {
+                        algo_cfg = algo_cfg.with_connector_tokens(tokens);
+                    }
                     WorkerPoolBuilder::new()
                         .name(name)
                         .algorithm(algorithm)
