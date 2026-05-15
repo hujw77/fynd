@@ -36,6 +36,7 @@ pub struct MostLiquidAlgorithm {
     max_hops: usize,
     timeout: Duration,
     max_routes: Option<usize>,
+    connector_tokens: Option<HashSet<Address>>,
 }
 
 /// Algorithm-specific edge data for liquidity-based routing.
@@ -185,7 +186,13 @@ impl crate::graph::EdgeWeightFromSimAndDerived for DepthAndPrice {
 impl MostLiquidAlgorithm {
     /// Creates a new MostLiquidAlgorithm with default settings.
     pub fn new() -> Self {
-        Self { min_hops: 1, max_hops: 3, timeout: Duration::from_millis(500), max_routes: None }
+        Self {
+            min_hops: 1,
+            max_hops: 3,
+            timeout: Duration::from_millis(500),
+            max_routes: None,
+            connector_tokens: None,
+        }
     }
 
     /// Creates a new MostLiquidAlgorithm with custom settings.
@@ -195,6 +202,7 @@ impl MostLiquidAlgorithm {
             max_hops: config.max_hops(),
             timeout: config.timeout(),
             max_routes: config.max_routes(),
+            connector_tokens: config.connector_tokens().cloned(),
         })
     }
 
@@ -208,13 +216,14 @@ impl MostLiquidAlgorithm {
     /// Returns `AlgorithmError` if:
     /// - Source token is not in the graph
     /// - Destination token is not in the graph
-    #[instrument(level = "debug", skip(graph))]
+    #[instrument(level = "debug", skip(graph, connector_tokens))]
     fn find_paths<'a>(
         graph: &'a StableDiGraph<DepthAndPrice>,
         from: &Address,
         to: &Address,
         min_hops: usize,
         max_hops: usize,
+        connector_tokens: Option<&HashSet<Address>>,
     ) -> Result<Vec<Path<'a, DepthAndPrice>>, AlgorithmError> {
         if min_hops == 0 || min_hops > max_hops {
             return Err(AlgorithmError::InvalidConfiguration {
@@ -264,6 +273,16 @@ impl MostLiquidAlgorithm {
                 let is_closing_circular_route = from_idx == to_idx && next_node == to_idx;
                 if already_visited && !is_closing_circular_route {
                     continue;
+                }
+
+                // Skip disallowed connector tokens. Endpoints (from / to) are always permitted.
+                let is_destination = next_node == to_idx;
+                if !is_destination {
+                    if let Some(tokens) = connector_tokens {
+                        if !tokens.contains(next_addr) {
+                            continue;
+                        }
+                    }
                 }
 
                 let mut new_path = current_path.clone();
@@ -489,6 +508,7 @@ impl Algorithm for MostLiquidAlgorithm {
             order.token_out(),
             self.min_hops,
             self.max_hops,
+            self.connector_tokens.as_ref(),
         )?;
 
         let paths_candidates = all_paths.len();
@@ -757,7 +777,7 @@ mod tests {
 
         // Use find_paths to get the 2-hop path A->B->C
         let graph = m.graph();
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &c, 2, 2).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &c, 2, 2, None).unwrap();
         assert_eq!(paths.len(), 1);
         let path = &paths[0];
 
@@ -778,7 +798,7 @@ mod tests {
         let (a, b, _, _) = addrs();
         let m = linear_graph();
         let graph = m.graph();
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &b, 1, 1).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &b, 1, 1, None).unwrap();
         assert_eq!(paths.len(), 1);
         assert!(MostLiquidAlgorithm::try_score_path(&paths[0]).is_none());
     }
@@ -799,7 +819,7 @@ mod tests {
 
         let graph = m.graph();
         // Find A->B->A paths (circular, 2 hops)
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &a, 2, 2).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &a, 2, 2, None).unwrap();
 
         // Should find at least one path
         assert_eq!(paths.len(), 1);
@@ -1086,17 +1106,17 @@ mod tests {
         let g = m.graph();
 
         // Forward: A->B (1 hop), A->C (2 hops), A->D (3 hops)
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab"]]));
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bc"]]));
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bc", "cd"]]));
 
         // Reverse: D->A (bidirectional pools)
-        let p = MostLiquidAlgorithm::find_paths(g, &d, &a, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &d, &a, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["cd", "bc", "ab"]]));
     }
 
@@ -1107,12 +1127,12 @@ mod tests {
         let g = m.graph();
 
         // A->D needs 3 hops, max_hops=2 finds nothing
-        assert!(MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2)
+        assert!(MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None)
             .unwrap()
             .is_empty());
 
         // A->C is 2 hops, min_hops=3 finds nothing
-        assert!(MostLiquidAlgorithm::find_paths(g, &a, &c, 3, 3)
+        assert!(MostLiquidAlgorithm::find_paths(g, &a, &c, 3, 3, None)
             .unwrap()
             .is_empty());
     }
@@ -1124,11 +1144,11 @@ mod tests {
         let g = m.graph();
 
         // A->B: 3 parallel pools = 3 paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab1"], vec!["ab2"], vec!["ab3"]]));
 
         // A->C: 3 A->B pools × 2 B->C pools = 6 paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2, None).unwrap();
         assert_eq!(
             all_ids(p),
             HashSet::from([
@@ -1149,7 +1169,7 @@ mod tests {
         let g = m.graph();
 
         // A->D: two 2-hop paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bd"], vec!["ac", "cd"]]));
     }
 
@@ -1163,7 +1183,7 @@ mod tests {
         // Revisit paths like A->B->C->B or A->B->B->B are pruned because
         // they create intermediate cycles unsupported by Tycho execution
         // (only first == last cycles are allowed, i.e. from == to).
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab"]]));
     }
 
@@ -1176,7 +1196,7 @@ mod tests {
 
         // A->A (cyclic path) with 2 hops: should find all 9 combinations (3 pools × 3 pools)
         // Note: min_hops=2 because cyclic paths require at least 2 hops
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &a, 2, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &a, 2, 2, None).unwrap();
         assert_eq!(
             all_ids(p),
             HashSet::from([
@@ -1206,7 +1226,7 @@ mod tests {
         let from = if from_exists { a } else { non_existent.clone() };
         let to = if to_exists { b } else { non_existent };
 
-        let result = MostLiquidAlgorithm::find_paths(g, &from, &to, 1, 3);
+        let result = MostLiquidAlgorithm::find_paths(g, &from, &to, 1, 3, None);
 
         assert!(matches!(result, Err(AlgorithmError::NoPath { .. })));
     }
@@ -1220,7 +1240,7 @@ mod tests {
         let g = m.graph();
 
         assert!(matches!(
-            MostLiquidAlgorithm::find_paths(g, &a, &b, min_hops, max_hops)
+            MostLiquidAlgorithm::find_paths(g, &a, &b, min_hops, max_hops, None)
                 .err()
                 .unwrap(),
             AlgorithmError::InvalidConfiguration { reason: _ }
@@ -1246,7 +1266,7 @@ mod tests {
         m.initialize_graph(&t);
         let g = m.graph();
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &e, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &e, 1, 3, None).unwrap();
 
         // BFS guarantees paths are ordered by hop count
         assert_eq!(p.len(), 3, "Expected 3 paths total");
@@ -1276,6 +1296,7 @@ mod tests {
             &token_b.address,
             1,
             1,
+            None,
         )
         .unwrap();
         let path = paths.into_iter().next().unwrap();
@@ -1311,6 +1332,7 @@ mod tests {
             &token_c.address,
             2,
             2,
+            None,
         )
         .unwrap();
         let path = paths.into_iter().next().unwrap();
@@ -1349,6 +1371,7 @@ mod tests {
             &token_a.address,
             2,
             2,
+            None,
         )
         .unwrap();
 
@@ -1390,7 +1413,7 @@ mod tests {
 
         let graph = manager.graph();
         let paths =
-            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_c.address, 2, 2)
+            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_c.address, 2, 2, None)
                 .unwrap();
         let path = paths.into_iter().next().unwrap();
 
@@ -1413,7 +1436,7 @@ mod tests {
 
         let graph = manager.graph();
         let paths =
-            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_b.address, 1, 1)
+            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_b.address, 1, 1, None)
                 .unwrap();
         let path = paths.into_iter().next().unwrap();
 
@@ -1424,6 +1447,54 @@ mod tests {
             BigUint::from(100u64),
         );
         assert!(matches!(result, Err(AlgorithmError::DataNotFound { kind: "component", .. })));
+    }
+
+    // ==================== connector_tokens Tests ====================
+
+    #[test]
+    fn test_connector_tokens_blocks_disallowed_intermediate() {
+        // Diamond: A->B->D, A->C->D. Only C in allowlist → only A->C->D survives.
+        let (a, b, c, d) = addrs();
+        let m = diamond_graph();
+        let g = m.graph();
+        let allowed: HashSet<Address> = [c.clone()].into();
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, Some(&allowed)).unwrap();
+        let intermediates: HashSet<&Address> = paths
+            .iter()
+            .flat_map(|p| p.iter().map(|(node, _, _)| node))
+            .filter(|addr| *addr != &a && *addr != &d)
+            .collect();
+        // B must not appear; C must appear
+        assert!(!intermediates.contains(&b), "B should be blocked");
+        assert!(intermediates.contains(&c), "C should be allowed");
+    }
+
+    #[test]
+    fn test_connector_tokens_allows_endpoints_even_if_not_listed() {
+        // Allowlist contains neither token_in nor token_out, but a 1-hop route should still work.
+        let (a, b, _, _) = addrs();
+        let m = linear_graph();
+        let g = m.graph();
+        let allowed: HashSet<Address> = HashSet::new(); // empty — no intermediates
+                                                        // 1-hop A->B: destination is reached directly, no intermediate check
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, Some(&allowed)).unwrap();
+        assert!(!paths.is_empty(), "1-hop direct route should survive empty allowlist");
+    }
+
+    #[test]
+    fn test_connector_tokens_none_is_unrestricted() {
+        // None allowlist → both paths in diamond graph returned
+        let (a, b, c, d) = addrs();
+        let m = diamond_graph();
+        let g = m.graph();
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None).unwrap();
+        let intermediates: HashSet<&Address> = paths
+            .iter()
+            .flat_map(|p| p.iter().map(|(node, _, _)| node))
+            .filter(|addr| *addr != &a && *addr != &d)
+            .collect();
+        assert!(intermediates.contains(&b), "B should appear with no restriction");
+        assert!(intermediates.contains(&c), "C should appear with no restriction");
     }
 
     // ==================== find_best_route Tests ====================

@@ -24,7 +24,7 @@ pub mod most_liquid;
 #[cfg(test)]
 pub mod test_utils;
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 pub use bellman_ford::BellmanFordAlgorithm;
 pub use most_liquid::MostLiquidAlgorithm;
@@ -52,6 +52,9 @@ pub struct AlgorithmConfig {
     /// Enable gas-aware comparison (compares net amounts instead of gross during path selection).
     /// Currently used by Bellman-Ford; ignored by other algorithms. Defaults to true.
     gas_aware: bool,
+    /// Tokens allowed as intermediate hops. `None` = no restriction (all tokens reachable).
+    /// `token_in` and `token_out` for a given order are always allowed regardless.
+    connector_tokens: Option<HashSet<Address>>,
 }
 
 impl AlgorithmConfig {
@@ -84,7 +87,14 @@ impl AlgorithmConfig {
                 reason: "max_routes must be at least 1".to_string(),
             });
         }
-        Ok(Self { min_hops, max_hops, timeout, max_routes, gas_aware: true })
+        Ok(Self {
+            min_hops,
+            max_hops,
+            timeout,
+            max_routes,
+            gas_aware: true,
+            connector_tokens: None,
+        })
     }
 
     /// Returns the minimum number of hops to search.
@@ -116,6 +126,21 @@ impl AlgorithmConfig {
     pub fn with_gas_aware(mut self, enabled: bool) -> Self {
         self.gas_aware = enabled;
         self
+    }
+
+    /// Restricts intermediate hops to the given token set.
+    ///
+    /// When set, only these tokens may appear between `token_in` and `token_out`
+    /// in a multi-hop route. The order endpoints are always allowed regardless.
+    /// Pass an empty set to disallow all intermediate hops (only 1-hop routes possible).
+    pub fn with_connector_tokens(mut self, tokens: HashSet<Address>) -> Self {
+        self.connector_tokens = Some(tokens);
+        self
+    }
+
+    /// Returns the connector token allowlist, or `None` if all tokens are permitted.
+    pub fn connector_tokens(&self) -> Option<&HashSet<Address>> {
+        self.connector_tokens.as_ref()
     }
 }
 
@@ -279,5 +304,40 @@ impl std::fmt::Display for NoPathReason {
             Self::NoGraphPath => write!(f, "no connecting path in graph"),
             Self::NoScorablePaths => write!(f, "no paths with valid scores"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_connector_tokens_default_is_none() {
+        assert!(AlgorithmConfig::default()
+            .connector_tokens()
+            .is_none());
+    }
+
+    #[test]
+    fn test_with_connector_tokens_sets_field() {
+        let addr = Address::from([0x01u8; 20]);
+        let tokens: HashSet<Address> = [addr.clone()].into();
+        let config = AlgorithmConfig::default().with_connector_tokens(tokens);
+        let stored = config
+            .connector_tokens()
+            .expect("should be Some");
+        assert!(stored.contains(&addr));
+        assert_eq!(stored.len(), 1);
+    }
+
+    #[test]
+    fn test_with_connector_tokens_empty_set() {
+        let config = AlgorithmConfig::default().with_connector_tokens(HashSet::new());
+        assert_eq!(
+            config
+                .connector_tokens()
+                .map(|s| s.len()),
+            Some(0)
+        );
     }
 }

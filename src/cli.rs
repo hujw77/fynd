@@ -6,6 +6,8 @@ use fynd_rpc::config::defaults;
 #[cfg(feature = "metrics")]
 pub(crate) const METRICS_PORT: u16 = 9898;
 
+use crate::commands::derive_connector_tokens::DeriveConnectorTokensArgs;
+
 /// Fynd - High-performance DEX solver built on Tycho
 ///
 /// Finds optimal swap routes across multiple protocols using real-time market data.
@@ -23,6 +25,8 @@ pub enum Commands {
     Serve(Box<ServeArgs>),
     /// Print the OpenAPI spec as JSON to stdout
     Openapi,
+    /// Analyze live Tycho market data and suggest connector tokens for routing
+    DeriveConnectorTokens(DeriveConnectorTokensArgs),
 }
 
 /// Arguments for the `serve` subcommand.

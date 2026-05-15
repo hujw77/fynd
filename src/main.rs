@@ -40,6 +40,7 @@ use fynd_rpc::{
     protocols::fetch_protocol_systems,
 };
 mod cli;
+mod commands;
 use cli::{Cli, Commands};
 #[cfg(feature = "metrics")]
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -53,7 +54,7 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tycho_simulation::utils::default_blocklist;
+use tycho_simulation::{tycho_common::models::Chain, utils::default_blocklist};
 
 fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -71,6 +72,9 @@ fn main() -> Result<(), anyhow::Error> {
             run_solver(*serve_args).map_err(|e| anyhow!("{}", e))?;
             Ok(())
         }
+        Commands::DeriveConnectorTokens(args) => tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime")
+            .block_on(commands::derive_connector_tokens::run(args)),
     }
 }
 
@@ -181,6 +185,77 @@ fn create_metrics_exporter(port: u16) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// Resolves the Tycho WebSocket URL: uses the override if provided, otherwise looks up the
+/// chain-specific Fynd default endpoint.
+fn resolve_tycho_url(chain: &str, override_url: Option<&str>) -> Result<String, SolverError> {
+    match override_url {
+        Some(url) => Ok(url.to_string()),
+        None => {
+            let default = defaults::default_tycho_url(chain).map_err(SolverError::SetupError)?;
+            info!("No --tycho-url provided. Using default for {}: {}", chain, default);
+            Ok(default.to_string())
+        }
+    }
+}
+
+/// Resolves the Ethereum RPC URL: uses the override if provided, otherwise falls back to the
+/// public endpoint with a warning.
+fn resolve_rpc_url(override_url: Option<&str>) -> String {
+    match override_url {
+        Some(url) => url.to_string(),
+        None => {
+            warn!(
+                "No --rpc-url provided. Using public endpoint: {}. \
+                For production use, provide a dedicated RPC endpoint.",
+                defaults::DEFAULT_RPC_URL
+            );
+            defaults::DEFAULT_RPC_URL.to_string()
+        }
+    }
+}
+
+/// Resolves the protocol list from `--protocols`.
+///
+/// - Empty → fetch all on-chain protocols from Tycho RPC.
+/// - Contains `"all_onchain"` → fetch all on-chain, then append any other explicit entries.
+/// - Otherwise → use as given (no network call).
+///
+/// Returns an error if the resolved list is empty.
+async fn resolve_protocols(
+    tycho_url: &str,
+    api_key: Option<&str>,
+    use_tls: bool,
+    chain: Chain,
+    requested: &[String],
+) -> Result<Vec<String>, SolverError> {
+    let needs_fetch = requested.is_empty() ||
+        requested
+            .iter()
+            .any(|p| p == "all_onchain");
+    let protocols = if needs_fetch {
+        let mut fetched = fetch_protocol_systems(tycho_url, api_key, use_tls, chain)
+            .await
+            .map_err(|e| {
+                SolverError::SetupError(format!("failed to fetch protocol systems: {e}"))
+            })?;
+        for p in requested {
+            if p != "all_onchain" && !fetched.contains(p) {
+                fetched.push(p.clone());
+            }
+        }
+        fetched
+    } else {
+        requested.to_vec()
+    };
+    if protocols.is_empty() {
+        return Err(SolverError::SetupError(
+            "no supported protocols found. Provide --protocols or check Tycho connectivity."
+                .to_string(),
+        ));
+    }
+    Ok(protocols)
+}
+
 /// Sets up the solver (loads config, parses chain, builds solver).
 /// Returns setup errors if any step fails.
 async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRPC, SolverError> {
@@ -204,67 +279,24 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
     let chain = parse_chain(&args.chain)
         .map_err(|e| SolverError::SetupError(format!("failed to parse chain: {}", e)))?;
 
-    // Resolve Tycho URL, falling back to chain-specific Fynd endpoint
-    let tycho_url = match &args.tycho_url {
-        Some(url) => url.clone(),
-        None => {
-            let default =
-                defaults::default_tycho_url(&args.chain).map_err(SolverError::SetupError)?;
-            info!("No --tycho-url provided. Using default for {}: {}", args.chain, default);
-            default.to_string()
-        }
-    };
+    let tycho_url = resolve_tycho_url(&args.chain, args.tycho_url.as_deref())?;
+    let rpc_url = resolve_rpc_url(args.rpc_url.as_deref());
 
-    // Resolve RPC URL, falling back to public endpoint with a warning
-    let rpc_url = match &args.rpc_url {
-        Some(url) => url.clone(),
-        None => {
-            warn!(
-                "No --rpc-url provided. Using public endpoint: {}. \
-                For production use, provide a dedicated RPC endpoint.",
-                defaults::DEFAULT_RPC_URL
-            );
-            defaults::DEFAULT_RPC_URL.to_string()
-        }
-    };
-
-    // Resolve protocols: fetch from Tycho RPC if omitted or if "all_onchain" is used
-    let needs_fetch = args.protocols.is_empty() ||
-        args.protocols
-            .iter()
-            .any(|p| p == "all_onchain");
-    let protocols = if needs_fetch {
-        let mut fetched = fetch_protocol_systems(
-            &tycho_url,
-            args.tycho_api_key.as_deref(),
-            !args.disable_tls,
-            chain,
-        )
-        .await
-        .map_err(|e| SolverError::SetupError(format!("failed to fetch protocol systems: {}", e)))?;
-        // Append any explicit protocols (e.g. rfq:bebop) alongside all_onchain
-        for p in &args.protocols {
-            if p != "all_onchain" && !fetched.contains(p) {
-                fetched.push(p.clone());
-            }
-        }
-        fetched
-    } else {
-        args.protocols.clone()
-    };
-
-    if protocols.is_empty() {
-        return Err(SolverError::SetupError(
-            "no supported protocols found. Provide --protocols or check Tycho connectivity."
-                .to_string(),
-        ));
-    }
+    let protocols = resolve_protocols(
+        &tycho_url,
+        args.tycho_api_key.as_deref(),
+        !args.disable_tls,
+        chain,
+        &args.protocols,
+    )
+    .await?;
 
     info!(?protocols, "starting with {} protocol(s)", protocols.len());
 
     // Build solver with all fields from CLI
     let mut builder =
         FyndRPCBuilder::new(chain, pools_config.into_pools(), tycho_url, rpc_url, protocols)
+            .map_err(|e| SolverError::SetupError(format!("invalid pool configuration: {e}")))?
             .http_host(args.http_host.clone())
             .http_port(args.http_port)
             .min_tvl(args.min_tvl)
