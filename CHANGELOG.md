@@ -1,3 +1,15 @@
+## [0.58.0](https://github.com/propeller-heads/fynd/compare/0.57.0...0.58.0) (2026-05-15)
+
+
+### Features
+
+* add per-pool connector token restriction and derive-connector-tokens subcommand ([520b685](https://github.com/propeller-heads/fynd/commit/520b68585487602f426bbc0d0b07414922cf8ca9))
+
+
+### Bug Fixes
+
+* address PR review comments ([6ec9de1](https://github.com/propeller-heads/fynd/commit/6ec9de1b892e53903cdd09a78bafc83590e652d8))
+
 ## [0.57.0](https://github.com/propeller-heads/fynd/compare/0.56.1...0.57.0) (2026-05-13)
 
 
