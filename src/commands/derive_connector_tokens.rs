@@ -8,7 +8,7 @@ use fynd_core::{
 };
 use fynd_rpc::builder::parse_chain;
 use tracing::info;
-use tycho_simulation::tycho_common::models::{Address, Chain};
+use tycho_simulation::tycho_common::models::Address;
 
 /// Derives recommended connector tokens from live Tycho market data.
 ///
@@ -118,9 +118,10 @@ pub async fn run(args: DeriveConnectorTokensArgs) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    let scores = score_tokens(&market_data, chain).await;
+    let scores = score_tokens(&market_data).await;
     let mut ranked: Vec<(Address, TokenScore)> = scores.into_iter().collect();
     ranked.sort_by_key(|(_, s)| std::cmp::Reverse(s.pool_count));
+    let total = ranked.len();
 
     let candidates: Vec<&(Address, TokenScore)> = ranked
         .iter()
@@ -131,9 +132,9 @@ pub async fn run(args: DeriveConnectorTokensArgs) -> Result<()> {
     solver.shutdown();
 
     match args.output.as_str() {
-        "toml" => print_toml(&candidates, &args.chain),
-        "json" => print_json(&candidates)?,
-        _ => print_text(&candidates),
+        "toml" => print_toml(&candidates, &args.chain, total),
+        "json" => print_json(&candidates, total)?,
+        _ => print_text(&candidates, total),
     }
 
     Ok(())
@@ -144,10 +145,7 @@ struct TokenScore {
     pool_count: usize,
 }
 
-async fn score_tokens(
-    market_data: &SharedMarketDataRef,
-    _chain: Chain,
-) -> HashMap<Address, TokenScore> {
+async fn score_tokens(market_data: &SharedMarketDataRef) -> HashMap<Address, TokenScore> {
     let guard = market_data.read().await;
     let topology = guard.component_topology();
 
@@ -173,11 +171,11 @@ async fn score_tokens(
         .collect()
 }
 
-fn print_toml(candidates: &[&(Address, TokenScore)], chain: &str) {
+fn print_toml(candidates: &[&(Address, TokenScore)], chain: &str, total: usize) {
     use chrono::Utc;
     let date = Utc::now().format("%Y-%m-%d");
     println!("# Derived connector tokens for {chain} ({date})");
-    println!("# Score = pool_count. Top {} of {} tokens.", candidates.len(), candidates.len());
+    println!("# Score = pool_count. Top {} of {} tokens.", candidates.len(), total);
     println!("connector_tokens = [");
     for (addr, score) in candidates {
         println!(
@@ -190,7 +188,7 @@ fn print_toml(candidates: &[&(Address, TokenScore)], chain: &str) {
     println!("]");
 }
 
-fn print_json(candidates: &[&(Address, TokenScore)]) -> Result<()> {
+fn print_json(candidates: &[&(Address, TokenScore)], _total: usize) -> Result<()> {
     let entries: Vec<serde_json::Value> = candidates
         .iter()
         .map(|(addr, score)| {
@@ -205,7 +203,7 @@ fn print_json(candidates: &[&(Address, TokenScore)]) -> Result<()> {
     Ok(())
 }
 
-fn print_text(candidates: &[&(Address, TokenScore)]) {
+fn print_text(candidates: &[&(Address, TokenScore)], _total: usize) {
     println!("{:<5} {:<10} {:>6}  Address", "Rank", "Symbol", "Pools");
     println!("{:-<60}", "");
     for (i, (addr, score)) in candidates.iter().enumerate() {

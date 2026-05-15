@@ -1329,9 +1329,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_connector_tokens_blocks_disallowed_intermediate() {
-        // Diamond: A->B->D (2x * 2x = 4x) vs A->C->D (3x * 3x = 9x).
-        // C is in the allowlist; B is not.
-        // Expect A->C->D to be found; B-path is pruned.
+        //      A
+        //    /   \
+        //   B     C   ← only C is in the allowlist
+        //    \   /
+        //      D
+        // A->B->D is pruned; only A->C->D survives.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
