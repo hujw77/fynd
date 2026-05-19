@@ -541,7 +541,7 @@ mod tests {
             Bytes::from(make_address(0xAA).as_ref()),
             "1".to_string(),
         )
-        .with_route(Route::new(vec![swap]).with_tokens(tokens));
+        .with_route(Route::new(vec![swap], tokens));
         SingleOrderQuote::new(quote, 5)
     }
 
