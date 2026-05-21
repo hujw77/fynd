@@ -209,6 +209,10 @@ This quotes 1000 USDC (6 decimals → 1 000 000 000 atomic units) for WETH.
 {% endtab %}
 {% endtabs %}
 
+## Native ETH swaps
+
+To swap native ETH, use `0x0000...0000` as the `token_in` or `token_out` address in your order.
+
 ## Next steps
 
 * [Encoding options](../../guides/encoding-options.md) — encode quotes into ready-to-submit transactions
