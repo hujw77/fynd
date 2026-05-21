@@ -1,3 +1,12 @@
+## [0.59.0](https://github.com/propeller-heads/fynd/compare/0.58.0...0.59.0) (2026-05-21)
+
+
+### Features
+
+* **fynd-core:** MarketState earns a label from block or overlay ([04a839e](https://github.com/propeller-heads/fynd/commit/04a839eec313649f832d8cfd8674fa42c5341cfc))
+* **fynd-core:** overlay storage on SharedMarketDataRef with split lock ([e160556](https://github.com/propeller-heads/fynd/commit/e1605565ee30a3fbfad194da8c1ec06fbed5acf1)), closes [#199](https://github.com/propeller-heads/fynd/issues/199) [#199](https://github.com/propeller-heads/fynd/issues/199)
+* **fynd-core:** thread state label through the solve path ([75e48c6](https://github.com/propeller-heads/fynd/commit/75e48c657f681cdf594442b63dac253a57db997c))
+
 ## [0.58.0](https://github.com/propeller-heads/fynd/compare/0.57.0...0.58.0) (2026-05-15)
 
 
