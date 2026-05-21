@@ -6,6 +6,13 @@
 //! - Solvers: READ access to query states during solving
 //!
 //! We use tokio RwLock (which is write-preferring) to avoid writer starvation.
+//!
+//! # Overlay design
+//!
+//! Labeled overlay states (used by solver pools to inject per-request pool states) are stored in a
+//! separate `Arc<RwLock<...>>` on `MarketData` rather than inside the main
+//! `MarketState` lock. This decouples overlay writes from base-state reads: a TychoFeed block
+//! update no longer stalls overlay registrations and vice versa.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -24,15 +31,278 @@ use tycho_simulation::{
 
 use crate::types::{BlockInfo, ComponentId};
 
-/// Thread-safe handle to shared market data.
-pub type SharedMarketDataRef = Arc<RwLock<SharedMarketData>>;
+/// A label identifying an overlay state layer.
+///
+/// Each labeled overlay is an independent snapshot of pool states that can be layered
+/// on top of the base market state for a specific worker pool or request context.
+pub type StateLabel = String;
+
+/// An immutable snapshot of per-component simulation states for one overlay layer.
+pub type OverlayStates = Arc<HashMap<ComponentId, Box<dyn ProtocolSim>>>;
+
+/// A named simulation-state overlay with a block-number expiry.
+pub struct OverlayEntry {
+    /// The overlay pool states (only pools that differ from base state).
+    pub states: OverlayStates,
+    /// Last block number for which this overlay is valid.
+    /// The overlay is automatically evicted before block `valid_until + 1` is applied.
+    pub valid_until: u64,
+}
+
+/// The shared overlay registry: maps each label to its snapshot.
+type OverlayRegistry = Arc<RwLock<HashMap<StateLabel, OverlayEntry>>>;
+
+/// Error returned by [`MarketData::read_labeled`] when the requested label cannot be resolved.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadLabeledError {
+    /// The label is not registered as an overlay and does not match the current base-state label.
+    #[error("label not found: {0}")]
+    NotFound(StateLabel),
+}
+
+/// The main entry point for accessing market data.
+///
+/// Cloning is cheap — all clones share the same underlying data and overlay registry.
+/// Pass an optional label to `read` to scope the view to a specific overlay.
+#[derive(Clone)]
+pub struct MarketData {
+    data: Arc<RwLock<MarketState>>,
+    /// Per-label overlay states. Stored separately from the base data lock so that
+    /// overlay writes do not block base-state reads.
+    overlays: OverlayRegistry,
+}
+
+impl MarketData {
+    /// Creates a new handle wrapping the given data store.
+    pub fn new(data: Arc<RwLock<MarketState>>) -> Self {
+        Self { data, overlays: Arc::new(RwLock::new(HashMap::new())) }
+    }
+
+    /// Creates a new empty market data store wrapped in a `MarketData`.
+    pub fn new_shared() -> Self {
+        Self::new(Arc::new(RwLock::new(MarketState::new())))
+    }
+
+    /// Acquires a base view of the market data with no overlay applied.
+    pub async fn read(&self) -> MarketDataView<'_> {
+        MarketDataView { guard: self.data.read().await, overlay: None }
+    }
+
+    /// Acquires an overlay-aware view scoped to `label`.
+    ///
+    /// Succeeds when `label` is registered as an overlay **or** matches the current base-state
+    /// label (the block-number string set by `apply_block_update`). Returns
+    /// [`ReadLabeledError::NotFound`] otherwise so callers cannot silently fall back to stale data.
+    ///
+    /// The overlay lock is held only briefly to clone the snapshot pointer; it is released
+    /// before the view is returned, so solving never holds two locks simultaneously.
+    pub async fn read_labeled(
+        &self,
+        label: &StateLabel,
+    ) -> Result<MarketDataView<'_>, ReadLabeledError> {
+        let guard = self.data.read().await;
+        if let Some(e) = self.overlays.read().await.get(label) {
+            let states = Arc::clone(&e.states);
+            return Ok(MarketDataView { guard, overlay: Some((label.clone(), states)) });
+        }
+        if &guard.label == label {
+            return Ok(MarketDataView { guard, overlay: None });
+        }
+        Err(ReadLabeledError::NotFound(label.clone()))
+    }
+
+    /// Acquires an exclusive write guard on the base data store.
+    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<'_, MarketState> {
+        self.data.write().await
+    }
+
+    /// Attempts a non-blocking read of the base data store.
+    ///
+    /// Returns `None` if the lock is currently held for writing.
+    pub fn try_read(&self) -> Option<tokio::sync::RwLockReadGuard<'_, MarketState>> {
+        self.data.try_read().ok()
+    }
+
+    /// Attempts a non-blocking write lock on the base data store.
+    ///
+    /// Returns `None` if the lock is currently held for reading or writing.
+    pub fn try_write(&self) -> Option<tokio::sync::RwLockWriteGuard<'_, MarketState>> {
+        self.data.try_write().ok()
+    }
+
+    /// Attempts a non-blocking read and wraps the result in a `MarketDataView`.
+    ///
+    /// The overlay is not applied because this is a synchronous helper intended for tests where
+    /// no overlay is active.  Returns `None` if the lock is currently held for writing.
+    pub fn try_read_blocking(&self) -> Option<MarketDataView<'_>> {
+        self.data
+            .try_read()
+            .ok()
+            .map(|guard| MarketDataView { guard, overlay: None })
+    }
+
+    // ==================== Overlay CRUD ====================
+
+    /// Registers or replaces an overlay for the given label.
+    pub async fn register_labeled_state(
+        &self,
+        label: StateLabel,
+        states: HashMap<ComponentId, Box<dyn ProtocolSim>>,
+        valid_until: u64,
+    ) {
+        self.overlays
+            .write()
+            .await
+            .insert(label, OverlayEntry { states: Arc::new(states), valid_until });
+    }
+
+    /// Removes the overlay for the given label, if it exists.
+    pub async fn remove_labeled_state(&self, label: &StateLabel) {
+        self.overlays
+            .write()
+            .await
+            .remove(label);
+    }
+
+    /// Clears all overlays.
+    pub async fn clear_labeled_states(&self) {
+        self.overlays.write().await.clear();
+    }
+
+    /// Atomically evicts stale overlays then applies a block update to base state.
+    ///
+    /// Overlays with `valid_until < new_block_number` are removed under the overlay
+    /// lock before the base write lock is acquired. This guarantees no solver can
+    /// observe new base state alongside an overlay that was built against the previous
+    /// block.
+    pub async fn apply_block_update(
+        &self,
+        new_block_number: u64,
+        update: impl FnOnce(&mut MarketState),
+    ) {
+        self.overlays
+            .write()
+            .await
+            .retain(|_, entry| entry.valid_until >= new_block_number);
+        let mut data = self.data.write().await;
+        data.label = new_block_number.to_string();
+        update(&mut data);
+    }
+
+    /// Returns the labels of all registered overlays.
+    pub async fn labeled_state_ids(&self) -> Vec<StateLabel> {
+        self.overlays
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+/// An overlay-aware view of the market data, held for the duration of a read lock.
+///
+/// Holds a read lock on the base `MarketState` and an optional overlay snapshot.
+/// Use `get_simulation_state` for overlay-aware pool lookups. All other accessors
+/// delegate to the base data.
+pub struct MarketDataView<'a> {
+    guard: tokio::sync::RwLockReadGuard<'a, MarketState>,
+    overlay: Option<(StateLabel, OverlayStates)>,
+}
+
+impl<'a> MarketDataView<'a> {
+    /// Returns the label identifying the active overlay, or `None` if no overlay is in effect.
+    pub fn state_label(&self) -> Option<&StateLabel> {
+        self.overlay
+            .as_ref()
+            .map(|(label, _)| label)
+    }
+
+    /// Returns the simulation state for the given component, checking the overlay first.
+    pub fn get_simulation_state(&self, id: &str) -> Option<&dyn ProtocolSim> {
+        if let Some((_, ref states)) = self.overlay {
+            if let Some(s) = states.get(id) {
+                return Some(s.as_ref());
+            }
+        }
+        self.guard.get_simulation_state(id)
+    }
+
+    /// Extracts a base-data subset for the given component IDs, then layers the active overlay
+    /// on top by replacing any simulation states found in both the subset and the overlay.
+    ///
+    /// If no overlay is active, this is equivalent to `self.extract_subset(component_ids)`.
+    pub fn extract_subset_with_overlay(&self, component_ids: &HashSet<ComponentId>) -> MarketState {
+        let mut subset = self.guard.extract_subset(component_ids);
+        if let Some((ref label, ref states)) = self.overlay {
+            for (id, state) in states.iter() {
+                if subset
+                    .simulation_states
+                    .contains_key(id)
+                {
+                    subset
+                        .simulation_states
+                        .insert(id.clone(), state.clone_box());
+                }
+            }
+            subset.label = label.clone();
+        }
+        subset
+    }
+
+    /// Returns the component topology from the base data.
+    pub fn component_topology(&self) -> HashMap<ComponentId, Vec<Address>> {
+        self.guard.component_topology()
+    }
+
+    /// Extracts a base-data subset for the given component IDs (no overlay applied).
+    pub fn extract_subset(&self, component_ids: &HashSet<ComponentId>) -> MarketState {
+        self.guard.extract_subset(component_ids)
+    }
+
+    /// Returns a reference to the token registry from the base data.
+    pub fn token_registry_ref(&self) -> &HashMap<Address, Token> {
+        self.guard.token_registry_ref()
+    }
+
+    /// Returns the current gas price from the base data.
+    pub fn gas_price(&self) -> Option<&BlockGasPrice> {
+        self.guard.gas_price()
+    }
+
+    /// Returns the block info for the last base-state update.
+    pub fn last_updated(&self) -> Option<&BlockInfo> {
+        self.guard.last_updated()
+    }
+
+    /// Returns a token by address from the base data.
+    pub fn get_token(&self, address: &Address) -> Option<&Token> {
+        self.guard.get_token(address)
+    }
+
+    /// Returns a component by ID from the base data.
+    pub fn get_component(&self, id: &str) -> Option<&ProtocolComponent> {
+        self.guard.get_component(id)
+    }
+
+    /// Returns a reference to the underlying base market state, bypassing any overlay.
+    pub fn base_market_state(&self) -> &MarketState {
+        &self.guard
+    }
+}
 
 /// Shared market data containing all component states and market information.
 ///
 /// This struct is the single source of truth for market data.
 /// The indexer updates it, and solvers read from it.
 #[derive(Debug, Default)]
-pub struct SharedMarketData {
+pub struct MarketState {
+    /// Identifies the block or overlay this state was produced from.
+    ///
+    /// Set to the block number string by `apply_block_update`; copied from the overlay label by
+    /// `extract_subset_with_overlay` when an overlay is active. Empty string until the first block
+    /// is applied.
+    label: StateLabel,
     /// All components indexed by their ID.
     components: HashMap<ComponentId, ProtocolComponent>,
     /// All states indexed by their component ID.
@@ -48,10 +318,11 @@ pub struct SharedMarketData {
     last_updated: Option<BlockInfo>,
 }
 
-impl SharedMarketData {
-    /// Creates a new empty SharedMarketData.
+impl MarketState {
+    /// Creates a new empty MarketState.
     pub fn new() -> Self {
         Self {
+            label: String::new(),
             components: HashMap::new(),
             simulation_states: HashMap::new(),
             tokens: HashMap::new(),
@@ -61,10 +332,9 @@ impl SharedMarketData {
         }
     }
 
-    /// Creates a new shared market data store for async computation tests that is wrapped in an
-    /// `Arc<RwLock<>>`.
-    pub fn new_shared() -> SharedMarketDataRef {
-        Arc::new(RwLock::new(Self::new()))
+    /// Returns the label identifying the block or overlay this state was produced from.
+    pub fn label(&self) -> &StateLabel {
+        &self.label
     }
 
     /// Returns the block info for the last update.
@@ -178,7 +448,7 @@ impl SharedMarketData {
     /// - Simulation states for those components (cloned via `clone_box`)
     /// - Tokens referenced by those components
     /// - Gas price and block info
-    pub fn extract_subset(&self, component_ids: &HashSet<ComponentId>) -> SharedMarketData {
+    pub fn extract_subset(&self, component_ids: &HashSet<ComponentId>) -> MarketState {
         // Filter components
         let components: HashMap<ComponentId, ProtocolComponent> = self
             .components
@@ -209,7 +479,8 @@ impl SharedMarketData {
             .map(|(id, state)| (id.clone(), state.clone_box()))
             .collect();
 
-        SharedMarketData {
+        MarketState {
+            label: self.label.clone(),
             components,
             simulation_states,
             tokens,
@@ -231,7 +502,7 @@ mod tests {
     #[test]
     fn extract_subset_filters_by_component_ids() {
         // Setup: market with 2 pools (A-B, B-C) and 3 tokens
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
 
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
@@ -295,5 +566,244 @@ mod tests {
         assert!(empty_subset
             .simulation_states
             .is_empty());
+    }
+
+    // ==================== MarketData overlay tests ====================
+
+    #[tokio::test]
+    async fn register_and_retrieve_overlay_via_labeled_read() {
+        let market_ref = MarketData::new_shared();
+
+        let label = "test_label".to_string();
+        let mut states: HashMap<ComponentId, Box<dyn ProtocolSim>> = HashMap::new();
+        states.insert(
+            "pool_ab".to_string(),
+            Box::new(MockProtocolSim::new(99.0)) as Box<dyn ProtocolSim>,
+        );
+
+        market_ref
+            .register_labeled_state(label.clone(), states, u64::MAX)
+            .await;
+
+        let guard = market_ref
+            .read_labeled(&label)
+            .await
+            .expect("label was just registered");
+        // Base data is empty — overlay provides the state
+        let sim = guard.get_simulation_state("pool_ab");
+        assert!(sim.is_some());
+    }
+
+    #[tokio::test]
+    async fn read_without_label_returns_no_overlay() {
+        let market_ref = MarketData::new_shared();
+
+        market_ref
+            .register_labeled_state(
+                "my_label".to_string(),
+                HashMap::from([(
+                    "pool1".to_string(),
+                    Box::new(MockProtocolSim::new(5.0)) as Box<dyn ProtocolSim>,
+                )]),
+                u64::MAX,
+            )
+            .await;
+
+        // A handle with no label must not see the overlay
+        let guard = market_ref.read().await;
+        assert!(guard
+            .get_simulation_state("pool1")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_labeled_state_clears_overlay() {
+        let market_ref = MarketData::new_shared();
+        let label = "lbl".to_string();
+
+        market_ref
+            .register_labeled_state(
+                label.clone(),
+                HashMap::from([(
+                    "pool".to_string(),
+                    Box::new(MockProtocolSim::new(1.0)) as Box<dyn ProtocolSim>,
+                )]),
+                u64::MAX,
+            )
+            .await;
+
+        market_ref
+            .remove_labeled_state(&label)
+            .await;
+
+        let ids = market_ref.labeled_state_ids().await;
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clear_labeled_states_removes_all() {
+        let market_ref = MarketData::new_shared();
+
+        for i in 0..3u8 {
+            market_ref
+                .register_labeled_state(
+                    format!("label_{i}"),
+                    HashMap::from([(
+                        format!("pool_{i}"),
+                        Box::new(MockProtocolSim::new(f64::from(i))) as Box<dyn ProtocolSim>,
+                    )]),
+                    u64::MAX,
+                )
+                .await;
+        }
+
+        market_ref.clear_labeled_states().await;
+        assert!(market_ref
+            .labeled_state_ids()
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn clone_shares_overlay_registry() {
+        // Registering via one clone must be visible when reading via any other clone pointing at
+        // the same overlay registry.
+        let base = MarketData::new_shared();
+        let clone_a = base.clone();
+        let clone_b = base.clone();
+
+        base.register_labeled_state(
+            "shared".to_string(),
+            HashMap::from([(
+                "pool_x".to_string(),
+                Box::new(MockProtocolSim::new(7.0)) as Box<dyn ProtocolSim>,
+            )]),
+            u64::MAX,
+        )
+        .await;
+
+        let label = "shared".to_string();
+        let guard_a = clone_a
+            .read_labeled(&label)
+            .await
+            .expect("label was just registered");
+        assert!(guard_a
+            .get_simulation_state("pool_x")
+            .is_some());
+        drop(guard_a);
+
+        let guard_b = clone_b
+            .read_labeled(&label)
+            .await
+            .expect("label was just registered");
+        assert!(guard_b
+            .get_simulation_state("pool_x")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn extract_subset_with_overlay_replaces_matching_states() {
+        use crate::algorithm::test_utils::{component as mk_component, token as mk_token};
+
+        let market_ref = MarketData::new_shared();
+
+        let tok_a = mk_token(0x01, "A");
+        let tok_b = mk_token(0x02, "B");
+
+        {
+            let mut data = market_ref.write().await;
+            data.upsert_components([mk_component("pool_ab", &[tok_a.clone(), tok_b.clone()])]);
+            data.upsert_tokens([tok_a.clone(), tok_b.clone()]);
+            data.update_states([(
+                "pool_ab".to_string(),
+                Box::new(MockProtocolSim::new(2.0)) as Box<dyn ProtocolSim>,
+            )]);
+        }
+
+        let label = "overlay".to_string();
+        market_ref
+            .register_labeled_state(
+                label.clone(),
+                HashMap::from([(
+                    "pool_ab".to_string(),
+                    Box::new(MockProtocolSim::new(99.0)) as Box<dyn ProtocolSim>,
+                )]),
+                u64::MAX,
+            )
+            .await;
+
+        let guard = market_ref
+            .read_labeled(&label)
+            .await
+            .expect("label was just registered");
+        let ids: HashSet<ComponentId> = ["pool_ab".to_string()]
+            .into_iter()
+            .collect();
+        let subset = guard.extract_subset_with_overlay(&ids);
+
+        let sim = subset
+            .get_simulation_state("pool_ab")
+            .unwrap();
+        let mock = sim
+            .as_any()
+            .downcast_ref::<MockProtocolSim>()
+            .unwrap();
+        assert_eq!(mock.spot_price, 99.0, "overlay state should replace base state");
+    }
+
+    #[tokio::test]
+    async fn apply_block_update_evicts_stale_overlays() {
+        let market_ref = MarketData::new_shared();
+
+        // Register two overlays: one valid until block 10, one valid until block 20.
+        market_ref
+            .register_labeled_state(
+                "stale".to_string(),
+                HashMap::from([(
+                    "pool_stale".to_string(),
+                    Box::new(MockProtocolSim::new(1.0)) as Box<dyn ProtocolSim>,
+                )]),
+                10,
+            )
+            .await;
+        market_ref
+            .register_labeled_state(
+                "fresh".to_string(),
+                HashMap::from([(
+                    "pool_fresh".to_string(),
+                    Box::new(MockProtocolSim::new(2.0)) as Box<dyn ProtocolSim>,
+                )]),
+                20,
+            )
+            .await;
+
+        // Apply block 11: the "stale" overlay (valid_until=10) must be evicted.
+        market_ref
+            .apply_block_update(11, |_data| {})
+            .await;
+
+        let ids = market_ref.labeled_state_ids().await;
+        assert!(!ids.contains(&"stale".to_string()), "stale overlay must be evicted");
+        assert!(ids.contains(&"fresh".to_string()), "fresh overlay must survive");
+    }
+
+    #[tokio::test]
+    async fn apply_block_update_applies_mutation() {
+        let market_ref = MarketData::new_shared();
+
+        market_ref
+            .apply_block_update(1, |data| {
+                data.update_last_updated(BlockInfo::new(1, "0xabc".to_string(), 0));
+            })
+            .await;
+
+        let guard = market_ref.read().await;
+        assert_eq!(
+            guard
+                .last_updated()
+                .expect("last_updated must be set")
+                .number(),
+            1
+        );
     }
 }

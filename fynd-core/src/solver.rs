@@ -27,11 +27,8 @@ use crate::{
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
     encoding::encoder::Encoder,
     feed::{
-        events::MarketEventHandler,
-        gas::GasPriceFetcher,
-        market_data::{SharedMarketData, SharedMarketDataRef},
-        tycho_feed::TychoFeed,
-        TychoFeedConfig,
+        events::MarketEventHandler, gas::GasPriceFetcher, market_data::MarketData,
+        tycho_feed::TychoFeed, TychoFeedConfig,
     },
     graph::EdgeWeightUpdaterWithDerived,
     price_guard::{
@@ -565,7 +562,7 @@ impl FyndBuilder {
             self = self.add_default_price_providers();
         }
 
-        let market_data = Arc::new(tokio::sync::RwLock::new(SharedMarketData::new()));
+        let market_data = MarketData::new_shared();
 
         let tycho_feed_config = TychoFeedConfig::new(
             self.tycho_url,
@@ -586,9 +583,9 @@ impl FyndBuilder {
             .map_err(|e| SolverBuildError::RpcClient(e.to_string()))?;
 
         let (mut gas_price_fetcher, gas_price_worker_signal_tx) =
-            GasPriceFetcher::new(ethereum_client, Arc::clone(&market_data));
+            GasPriceFetcher::new(ethereum_client, market_data.clone());
 
-        let mut tycho_feed = TychoFeed::new(tycho_feed_config, Arc::clone(&market_data));
+        let mut tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
         tycho_feed = tycho_feed.with_gas_price_worker_signal_tx(gas_price_worker_signal_tx);
 
         let gas_token = native_token(&self.chain).map_err(|_| SolverBuildError::GasToken)?;
@@ -598,7 +595,7 @@ impl FyndBuilder {
         // ComputationManager::new returns a broadcast receiver that we don't need here —
         // workers subscribe via computation_manager.event_sender() below.
         let (computation_manager, _) =
-            ComputationManager::new(computation_config, Arc::clone(&market_data))
+            ComputationManager::new(computation_config, market_data.clone())
                 .map_err(|e| SolverBuildError::ComputationManager(e.to_string()))?;
 
         let derived_data: SharedDerivedDataRef = computation_manager.store();
@@ -643,7 +640,7 @@ impl FyndBuilder {
                         .num_workers(num_workers)
                         .task_queue_capacity(task_queue_capacity)
                         .build(
-                            Arc::clone(&market_data),
+                            market_data.clone(),
                             Arc::clone(&derived_data),
                             pool_event_rx,
                             derived_rx,
@@ -663,7 +660,7 @@ impl FyndBuilder {
                         .task_queue_capacity(custom.task_queue_capacity);
                     let builder = (custom.configure)(builder);
                     builder.build(
-                        Arc::clone(&market_data),
+                        market_data.clone(),
                         Arc::clone(&derived_data),
                         pool_event_rx,
                         derived_rx,
@@ -700,7 +697,7 @@ impl FyndBuilder {
             let mut registry = PriceProviderRegistry::new();
             let mut worker_handles = Vec::new();
             for mut provider in self.price_providers {
-                worker_handles.push(provider.start(Arc::clone(&market_data)));
+                worker_handles.push(provider.start(market_data.clone()));
                 registry = registry.register(provider);
             }
             let price_guard = PriceGuard::new(registry, worker_handles);
@@ -744,7 +741,7 @@ impl FyndBuilder {
 pub struct Solver {
     router: WorkerPoolRouter,
     worker_pools: Vec<WorkerPool>,
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     derived_data: SharedDerivedDataRef,
     feed_handle: JoinHandle<()>,
     gas_price_handle: JoinHandle<()>,
@@ -756,8 +753,8 @@ pub struct Solver {
 
 impl Solver {
     /// Returns a clone of the shared market data reference.
-    pub fn market_data(&self) -> SharedMarketDataRef {
-        Arc::clone(&self.market_data)
+    pub fn market_data(&self) -> MarketData {
+        self.market_data.clone()
     }
 
     /// Returns a clone of the shared derived data reference.
@@ -855,7 +852,7 @@ pub struct SolverParts {
     /// One [`WorkerPool`] per configured algorithm pool.
     worker_pools: Vec<WorkerPool>,
     /// Live market snapshot shared across all components.
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     /// Derived on-chain data (spot prices, depths, gas costs) shared across all components.
     derived_data: SharedDerivedDataRef,
     /// Background task running the Tycho market-data feed.
@@ -889,7 +886,7 @@ impl SolverParts {
     }
 
     /// Returns a reference to the shared market data.
-    pub fn market_data(&self) -> &SharedMarketDataRef {
+    pub fn market_data(&self) -> &MarketData {
         &self.market_data
     }
 
@@ -910,7 +907,7 @@ impl SolverParts {
     ) -> (
         WorkerPoolRouter,
         Vec<WorkerPool>,
-        SharedMarketDataRef,
+        MarketData,
         SharedDerivedDataRef,
         JoinHandle<()>,
         JoinHandle<()>,

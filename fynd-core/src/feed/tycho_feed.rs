@@ -2,13 +2,13 @@
 //!
 //! The TychoFeed connects to Tycho's WebSocket API and:
 //! - Receives component/state updates
-//! - Updates SharedMarketData (exclusive write access)
+//! - Updates MarketState (exclusive write access)
 //! - Broadcasts MarketEvents to Solvers
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, RwLock},
+    sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_stream::StreamExt;
@@ -25,7 +25,7 @@ use tycho_simulation::{
 use crate::{
     feed::{
         events::MarketEvent,
-        market_data::{SharedMarketData, SharedMarketDataRef},
+        market_data::MarketData,
         protocol_registry::{register_exchanges, register_rfq},
         DataFeedError, TychoFeedConfig,
     },
@@ -38,14 +38,14 @@ use crate::{
 ///
 /// - Connect to Tycho WebSocket and maintain connection
 /// - Process incoming component/state updates
-/// - Update SharedMarketData (holds exclusive write access)
+/// - Update MarketState (holds exclusive write access)
 /// - Broadcast MarketEvents to all subscribed Solvers
 /// - Periodically refresh gas prices from RPC
 pub(crate) struct TychoFeed {
     /// Configuration.
     config: TychoFeedConfig,
     /// Shared market data (we have write access).
-    market_data: Arc<RwLock<SharedMarketData>>,
+    market_data: MarketData,
     /// Event broadcaster.
     event_tx: broadcast::Sender<MarketEvent>,
     /// Signal channel to notify the gas price worker to refresh gas price.
@@ -59,7 +59,7 @@ impl TychoFeed {
     ///
     /// * `config` - Indexer configuration
     /// * `market_data` - Shared market data reference
-    pub(crate) fn new(config: TychoFeedConfig, market_data: SharedMarketDataRef) -> Self {
+    pub(crate) fn new(config: TychoFeedConfig, market_data: MarketData) -> Self {
         let (event_tx, _event_rx) = broadcast::channel(1024);
 
         Self { config, market_data, event_tx, gas_price_worker_signal_tx: None }
@@ -297,49 +297,47 @@ impl TychoFeed {
             updated_or_new_states.len()
         );
         trace!("Updating market data");
-        // Update market data. We should only hold the write lock inside this code block.
-        {
-            let mut market_data = self
-                .market_data
-                .write()
-                .instrument(span!(Level::DEBUG, "data_feed_write_lock"))
-                .await;
+        let new_block_number = msg.block_number_or_timestamp;
+        self.market_data
+            .apply_block_update(new_block_number, |market_data| {
+                market_data.upsert_components(
+                    added_components
+                        .clone()
+                        .into_values()
+                        .map(|component| {
+                            // We can't use From<ProtocolComponent> because it removes "0x" prefix
+                            // from the id
+                            tycho_simulation::tycho_common::models::protocol::ProtocolComponent {
+                                id: component.id.to_string(),
+                                protocol_system: component.protocol_system,
+                                protocol_type_name: component.protocol_type_name,
+                                chain: component.chain,
+                                tokens: component
+                                    .tokens
+                                    .into_iter()
+                                    .map(|t| t.address)
+                                    .collect(),
+                                static_attributes: component.static_attributes,
+                                change: Default::default(),
+                                creation_tx: component.creation_tx,
+                                created_at: component.created_at,
+                                contract_addresses: component.contract_ids,
+                            }
+                        }),
+                );
+                market_data.remove_components(removed_components.keys());
+                market_data.upsert_tokens(maybe_new_tokens);
+                market_data.update_states(updated_or_new_states);
+                market_data.update_protocol_sync_status(sync_states);
 
-            market_data.upsert_components(
-                added_components
-                    .clone()
-                    .into_values()
-                    .map(|component| {
-                        // We can't use From<ProtocolComponent> because it removes "0x" prefix from
-                        // the id
-                        tycho_simulation::tycho_common::models::protocol::ProtocolComponent {
-                            id: component.id.to_string(),
-                            protocol_system: component.protocol_system,
-                            protocol_type_name: component.protocol_type_name,
-                            chain: component.chain,
-                            tokens: component
-                                .tokens
-                                .into_iter()
-                                .map(|t| t.address)
-                                .collect(),
-                            static_attributes: component.static_attributes,
-                            change: Default::default(),
-                            creation_tx: component.creation_tx,
-                            created_at: component.created_at,
-                            contract_addresses: component.contract_ids,
-                        }
-                    }),
-            );
-            market_data.remove_components(removed_components.keys());
-            market_data.upsert_tokens(maybe_new_tokens);
-            market_data.update_states(updated_or_new_states);
-            market_data.update_protocol_sync_status(sync_states);
-
-            // Update the last updated block info if one of the protocols reported "Ready" status.
-            if let Some(block_info) = latest_block_info {
-                market_data.update_last_updated(block_info);
-            }
-        }
+                // Update the last updated block info if one of the protocols reported "Ready"
+                // status.
+                if let Some(block_info) = latest_block_info {
+                    market_data.update_last_updated(block_info);
+                }
+            })
+            .instrument(span!(Level::DEBUG, "data_feed_write_lock"))
+            .await;
         trace!("Market data updated");
 
         // Only broadcast event if there are actual changes
@@ -403,10 +401,9 @@ impl TychoFeed {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, env, sync::Arc};
+    use std::{collections::HashMap, env};
 
     use num_bigint::BigUint;
-    use tokio::sync::RwLock;
     use tycho_simulation::{
         protocol::models::{ProtocolComponent, Update},
         tycho_common::{
@@ -420,14 +417,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::feed::{
-        market_data::{SharedMarketData, SharedMarketDataRef},
-        TychoFeedConfig,
-    };
+    use crate::feed::{market_data::MarketData, TychoFeedConfig};
 
-    /// Creates a new shared market data instance wrapped in Arc<RwLock<>>.
-    fn new_shared_market_data() -> SharedMarketDataRef {
-        Arc::new(RwLock::new(SharedMarketData::new()))
+    /// Creates a new shared market data instance.
+    fn new_shared_market_data() -> MarketData {
+        MarketData::new_shared()
     }
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

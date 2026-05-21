@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, trace, warn};
 use tycho_simulation::tycho_common::models::Address;
 
-use crate::{feed::market_data::SharedMarketData, types::ComponentId};
+use crate::types::ComponentId;
 
 /// Information about which components changed in a market update.
 ///
@@ -39,7 +39,7 @@ impl ChangedComponents {
     /// Creates a marker for full recompute where all components are considered changed.
     ///
     /// Used for startup and lag recovery scenarios.
-    pub fn all(market: &SharedMarketData) -> Self {
+    pub fn all(market: MarketDataView) -> Self {
         Self {
             added: market.component_topology().clone(),
             removed: vec![],
@@ -72,7 +72,7 @@ use super::{
 };
 use crate::feed::{
     events::{EventError, MarketEvent, MarketEventHandler},
-    market_data::SharedMarketDataRef,
+    market_data::{MarketData, MarketDataView},
 };
 
 /// Thread-safe handle to shared derived data store.
@@ -142,7 +142,7 @@ impl Default for ComputationManagerConfig {
 /// Manages derived data computations triggered by market events.
 pub struct ComputationManager {
     /// Reference to shared market data (read access).
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     /// Shared derived data store (write access).
     store: SharedDerivedDataRef,
     /// Token gas price computation.
@@ -163,7 +163,7 @@ impl ComputationManager {
     /// computation readiness.
     pub fn new(
         config: ComputationManagerConfig,
-        market_data: SharedMarketDataRef,
+        market_data: MarketData,
     ) -> Result<(Self, broadcast::Receiver<DerivedDataEvent>), ComputationError> {
         let pool_depth_computation = PoolDepthComputation::new(config.depth_slippage_threshold)?;
         let (event_tx, event_rx) = broadcast::channel(64);
@@ -230,8 +230,7 @@ impl ComputationManager {
                                 skipped
                             );
                             let market = self.market_data.read().await;
-                            let changed = ChangedComponents::all(&market);
-                            drop(market);
+                            let changed = ChangedComponents::all(market);
                             self.compute_all(&changed).await;
                         }
                     }
@@ -483,14 +482,14 @@ impl MarketEventHandler for ComputationManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::collections::HashMap;
 
-    use tokio::sync::{broadcast, RwLock};
+    use tokio::sync::broadcast;
 
     use super::*;
     use crate::{
         algorithm::test_utils::{component, setup_market, token, MockProtocolSim},
-        feed::market_data::SharedMarketData,
+        feed::market_data::{MarketData, MarketState},
         types::BlockInfo,
     };
 
@@ -595,22 +594,22 @@ mod tests {
     ///
     /// Used to trigger `TotalFailure` in spot_price computation (full recompute with
     /// all components missing sim_state → succeeded == 0 → failure).
-    fn market_with_component_no_sim_state() -> Arc<RwLock<SharedMarketData>> {
+    fn market_with_component_no_sim_state() -> MarketData {
         let eth = token(1, "ETH");
         let usdc = token(2, "USDC");
         let pool = component("pool", &[eth.clone(), usdc.clone()]);
 
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         market.update_last_updated(BlockInfo::new(10, "0xhash".into(), 0));
         market.upsert_components(std::iter::once(pool));
         // Note: no update_states() — simulation state is intentionally absent
         market.upsert_tokens([eth, usdc]);
-        Arc::new(RwLock::new(market))
+        MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market)))
     }
 
     /// Creates a market with two pools: one with sim state (pool succeeds) and one without (pool
     /// fails). Used to trigger partial spot price failure.
-    fn market_with_mixed_sim_states() -> Arc<RwLock<SharedMarketData>> {
+    fn market_with_mixed_sim_states() -> MarketData {
         let eth = token(1, "ETH");
         let usdc = token(2, "USDC");
         let dai = token(3, "DAI");
@@ -618,32 +617,32 @@ mod tests {
         let pool1 = component("eth_usdc", &[eth.clone(), usdc.clone()]);
         let pool2 = component("eth_dai", &[eth.clone(), dai.clone()]);
 
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         market.update_last_updated(BlockInfo::new(10, "0xhash".into(), 0));
         market.upsert_components([pool1, pool2]);
         // Only pool1 has simulation state; pool2 intentionally has none
         market
             .update_states([("eth_usdc".to_string(), Box::new(MockProtocolSim::new(2000.0)) as _)]);
         market.upsert_tokens([eth, usdc, dai]);
-        Arc::new(RwLock::new(market))
+        MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market)))
     }
 
     /// Creates a market WITH sim_state but WITHOUT gas_price.
     ///
     /// Spot price computation succeeds (MockProtocolSim works), but token_price
     /// computation fails with `MissingDependency("gas_price")`.
-    fn market_with_sim_state_no_gas_price() -> Arc<RwLock<SharedMarketData>> {
+    fn market_with_sim_state_no_gas_price() -> MarketData {
         let eth = token(1, "ETH");
         let usdc = token(2, "USDC");
         let pool = component("pool", &[eth.clone(), usdc.clone()]);
 
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         // Note: no update_gas_price() — gas price is intentionally absent
         market.update_last_updated(BlockInfo::new(10, "0xhash".into(), 0));
         market.upsert_components(std::iter::once(pool));
         market.update_states([("pool".to_string(), Box::new(MockProtocolSim::new(2000.0)) as _)]);
         market.upsert_tokens([eth, usdc]);
-        Arc::new(RwLock::new(market))
+        MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market)))
     }
 
     #[tokio::test]
