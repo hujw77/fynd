@@ -1,5 +1,5 @@
 ---
-description: Overview of Fynd, its design and how to get started.
+description: The Open Source DEX Aggregator that runs on your hardware.
 icon: book-open
 layout:
   width: default
@@ -23,7 +23,11 @@ layout:
 
 ## What is Fynd?
 
-Fynd is a DeFi route-finding engine built on [Tycho](https://www.propellerheads.xyz/tycho). It finds optimal swap routes across DeFi protocols in real-time and returns solutions you can encode and execute on-chain.
+Fynd is an open-source DEX aggregator that runs locally on your server. We built Fynd to be **reliable** and **trustless.**
+
+Fynd gives you quotes in 20ms, supports 1.000 RPS on commodity hardware (see [performance](reference/benchmark-results.md)), does not overquote, and is configurable to the pools, tokens, and objectives you care about (low reverts, best price, low latency, etc.).
+
+Fynd builds on [Tycho](https://www.propellerheads.xyz/tycho) the open source DEX indexer (see the [protocols it supports](https://docs.propellerheads.xyz/tycho/for-solvers/supported-protocols)).
 
 {% hint style="danger" %}
 **Alpha Software — Unaudited Contracts**
@@ -38,7 +42,7 @@ Route APIs are simple, but the tradeoffs are painful: rate limits, network overh
 Fynd puts you in control:
 
 1. **Real-time market state** via Tycho Stream, covering all [Tycho-supported protocols](https://docs.propellerheads.xyz/tycho/for-solvers/supported-protocols)
-2. **50ms solution times:** You choose the balance between routing quality and latency.
+2. **As fast as 10ms per quote:** You choose the balance between routing quality and latency.
 3. **Custom algorithms:** Plug in your own algorithm or customize the pre-built one. Fynd runs multiple algorithms in parallel and picks the best result.
 4. **Execution on your terms:** Encode and execute swaps on-chain with full control over fees, slippage, and token transfer method.
 5. **Vertical scaling:** Scale up to meet your speed requirements.
@@ -69,6 +73,8 @@ For the best results today, test with trade sizes typical for your use case rath
 * Ethereum Mainnet
 * Base
 * Unichain
+
+_Coming soon_: Arbitrum, Polygon, and BSC.
 
 ### Supported Protocols
 
