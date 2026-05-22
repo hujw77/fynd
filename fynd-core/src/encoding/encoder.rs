@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use alloy::{
-    primitives::{aliases::U48, Address, Keccak256, U160, U256},
+    primitives::{aliases::U48, keccak256, Address, Keccak256, U160, U256},
     sol_types::SolValue,
 };
 use num_bigint::BigUint;
@@ -258,6 +258,14 @@ impl Encoder {
 
         let fn_sig = encoded_solution.function_signature();
         let swaps = encoded_solution.swaps();
+        let fee_breakdown = if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            fee_breakdown.with_swaps_hash(keccak256(swaps).0)
+        } else {
+            fee_breakdown
+        };
 
         let method_calldata = if fn_sig.contains("Permit2") {
             let permit = permit.ok_or(EncodingError::FatalError(

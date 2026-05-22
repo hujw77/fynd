@@ -226,11 +226,16 @@ fn order_quote_to_quote(
         .cloned()
         .map(Transaction::from);
     let fee_breakdown = order_quote.fee_breakdown().map(|fb| {
+        let swaps_hash = fb.swaps_hash().and_then(|b| {
+            let arr: [u8; 32] = b.0.as_ref().try_into().ok()?;
+            Some(arr)
+        });
         FeeBreakdown::new(
             fb.router_fee().clone(),
             fb.client_fee().clone(),
             fb.max_slippage().clone(),
             fb.min_amount_received().clone(),
+            swaps_hash,
         )
     });
     Ok(Quote::new(

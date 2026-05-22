@@ -6,6 +6,15 @@
 //! Two keys are used: the dev key as the sender, and a random ephemeral key
 //! as the fee receiver (in production this is the integrator's key).
 //!
+//! The EIP-712 `ClientFee` type hash includes swap-specific fields (`amountIn`,
+//! `tokenIn`, `tokenOut`, `minAmountOut`, `receiver`, `bytes swaps`) that are
+//! only known after the server has encoded the transaction. This requires a
+//! two-step flow:
+//! 1. Request a quote with unsigned client fee params → receive `fee_breakdown` containing
+//!    `swaps_hash` and `min_amount_received`.
+//! 2. Sign the full 10-field EIP-712 hash.
+//! 3. Re-request the quote with the valid signature and execute.
+//!
 //! ## Run with Anvil (mocked accounts)
 //!
 //! Requires `TYCHO_API_KEY` and `TYCHO_URL` env vars to be set:
@@ -100,36 +109,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // [doc:start client-fee-rust]
-    // Build the fee params (without signature).
+    // The EIP-712 ClientFee type hash includes swap-specific fields that are
+    // only known after encoding. Step 1: request an unsigned quote to obtain
+    // `swaps_hash` and `min_amount_received` from the fee breakdown.
+    let fee_unsigned = ClientFeeParams::new(
+        FEE_BPS,
+        Bytes::copy_from_slice(fee_receiver.as_slice()),
+        BigUint::ZERO,
+        u64::MAX,
+    );
+    let order = Order::new(
+        Bytes::copy_from_slice(sell_token.as_slice()),
+        Bytes::copy_from_slice(buy_token.as_slice()),
+        BigUint::from(SELL_AMOUNT),
+        OrderSide::Sell,
+        Bytes::copy_from_slice(sender.as_slice()),
+        None,
+    );
+    let quote_unsigned = client
+        .quote(QuoteParams::new(
+            order.clone(),
+            QuoteOptions::default()
+                .with_timeout_ms(5_000)
+                .with_encoding_options(
+                    EncodingOptions::new(SLIPPAGE).with_client_fee(fee_unsigned),
+                ),
+        ))
+        .await?;
+
+    let fee_breakdown = quote_unsigned
+        .fee_breakdown()
+        .ok_or("no fee breakdown in unsigned quote")?;
+    let swaps_hash = fee_breakdown
+        .swaps_hash()
+        .ok_or("no swaps_hash in fee breakdown — server must support client fee signing")?;
+
+    // Step 2: sign the full 10-field EIP-712 ClientFee hash.
+    // receiver defaults to sender when the order has no explicit receiver.
     let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),
         BigUint::ZERO,
         u64::MAX,
     );
-
-    // Compute the EIP-712 signing hash and sign it with the fee receiver's key.
-    let hash = fee.eip712_signing_hash(chain_id, &router_address)?;
+    let hash = fee.eip712_signing_hash(
+        chain_id,
+        &router_address,
+        quote_unsigned.amount_in(),
+        &Bytes::copy_from_slice(sell_token.as_slice()),
+        &Bytes::copy_from_slice(buy_token.as_slice()),
+        fee_breakdown.min_amount_received(),
+        &Bytes::copy_from_slice(sender.as_slice()),
+        swaps_hash,
+    )?;
     let sig = fee_signer
         .sign_hash(&B256::from(hash))
         .await?;
 
-    // Attach the signature and wire it into encoding options.
-    let fee = fee.with_signature(Bytes::copy_from_slice(&sig.as_bytes()[..]));
-    let encoding_options = EncodingOptions::new(SLIPPAGE).with_client_fee(fee);
+    // Step 3: re-request the quote with the valid signature attached.
+    let encoding_options = EncodingOptions::new(SLIPPAGE)
+        .with_client_fee(fee.with_signature(Bytes::copy_from_slice(&sig.as_bytes()[..])));
     // [doc:end client-fee-rust]
 
-    // Request a quote: sell 1 WETH for USDC with the client fee.
     let quote = client
         .quote(QuoteParams::new(
-            Order::new(
-                Bytes::copy_from_slice(sell_token.as_slice()),
-                Bytes::copy_from_slice(buy_token.as_slice()),
-                BigUint::from(SELL_AMOUNT),
-                OrderSide::Sell,
-                Bytes::copy_from_slice(sender.as_slice()),
-                None,
-            ),
+            order,
             QuoteOptions::default()
                 .with_timeout_ms(5_000)
                 .with_encoding_options(encoding_options),

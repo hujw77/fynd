@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.52.0"
+    "version": "0.59.0"
   },
   "paths": {
     "/v1/health": {
@@ -307,6 +307,14 @@
             "type": "string",
             "description": "Router protocol fee (fee on output + router's share of client fee).",
             "example": "350000"
+          },
+          "swaps_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "keccak256 of the ABI-encoded swap bytes, as a 0x-prefixed hex string.\nPresent only when client fee params were included in the request.\nUse this with `amount_in`, `token_in`, `token_out`, `min_amount_received`, and `receiver`\nto compute the 10-field EIP-712 `ClientFee` signing hash (see client library helpers).",
+            "example": null
           }
         }
       },

@@ -250,6 +250,10 @@ pub struct FeeBreakdown {
     /// This is the value encoded as min_amount_out in the transaction.
     #[serde_as(as = "DisplayFromStr")]
     min_amount_received: BigUint,
+    /// keccak256 of the ABI-encoded swap bytes, present when client fee params were provided.
+    /// Clients use this to compute the 10-field EIP-712 signing hash for the client fee.
+    #[serde(skip)]
+    swaps_hash: Option<[u8; 32]>,
 }
 
 impl FeeBreakdown {
@@ -260,7 +264,13 @@ impl FeeBreakdown {
         max_slippage: BigUint,
         min_amount_received: BigUint,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received }
+        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash: None }
+    }
+
+    /// Attaches the keccak256 hash of the encoded swap bytes.
+    pub fn with_swaps_hash(mut self, hash: [u8; 32]) -> Self {
+        self.swaps_hash = Some(hash);
+        self
     }
 
     /// Router protocol fee amount.
@@ -281,6 +291,12 @@ impl FeeBreakdown {
     /// Minimum amount the user receives on-chain.
     pub fn min_amount_received(&self) -> &BigUint {
         &self.min_amount_received
+    }
+
+    /// keccak256 of the ABI-encoded swap bytes.
+    /// Used by clients to construct the full 10-field EIP-712 `ClientFee` signing hash.
+    pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
+        self.swaps_hash.as_ref()
     }
 }
 

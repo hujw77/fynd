@@ -404,6 +404,13 @@ pub struct FeeBreakdown {
     #[serde_as(as = "DisplayFromStr")]
     #[cfg_attr(feature = "openapi", schema(value_type = String, example = "3493353150"))]
     min_amount_received: BigUint,
+    /// keccak256 of the ABI-encoded swap bytes, as a 0x-prefixed hex string.
+    /// Present only when client fee params were included in the request.
+    /// Use this with `amount_in`, `token_in`, `token_out`, `min_amount_received`, and `receiver`
+    /// to compute the 10-field EIP-712 `ClientFee` signing hash (see client library helpers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, example = json!(null)))]
+    swaps_hash: Option<Bytes>,
 }
 
 impl FeeBreakdown {
@@ -425,6 +432,12 @@ impl FeeBreakdown {
     /// Minimum amount the user receives on-chain.
     pub fn min_amount_received(&self) -> &BigUint {
         &self.min_amount_received
+    }
+
+    /// keccak256 of the ABI-encoded swap bytes. Present only when client fee params were
+    /// included in the request. Use this to construct the EIP-712 `ClientFee` signing hash.
+    pub fn swaps_hash(&self) -> Option<&Bytes> {
+        self.swaps_hash.as_ref()
     }
 }
 
@@ -1777,11 +1790,15 @@ mod conversions {
 
     impl From<fynd_core::FeeBreakdown> for FeeBreakdown {
         fn from(core: fynd_core::FeeBreakdown) -> Self {
+            let swaps_hash = core
+                .swaps_hash()
+                .map(|h| Bytes(bytes::Bytes::copy_from_slice(h.as_ref())));
             Self {
                 router_fee: core.router_fee().clone(),
                 client_fee: core.client_fee().clone(),
                 max_slippage: core.max_slippage().clone(),
                 min_amount_received: core.min_amount_received().clone(),
+                swaps_hash,
             }
         }
     }
