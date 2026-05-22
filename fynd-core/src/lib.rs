@@ -55,7 +55,10 @@ pub use price_guard::{
     provider::{ExternalPrice, PriceProvider, PriceProviderError},
 };
 pub use solver::{FyndBuilder, PoolConfig, Solver, SolverBuildError, SolverParts, WaitReadyError};
-pub use tycho_simulation::evm::pending::{PendingBlockProcessor, PendingError, PendingUpdate};
+pub use tycho_simulation::{
+    evm::pending::{PendingBlockProcessor, PendingError, PendingUpdate},
+    tycho_common::traits::TxDeltaIndexer,
+};
 pub use types::{
     BlockInfo, ClientFeeParams, ComponentId, EncodingOptions, FeeBreakdown, Order, OrderQuote,
     OrderSide, OrderValidationError, PermitDetails, PermitSingle, Quote, QuoteOptions,

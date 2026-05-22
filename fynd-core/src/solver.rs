@@ -18,7 +18,7 @@ use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
 use tycho_simulation::{
     evm::pending::PendingBlockProcessor,
-    tycho_common::{models::Chain, Bytes},
+    tycho_common::{models::Chain, traits::TxDeltaIndexer, Bytes},
     tycho_core::models::Address,
     tycho_ethereum::rpc::EthereumRpcClient,
 };
@@ -340,6 +340,7 @@ pub struct FyndBuilder {
     pools: Vec<PoolEntry>,
     price_guard_enabled: bool,
     price_providers: Vec<Box<dyn PriceProvider>>,
+    pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
 }
 
 impl FyndBuilder {
@@ -372,6 +373,7 @@ impl FyndBuilder {
             pools: Vec::new(),
             price_guard_enabled: false,
             price_providers: Vec::new(),
+            pending_indexers: Vec::new(),
         }
     }
 
@@ -527,6 +529,21 @@ impl FyndBuilder {
     /// [`build`](Self::build) with the shared market data.
     pub fn register_price_provider(mut self, provider: Box<dyn PriceProvider>) -> Self {
         self.price_providers.push(provider);
+        self
+    }
+
+    /// Registers a [`TxDeltaIndexer`] for ephemeral pending-block simulation.
+    ///
+    /// `extractor` is the protocol synchronizer name (e.g. `"uniswap_v3"`). Only has effect
+    /// when calling [`build_with_pending`](Self::build_with_pending). VM protocols (prefix
+    /// `"vm:"`) are rejected by the underlying stream builder at build time.
+    pub fn with_pending_indexer(
+        mut self,
+        extractor: impl Into<String>,
+        indexer: Box<dyn TxDeltaIndexer>,
+    ) -> Self {
+        self.pending_indexers
+            .push((extractor.into(), indexer));
         self
     }
 
@@ -914,9 +931,10 @@ impl FyndBuilder {
 
         let (pending_tx, pending_rx) = tokio::sync::oneshot::channel::<PendingBlockProcessor>();
 
+        let pending_indexers = self.pending_indexers;
         let feed_handle = tokio::spawn(async move {
             if let Err(e) = tycho_feed
-                .run_with_pending(pending_tx)
+                .run_with_pending(pending_tx, pending_indexers)
                 .await
             {
                 tracing::error!(error = %e, "tycho feed error");

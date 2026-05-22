@@ -15,6 +15,7 @@ use tycho_simulation::{
     protocol::models::Update,
     rfq::stream::RFQStreamBuilder,
     tycho_client::feed::{component_tracker::ComponentFilter, SynchronizerState},
+    tycho_common::traits::TxDeltaIndexer,
     tycho_core::Bytes,
     utils::load_all_tokens,
 };
@@ -257,6 +258,7 @@ impl TychoFeed {
     pub(crate) async fn run_with_pending(
         self,
         pending_tx: oneshot::Sender<PendingBlockProcessor>,
+        pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
     ) -> Result<(), DataFeedError> {
         if self
             .config
@@ -295,7 +297,7 @@ impl TychoFeed {
 
         debug!("Loaded {} tokens from Tycho", all_tokens.len());
 
-        let (mut protocol_stream, pending) = register_exchanges(
+        let mut stream_builder = register_exchanges(
             ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
                 .skip_state_decode_failures(true),
             ComponentFilter::with_tvl_range(
@@ -313,10 +315,18 @@ impl TychoFeed {
         .skip_state_decode_failures(true)
         .min_token_quality(self.config.min_token_quality as u32)
         .set_tokens(all_tokens)
-        .await
-        .build_with_pending()
-        .await
-        .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+        .await;
+
+        for (extractor, indexer) in pending_indexers {
+            stream_builder = stream_builder
+                .with_pending_indexer(&extractor, indexer)
+                .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+        }
+
+        let (mut protocol_stream, pending) = stream_builder
+            .build_with_pending()
+            .await
+            .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
 
         if pending_tx.send(pending).is_err() {
             tracing::warn!(
