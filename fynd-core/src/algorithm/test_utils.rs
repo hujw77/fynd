@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use chrono::NaiveDateTime;
 use num_bigint::BigUint;
+use num_rational::BigRational;
+use num_traits::{ToPrimitive, Zero};
 use tycho_simulation::{
     tycho_core::{
         dto::ProtocolStateDelta,
@@ -245,6 +247,128 @@ impl ProtocolSim for MockProtocolSim {
             .as_any()
             .downcast_ref::<Self>()
             .map(|o| (o.spot_price - self.spot_price).abs() < f64::EPSILON)
+            .unwrap_or(false)
+    }
+}
+
+// ==================== ConstantProductSim ====================
+
+/// xy=k AMM simulator for testing. Uses pure `BigUint` arithmetic; No fees — pure constant-product
+/// math.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConstantProductSim {
+    /// Reserve of token 0 (lower-address token)
+    pub reserve_0: BigUint,
+    /// Reserve of token 1 (higher-address token)
+    pub reserve_1: BigUint,
+    /// Gas units per swap
+    pub gas: u64,
+}
+
+impl ConstantProductSim {
+    fn reserves_for<'a>(&'a self, token_a: &Token, token_b: &Token) -> (&'a BigUint, &'a BigUint) {
+        if token_a.address < token_b.address {
+            (&self.reserve_0, &self.reserve_1)
+        } else {
+            (&self.reserve_1, &self.reserve_0)
+        }
+    }
+}
+
+#[typetag::serde]
+impl ProtocolSim for ConstantProductSim {
+    fn fee(&self) -> f64 {
+        // No fees for simplicity in tests
+        0.0
+    }
+
+    fn spot_price(&self, base: &Token, quote: &Token) -> Result<f64, SimulationError> {
+        let (reserve_in, reserve_out) = self.reserves_for(base, quote);
+        if reserve_in.is_zero() {
+            return Err(SimulationError::FatalError("reserve_in is zero".to_string()));
+        }
+        let price = BigRational::new(reserve_out.clone().into(), reserve_in.clone().into());
+        price
+            .to_f64()
+            .ok_or_else(|| SimulationError::FatalError("price ratio too large for f64".to_string()))
+    }
+
+    fn get_amount_out(
+        &self,
+        amount_in: BigUint,
+        token_in: &Token,
+        token_out: &Token,
+    ) -> Result<GetAmountOutResult, SimulationError> {
+        let (reserve_in, reserve_out) = self.reserves_for(token_in, token_out);
+
+        if &amount_in >= reserve_in {
+            return Err(SimulationError::InvalidInput(
+                "amount_in must be less than reserve_in".to_string(),
+                None,
+            ));
+        }
+
+        let amount_out = &amount_in * reserve_out / (reserve_in + &amount_in);
+
+        let (new_reserve_0, new_reserve_1) = if token_in.address < token_out.address {
+            (reserve_in + &amount_in, reserve_out - &amount_out)
+        } else {
+            (reserve_out - &amount_out, reserve_in + &amount_in)
+        };
+
+        let new_state = Box::new(ConstantProductSim {
+            reserve_0: new_reserve_0,
+            reserve_1: new_reserve_1,
+            gas: self.gas,
+        });
+
+        Ok(GetAmountOutResult::new(amount_out, BigUint::from(self.gas), new_state))
+    }
+
+    fn get_limits(
+        &self,
+        sell_token: Bytes,
+        buy_token: Bytes,
+    ) -> Result<(BigUint, BigUint), SimulationError> {
+        let (reserve_in, reserve_out) = if sell_token < buy_token {
+            (&self.reserve_0, &self.reserve_1)
+        } else {
+            (&self.reserve_1, &self.reserve_0)
+        };
+        // Half of the reserves for simplicity in tests
+        Ok((reserve_in / BigUint::from(2u64), reserve_out / BigUint::from(2u64)))
+    }
+
+    fn query_pool_swap(&self, _params: &QueryPoolSwapParams) -> Result<PoolSwap, SimulationError> {
+        unimplemented!("query_pool_swap not implemented in ConstantProductSim")
+    }
+
+    fn delta_transition(
+        &mut self,
+        _delta: ProtocolStateDelta,
+        _tokens: &HashMap<Bytes, Token>,
+        _balances: &Balances,
+    ) -> Result<(), TransitionError> {
+        unimplemented!("delta_transition not implemented in ConstantProductSim")
+    }
+
+    fn clone_box(&self) -> Box<dyn ProtocolSim> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn eq(&self, other: &dyn ProtocolSim) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .map(|o| o.reserve_0 == self.reserve_0 && o.reserve_1 == self.reserve_1)
             .unwrap_or(false)
     }
 }
@@ -815,6 +939,104 @@ mod tests {
 
         assert_eq!(buy_limit, BigUint::from(8_000u64));
         assert_eq!(sell_limit, BigUint::from(32_000u64)); // 8000 * 4
+    }
+
+    // ==================== ConstantProductSim Tests ====================
+
+    fn cp_pool(reserve_0: u64, reserve_1: u64) -> ConstantProductSim {
+        ConstantProductSim {
+            reserve_0: BigUint::from(reserve_0),
+            reserve_1: BigUint::from(reserve_1),
+            gas: 50_000,
+        }
+    }
+
+    #[test]
+    fn test_constant_product_get_amount_out() {
+        // reserve_in=1000, reserve_out=2000, amount_in=100
+        // amount_out = 100 * 2000 / (1000 + 100) = 200_000 / 1100 = 181
+        let sim = cp_pool(1000, 2000);
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        let result = sim
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+
+        assert_eq!(result.amount, BigUint::from(181u64));
+        let new_state = result
+            .new_state
+            .as_any()
+            .downcast_ref::<ConstantProductSim>()
+            .unwrap();
+        assert_eq!(new_state.reserve_0, BigUint::from(1100u64));
+        assert_eq!(new_state.reserve_1, BigUint::from(1819u64));
+    }
+
+    #[test]
+    fn test_constant_product_split_beats_single() {
+        // Concavity of xy=k: splitting across two identical pools yields more output.
+        // Single: 200 * 2000 / (1000 + 200) = 333
+        // Split 100+100: (181) + (181) = 362 > 333
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        let single = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(200u64), &t_in, &t_out)
+            .unwrap();
+
+        let half1 = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+        let half2 = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+        let split_total = half1.amount + half2.amount;
+
+        assert!(
+            split_total > single.amount,
+            "split {split_total} should beat single {}",
+            single.amount
+        );
+    }
+
+    #[test]
+    fn test_constant_product_spot_price_direction() {
+        // reserve_0=1000 (token 0x01), reserve_1=2000 (token 0x02)
+        // forward: 2000/1000 = 2.0; reverse: 1000/2000 = 0.5; product = 1.0
+        let sim = cp_pool(1000, 2000);
+        let token_low = token(0x01, "T0");
+        let token_high = token(0x02, "T1");
+
+        let forward = sim
+            .spot_price(&token_low, &token_high)
+            .unwrap();
+        let reverse = sim
+            .spot_price(&token_high, &token_low)
+            .unwrap();
+
+        assert!(
+            (forward * reverse - 1.0).abs() < 1e-9,
+            "prices must be inverses: {forward} * {reverse} = {}",
+            forward * reverse
+        );
+    }
+
+    #[test]
+    fn test_constant_product_empties_pool_error() {
+        let sim = cp_pool(1000, 2000);
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        // amount_in == reserve_in should be rejected
+        let result = sim.get_amount_out(BigUint::from(1000u64), &t_in, &t_out);
+
+        match result {
+            Err(SimulationError::InvalidInput(msg, _)) => {
+                assert!(msg.contains("reserve_in"), "unexpected error: {msg}");
+            }
+            _ => panic!("expected InvalidInput error, got {result:?}"),
+        }
     }
 
     // ==================== Mock vs UniV2 Comparison Test ====================

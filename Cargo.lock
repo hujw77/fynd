@@ -3311,6 +3311,7 @@ dependencies = [
  "lazy_static",
  "metrics",
  "num-bigint",
+ "num-rational",
  "num-traits",
  "num_cpus",
  "petgraph",
