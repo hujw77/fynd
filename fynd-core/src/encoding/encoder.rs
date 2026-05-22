@@ -220,18 +220,12 @@ impl Encoder {
         let min_amount_out = biguint_to_u256(fee_breakdown.min_amount_received());
         let native_address = &self.chain.native_token().address;
         let router_eth = Address::from_slice(ROUTER_ETH_ADDRESS.as_ref());
-        let raw_token_in = bytes_to_address(solution.token_in())?;
-        let raw_token_out = bytes_to_address(solution.token_out())?;
-        let token_in = if raw_token_in.as_slice() == native_address.as_ref() {
-            router_eth
-        } else {
-            raw_token_in
+        let to_router_address = |raw: Address| {
+            if raw.as_slice() == native_address.as_ref() { router_eth } else { raw }
         };
-        let token_out = if raw_token_out.as_slice() == native_address.as_ref() {
-            router_eth
-        } else {
-            raw_token_out
-        };
+
+        let token_in = to_router_address(bytes_to_address(solution.token_in())?);
+        let token_out = to_router_address(bytes_to_address(solution.token_out())?);
         let receiver = bytes_to_address(solution.receiver())?;
 
         let (permit, permit2_sig) = if let Some(p) = encoding_options.permit() {
