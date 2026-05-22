@@ -7,7 +7,7 @@ use tycho_simulation::{
     tycho_common::models::Chain,
 };
 
-/// Fetches all available protocol systems from the Tycho RPC, handling pagination.
+/// Fetches all available protocol systems from the Tycho RPC.
 pub async fn fetch_protocol_systems(
     tycho_url: &str,
     auth_key: Option<&str>,
