@@ -254,6 +254,10 @@ pub struct FeeBreakdown {
     /// Clients use this to compute the 10-field EIP-712 signing hash for the client fee.
     #[serde(skip)]
     swaps_hash: Option<[u8; 32]>,
+    /// Byte offset of the client fee signature within `Transaction.data`.
+    /// Clients use this to patch the 65-byte EIP-712 signature into the calldata.
+    #[serde(skip)]
+    signature_offset: Option<usize>,
 }
 
 impl FeeBreakdown {
@@ -264,12 +268,25 @@ impl FeeBreakdown {
         max_slippage: BigUint,
         min_amount_received: BigUint,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash: None }
+        Self {
+            router_fee,
+            client_fee,
+            max_slippage,
+            min_amount_received,
+            swaps_hash: None,
+            signature_offset: None,
+        }
     }
 
     /// Attaches the keccak256 hash of the encoded swap bytes.
     pub fn with_swaps_hash(mut self, hash: [u8; 32]) -> Self {
         self.swaps_hash = Some(hash);
+        self
+    }
+
+    /// Attaches the byte offset of the client fee signature within the calldata.
+    pub fn with_signature_offset(mut self, offset: usize) -> Self {
+        self.signature_offset = Some(offset);
         self
     }
 
@@ -297,6 +314,12 @@ impl FeeBreakdown {
     /// Used by clients to construct the full 10-field EIP-712 `ClientFee` signing hash.
     pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
         self.swaps_hash.as_ref()
+    }
+
+    /// Byte offset of the client fee signature within `Transaction.data`.
+    /// Clients use this to overwrite the placeholder signature with the real one.
+    pub fn signature_offset(&self) -> Option<usize> {
+        self.signature_offset
     }
 }
 

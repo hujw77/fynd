@@ -758,6 +758,8 @@ pub struct FeeBreakdown {
     min_amount_received: BigUint,
     /// keccak256 of the ABI-encoded swap bytes. Use this for EIP-712 signing.
     swaps_hash: Option<[u8; 32]>,
+    /// Byte offset of the client fee signature within the TychoRouter calldata
+    signature_offset: Option<usize>,
 }
 
 impl FeeBreakdown {
@@ -767,8 +769,16 @@ impl FeeBreakdown {
         max_slippage: BigUint,
         min_amount_received: BigUint,
         swaps_hash: Option<[u8; 32]>,
+        signature_offset: Option<usize>,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash }
+        Self {
+            router_fee,
+            client_fee,
+            max_slippage,
+            min_amount_received,
+            swaps_hash,
+            signature_offset,
+        }
     }
 
     /// Router protocol fee (fee on output + router's share of client fee).
@@ -799,6 +809,14 @@ impl FeeBreakdown {
     /// [`ClientFeeParams::eip712_signing_hash`] in the two-step signing flow.
     pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
         self.swaps_hash.as_ref()
+    }
+
+    /// Byte offset of the client fee signature within `Transaction.data`.
+    ///
+    /// Use this with [`Quote::with_client_fee_signature`] to patch the real
+    /// EIP-712 signature into the calldata after signing.
+    pub fn signature_offset(&self) -> Option<usize> {
+        self.signature_offset
     }
 }
 
@@ -925,6 +943,37 @@ impl Quote {
     /// Populated by [`FyndClient::quote`](crate::FyndClient::quote). Returns `0` if not set.
     pub fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
+    }
+
+    /// Patches the 65-byte client fee EIP-712 signature into the transaction
+    /// calldata at the offset returned by the server.
+    ///
+    /// Use this after a single quote request:
+    ///
+    /// 1. Request a quote with unsigned [`ClientFeeParams`] (empty signature).
+    /// 2. Read [`FeeBreakdown::swaps_hash`] and [`FeeBreakdown::signature_offset`] from the
+    ///    response.
+    /// 3. Sign the 10-field EIP-712 hash using [`ClientFeeParams::eip712_signing_hash`].
+    /// 4. Call this method to patch the signature into the calldata.
+    /// 5. Execute the transaction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the quote has no transaction, no fee breakdown, or no
+    /// `signature_offset`.
+    pub fn with_client_fee_signature(mut self, signature: &[u8]) -> Self {
+        let offset = self
+            .fee_breakdown
+            .as_ref()
+            .expect("fee_breakdown required for signature patching")
+            .signature_offset()
+            .expect("signature_offset required for signature patching");
+        let tx = self
+            .transaction
+            .as_mut()
+            .expect("transaction required for signature patching");
+        tx.data[offset..offset + signature.len()].copy_from_slice(signature);
+        self
     }
 
     /// Create a new [`Quote`].

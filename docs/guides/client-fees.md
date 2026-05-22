@@ -118,23 +118,58 @@ const opts = withClientFee(encodingOptions(0.005), {...feeParams, signature});
 
 {% tab title="Rust" %}
 ```rust
-    // Build the fee params (without signature).
+    // Step 1: request a quote with unsigned client fee params.
+    // The server encodes the full calldata and returns `swaps_hash` +
+    // `signature_offset` in the fee breakdown so the client can patch
+    // the real signature in.
     let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),
         BigUint::ZERO,
         u64::MAX,
     );
+    let order = Order::new(
+        Bytes::copy_from_slice(sell_token.as_slice()),
+        Bytes::copy_from_slice(buy_token.as_slice()),
+        BigUint::from(SELL_AMOUNT),
+        OrderSide::Sell,
+        Bytes::copy_from_slice(sender.as_slice()),
+        None,
+    );
+    let quote = client
+        .quote(QuoteParams::new(
+            order,
+            QuoteOptions::default()
+                .with_timeout_ms(5_000)
+                .with_encoding_options(EncodingOptions::new(SLIPPAGE).with_client_fee(fee.clone())),
+        ))
+        .await?;
 
-    // Compute the EIP-712 signing hash and sign it with the fee receiver's key.
-    let hash = fee.eip712_signing_hash(chain_id, &router_address)?;
+    let fee_breakdown = quote
+        .fee_breakdown()
+        .ok_or("no fee breakdown in quote")?;
+    let swaps_hash = fee_breakdown
+        .swaps_hash()
+        .ok_or("no swaps_hash — server must support client fee signing")?;
+
+    // Step 2: sign the full 10-field EIP-712 ClientFee hash.
+    // receiver defaults to sender when the order has no explicit receiver.
+    let hash = fee.eip712_signing_hash(
+        chain_id,
+        &router_address,
+        quote.amount_in(),
+        &Bytes::copy_from_slice(sell_token.as_slice()),
+        &Bytes::copy_from_slice(buy_token.as_slice()),
+        fee_breakdown.min_amount_received(),
+        &Bytes::copy_from_slice(sender.as_slice()),
+        swaps_hash,
+    )?;
     let sig = fee_signer
         .sign_hash(&B256::from(hash))
         .await?;
 
-    // Attach the signature and wire it into encoding options.
-    let fee = fee.with_signature(Bytes::copy_from_slice(&sig.as_bytes()[..]));
-    let encoding_options = EncodingOptions::new(SLIPPAGE).with_client_fee(fee);
+    // Step 3: patch the real signature into the calldata.
+    let quote = quote.with_client_fee_signature(&sig.as_bytes()[..]);
 ```
 
 See the full working example: [`clients/rust/examples/swap_client_fee.rs`](../../clients/rust/examples/swap_client_fee.rs)

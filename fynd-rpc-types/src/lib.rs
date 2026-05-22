@@ -411,6 +411,12 @@ pub struct FeeBreakdown {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, example = json!(null)))]
     swaps_hash: Option<Bytes>,
+    /// Byte offset of the client fee signature within `Transaction.data`.
+    /// Clients use this to overwrite the placeholder signature with the real one after signing the
+    /// EIP-712 hash (see [`swaps_hash`](Self::swaps_hash)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(example = json!(null)))]
+    client_fee_signature_offset: Option<usize>,
 }
 
 impl FeeBreakdown {
@@ -438,6 +444,12 @@ impl FeeBreakdown {
     /// included in the request. Use this to construct the EIP-712 `ClientFee` signing hash.
     pub fn swaps_hash(&self) -> Option<&Bytes> {
         self.swaps_hash.as_ref()
+    }
+
+    /// Byte offset of the client fee signature within `Transaction.data`.
+    /// Clients use this to overwrite the placeholder with the real signature.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -1799,6 +1811,7 @@ mod conversions {
                 max_slippage: core.max_slippage().clone(),
                 min_amount_received: core.min_amount_received().clone(),
                 swaps_hash,
+                client_fee_signature_offset: core.signature_offset(),
             }
         }
     }

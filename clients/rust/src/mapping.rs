@@ -236,6 +236,7 @@ fn order_quote_to_quote(
             fb.max_slippage().clone(),
             fb.min_amount_received().clone(),
             swaps_hash,
+            fb.client_fee_signature_offset(),
         )
     });
     Ok(Quote::new(

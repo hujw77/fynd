@@ -255,13 +255,16 @@ impl Encoder {
             (None, vec![])
         };
 
+        // Use a known placeholder so find_signature_offset can locate it reliably.
+        // The client overwrites these bytes with the real signature after signing.
+        let sig_placeholder = vec![0x42u8; 65];
         let client_fee_params = if let Some(fee) = encoding_options.client_fee_params() {
             (
                 fee.bps(),
                 bytes_to_address(fee.receiver())?,
                 biguint_to_u256(fee.max_contribution()),
                 U256::from(fee.deadline()),
-                fee.signature().to_vec(),
+                sig_placeholder.clone(),
             )
         } else {
             (0u16, Address::ZERO, U256::ZERO, U256::MAX, vec![])
@@ -333,6 +336,22 @@ impl Encoder {
 
         let contract_interaction =
             Self::encode_input(encoded_solution.function_signature(), method_calldata);
+
+        let fee_breakdown = if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            if let Some(offset) =
+                Self::find_signature_offset(&contract_interaction, &sig_placeholder)
+            {
+                fee_breakdown.with_signature_offset(offset)
+            } else {
+                fee_breakdown
+            }
+        } else {
+            fee_breakdown
+        };
+
         let value =
             if token_in == router_eth { solution.amount_in().clone() } else { BigUint::ZERO };
         let transaction = Transaction::new(
@@ -365,6 +384,30 @@ impl Encoder {
         }
         call_data.extend(encoded_args);
         call_data
+    }
+
+    /// Finds the byte offset of `sig_bytes` within `calldata`.
+    ///
+    /// Returns `None` if the signature is not found or appears more than once
+    /// (ambiguous match).
+    fn find_signature_offset(calldata: &[u8], sig_bytes: &[u8]) -> Option<usize> {
+        if sig_bytes.is_empty() {
+            return None;
+        }
+        let mut found = None;
+        for (i, window) in calldata
+            .windows(sig_bytes.len())
+            .enumerate()
+        {
+            if window == sig_bytes {
+                if found.is_some() {
+                    // Ambiguous — signature pattern appears more than once
+                    return None;
+                }
+                found = Some(i);
+            }
+        }
+        found
     }
 
     /// Mirrors the on-chain `FeeCalculator.calculateFee` using identical integer arithmetic.
@@ -690,5 +733,83 @@ mod tests {
             .unwrap();
 
         assert!(result[0].transaction().is_some());
+    }
+
+    // ==================== Signature Offset Tests ====================
+
+    fn make_client_fee(bps: u16) -> crate::ClientFeeParams {
+        crate::ClientFeeParams::new(
+            bps,
+            Bytes::from(make_address(0xBB).as_ref()),
+            BigUint::from(0u64),
+            1_893_456_000u64,
+            Bytes::from(vec![]),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_encode_with_client_fee_returns_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let fb = result[0].fee_breakdown().unwrap();
+        let offset = fb
+            .signature_offset()
+            .expect("signature_offset must be present with client fee");
+
+        // The server always encodes with the internal placeholder [0x42; 65]
+        let calldata = result[0].transaction().unwrap().data();
+        assert_eq!(&calldata[offset..offset + 65], &[0x42u8; 65]);
+    }
+
+    #[tokio::test]
+    async fn test_encode_without_client_fee_has_no_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01);
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let fb = result[0].fee_breakdown().unwrap();
+        assert!(fb.signature_offset().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signature_offset_allows_patching() {
+        let encoder = real_encoder();
+        let real_sig = vec![0xFF; 65];
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let offset = result[0]
+            .fee_breakdown()
+            .unwrap()
+            .signature_offset()
+            .unwrap();
+
+        let mut calldata = result[0]
+            .transaction()
+            .unwrap()
+            .data()
+            .to_vec();
+        calldata[offset..offset + 65].copy_from_slice(&real_sig);
+        assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
     }
 }
