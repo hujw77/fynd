@@ -254,23 +254,13 @@ impl TychoFeed {
     /// block is processed. If the receiver has already been dropped the processor is
     /// discarded and the feed continues normally (degraded mode, no pending updates).
     ///
-    /// RFQ protocols are not supported with this method.
+    /// RFQ protocols in the config are silently ignored; only on-chain EVM protocols
+    /// are connected to the `PendingBlockProcessor`.
     pub(crate) async fn run_with_pending(
         self,
         pending_tx: oneshot::Sender<PendingBlockProcessor>,
         pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
     ) -> Result<(), DataFeedError> {
-        if self
-            .config
-            .protocols
-            .iter()
-            .any(|p| p.starts_with("rfq:"))
-        {
-            return Err(DataFeedError::Config(
-                "run_with_pending does not support RFQ protocols".to_string(),
-            ));
-        }
-
         info!(
             tycho_url = %self.config.tycho_url,
             protocols = ?self.config.protocols,
