@@ -221,7 +221,11 @@ impl Encoder {
         let native_address = &self.chain.native_token().address;
         let router_eth = Address::from_slice(ROUTER_ETH_ADDRESS.as_ref());
         let to_router_address = |raw: Address| {
-            if raw.as_slice() == native_address.as_ref() { router_eth } else { raw }
+            if raw.as_slice() == native_address.as_ref() {
+                router_eth
+            } else {
+                raw
+            }
         };
 
         let token_in = to_router_address(bytes_to_address(solution.token_in())?);
