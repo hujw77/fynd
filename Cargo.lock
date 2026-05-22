@@ -7492,8 +7492,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-client"
-version = "0.297.0"
-source = "git+https://github.com/propeller-heads/tycho-indexer?tag=0.297.0#8f108cd16f159ff8076b36a30f7287b544e986b6"
+version = "0.300.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39fe09e2e8c5e9ad7e78cfecf4838daaf3e334c8ebb178cd26b3b3a3ad98be7f"
 dependencies = [
  "async-trait",
  "backoff",
@@ -7521,8 +7522,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-common"
-version = "0.297.0"
-source = "git+https://github.com/propeller-heads/tycho-indexer?tag=0.297.0#8f108cd16f159ff8076b36a30f7287b544e986b6"
+version = "0.300.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "305ad860280fd53c63d729fe2a313a73370aa587f4556a1259c34ac98d320495"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7547,8 +7549,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-ethereum"
-version = "0.297.0"
-source = "git+https://github.com/propeller-heads/tycho-indexer?tag=0.297.0#8f108cd16f159ff8076b36a30f7287b544e986b6"
+version = "0.300.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21f381953d5009758cab49b0007c1f7c4fb5514cdfef5c3f8c58fcb67cd0124c"
 dependencies = [
  "alloy",
  "async-trait",
@@ -7568,8 +7571,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-execution"
-version = "0.297.0"
-source = "git+https://github.com/propeller-heads/tycho-indexer?tag=0.297.0#8f108cd16f159ff8076b36a30f7287b544e986b6"
+version = "0.300.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b96786b4c393f77c75dc5c281970b68cb6d98d3140bad80f897d290b52c7c312"
 dependencies = [
  "alloy",
  "chrono",
@@ -7588,8 +7592,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-simulation"
-version = "0.297.0"
-source = "git+https://github.com/propeller-heads/tycho-indexer?tag=0.297.0#8f108cd16f159ff8076b36a30f7287b544e986b6"
+version = "0.300.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd509cb6acbb8e6e51bb592ee119e72d033eb1c362156322eb8869f6c8dd297f"
 dependencies = [
  "alloy",
  "alloy-chains",
