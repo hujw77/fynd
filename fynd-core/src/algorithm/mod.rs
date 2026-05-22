@@ -20,6 +20,8 @@
 
 pub mod bellman_ford;
 pub mod most_liquid;
+#[allow(dead_code)]
+pub(crate) mod split_primitives;
 
 #[cfg(test)]
 pub mod test_utils;
