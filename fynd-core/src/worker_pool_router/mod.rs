@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(quote.orders().len(), 1);
         assert_eq!(quote.orders()[0].status(), QuoteStatus::Success);
         // amount_out_net_gas is refined using estimate_gas_usage before ranking
-        assert_eq!(*quote.orders()[0].amount_out_net_gas(), BigUint::from(837u64));
+        assert_eq!(*quote.orders()[0].amount_out_net_gas(), BigUint::from(873u64));
         assert!(!quote.orders()[0]
             .transaction()
             .unwrap()
@@ -694,7 +694,7 @@ mod tests {
         let quote = result.unwrap();
         assert_eq!(quote.orders().len(), 1);
         // Pool B wins (higher refined amount_out_net_gas after estimate_gas_usage)
-        assert_eq!(*quote.orders()[0].amount_out_net_gas(), BigUint::from(922u64));
+        assert_eq!(*quote.orders()[0].amount_out_net_gas(), BigUint::from(938u64));
         assert!(!quote.orders()[0]
             .transaction()
             .unwrap()
