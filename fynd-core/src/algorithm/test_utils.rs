@@ -266,7 +266,7 @@ pub struct ConstantProductSim {
 }
 
 impl ConstantProductSim {
-    fn reserves_for<'a>(&'a self, token_a: &Token, token_b: &Token) -> (&'a BigUint, &'a BigUint) {
+    fn reserves_for(&self, token_a: &Token, token_b: &Token) -> (&BigUint, &BigUint) {
         if token_a.address < token_b.address {
             (&self.reserve_0, &self.reserve_1)
         } else {
