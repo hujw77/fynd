@@ -247,18 +247,19 @@ impl TychoFeed {
     }
 
     /// Like [`run`](Self::run) but calls [`ProtocolStreamBuilder::build_with_pending`]
-    /// and delivers the [`PendingBlockProcessor`] via `pending_tx` before entering the
-    /// stream loop.
+    /// and delivers the [`PendingBlockProcessor`] (or a setup error) via `pending_tx`
+    /// before entering the stream loop.
     ///
-    /// The oneshot fires after token loading and stream setup, but before the first
-    /// block is processed. If the receiver has already been dropped the processor is
-    /// discarded and the feed continues normally (degraded mode, no pending updates).
+    /// If setup fails before the processor can be created, the error message is sent
+    /// through the channel so the caller can surface the root cause instead of seeing
+    /// only "channel closed". If the receiver has already been dropped the processor is
+    /// discarded and the feed continues normally.
     ///
     /// RFQ protocols in the config are silently ignored; only on-chain EVM protocols
     /// are connected to the `PendingBlockProcessor`.
     pub(crate) async fn run_with_pending(
         self,
-        pending_tx: oneshot::Sender<PendingBlockProcessor>,
+        pending_tx: oneshot::Sender<Result<PendingBlockProcessor, String>>,
         pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
     ) -> Result<(), DataFeedError> {
         info!(
@@ -273,7 +274,7 @@ impl TychoFeed {
             .clone()
             .or_else(|| std::env::var("TYCHO_API_KEY").ok());
 
-        let all_tokens = load_all_tokens(
+        let all_tokens = match load_all_tokens(
             self.config.tycho_url.as_str(),
             !self.config.use_tls,
             tycho_api_key.as_deref(),
@@ -283,11 +284,18 @@ impl TychoFeed {
             self.config.traded_n_days_ago,
         )
         .await
-        .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+        {
+            Ok(t) => t,
+            Err(e) => {
+                let e = DataFeedError::StreamError(e.to_string());
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        };
 
         debug!("Loaded {} tokens from Tycho", all_tokens.len());
 
-        let mut stream_builder = register_exchanges(
+        let mut stream_builder = match register_exchanges(
             ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
                 .skip_state_decode_failures(true),
             ComponentFilter::with_tvl_range(
@@ -300,7 +308,13 @@ impl TychoFeed {
                     .clone(),
             ),
             &self.config.protocols,
-        )?
+        ) {
+            Ok(sb) => sb,
+            Err(e) => {
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        }
         .auth_key(self.config.tycho_api_key.clone())
         .skip_state_decode_failures(true)
         .min_token_quality(self.config.min_token_quality as u32)
@@ -308,17 +322,29 @@ impl TychoFeed {
         .await;
 
         for (extractor, indexer) in pending_indexers {
-            stream_builder = stream_builder
-                .with_pending_indexer(&extractor, indexer)
-                .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+            stream_builder = match stream_builder.with_pending_indexer(&extractor, indexer) {
+                Ok(sb) => sb,
+                Err(e) => {
+                    let e = DataFeedError::StreamError(e.to_string());
+                    let _ = pending_tx.send(Err(e.to_string()));
+                    return Err(e);
+                }
+            };
         }
 
-        let (mut protocol_stream, pending) = stream_builder
+        let (mut protocol_stream, pending) = match stream_builder
             .build_with_pending()
             .await
-            .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                let e = DataFeedError::StreamError(e.to_string());
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        };
 
-        if pending_tx.send(pending).is_err() {
+        if pending_tx.send(Ok(pending)).is_err() {
             tracing::warn!(
                 "PendingBlockProcessor receiver dropped before send; continuing without pending \
                  updates"

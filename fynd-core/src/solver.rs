@@ -277,10 +277,14 @@ pub enum SolverBuildError {
     /// [`FyndBuilder::build`] was called without configuring any worker pools.
     #[error("no worker pools configured")]
     NoPools,
-    /// The pending-processor oneshot closed before the processor was delivered.
+    /// The feed task failed before delivering the [`PendingBlockProcessor`].
     ///
-    /// This typically means `TychoFeed::run_with_pending` returned an error
-    /// before sending the processor.
+    /// The inner string is the `DataFeedError` message from `TychoFeed::run_with_pending`
+    /// (e.g. "failed to load tokens: connection refused").
+    #[error("feed setup failed before delivering pending processor: {0}")]
+    FeedSetup(String),
+    /// The pending-processor oneshot closed without delivering a value, meaning the feed task
+    /// panicked rather than returning an error through the channel.
     #[error("pending processor channel closed before processor was delivered")]
     PendingChannelClosed,
 }
@@ -929,7 +933,8 @@ impl FyndBuilder {
             router = router.with_price_guard(price_guard);
         }
 
-        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel::<PendingBlockProcessor>();
+        let (pending_tx, pending_rx) =
+            tokio::sync::oneshot::channel::<Result<PendingBlockProcessor, String>>();
 
         let pending_indexers = self.pending_indexers;
         let feed_handle = tokio::spawn(async move {
@@ -955,7 +960,8 @@ impl FyndBuilder {
 
         let pending = pending_rx
             .await
-            .map_err(|_| SolverBuildError::PendingChannelClosed)?;
+            .map_err(|_| SolverBuildError::PendingChannelClosed)?
+            .map_err(SolverBuildError::FeedSetup)?;
 
         Ok((
             Solver {
