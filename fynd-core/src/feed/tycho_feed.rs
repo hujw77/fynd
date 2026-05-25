@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use tokio::{sync::broadcast, task::JoinHandle};
+use tokio::{sync::{broadcast, oneshot}, task::JoinHandle};
 use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, span, trace, Instrument, Level};
 use tycho_simulation::{
@@ -388,7 +388,6 @@ impl TychoFeed {
                         Some(msg) => {
                             trace!("Received message from protocol stream: {:?}", msg);
                             let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                            self.refresh_gas_price().await?;
                             self.handle_tycho_message(msg).await?;
                         }
                         None => {
