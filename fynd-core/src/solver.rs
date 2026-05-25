@@ -252,7 +252,7 @@ pub struct WaitReadyError {
     timeout_ms: u64,
 }
 
-/// Error returned by [`FyndBuilder::build`].
+/// Error returned by [`FyndBuilder::build`] and [`FyndBuilder::build_with_pending`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SolverBuildError {
