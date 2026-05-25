@@ -255,8 +255,8 @@ impl TychoFeed {
     /// only "channel closed". If the receiver has already been dropped the processor is
     /// discarded and the feed continues normally.
     ///
-    /// RFQ protocols in the config are silently ignored; only on-chain EVM protocols
-    /// are connected to the `PendingBlockProcessor`.
+    /// RFQ protocols are handled alongside the EVM stream, identical to [`run`](Self::run).
+    /// The `PendingBlockProcessor` only covers EVM on-chain state.
     pub(crate) async fn run_with_pending(
         self,
         pending_tx: oneshot::Sender<Result<PendingBlockProcessor, String>>,
@@ -318,7 +318,7 @@ impl TychoFeed {
         .auth_key(self.config.tycho_api_key.clone())
         .skip_state_decode_failures(true)
         .min_token_quality(self.config.min_token_quality as u32)
-        .set_tokens(all_tokens)
+        .set_tokens(all_tokens.clone())
         .await;
 
         for (extractor, indexer) in pending_indexers {
@@ -351,16 +351,84 @@ impl TychoFeed {
             );
         }
 
+        // Spawn RFQ stream (same as run()) — runs alongside the EVM pending stream.
+        let (mut rfq_rx, mut rfq_handle) = if self
+            .config
+            .protocols
+            .iter()
+            .any(|p| p.starts_with("rfq:"))
+        {
+            let rfq_tokens: HashSet<Bytes> = all_tokens.keys().cloned().collect();
+            let rfq_stream_builder = register_rfq(
+                RFQStreamBuilder::new()
+                    .set_tokens(all_tokens)
+                    .await,
+                self.config.chain,
+                self.config.min_tvl,
+                &self.config.protocols,
+                rfq_tokens,
+            )?;
+            let (rfq_tx, rfq_rx) = tokio::sync::mpsc::channel(64);
+            let rfq_handle: JoinHandle<Result<(), DataFeedError>> = tokio::spawn(async move {
+                rfq_stream_builder
+                    .build(rfq_tx)
+                    .await
+                    .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+                Ok(())
+            });
+            (Some(rfq_rx), Some(rfq_handle))
+        } else {
+            (None, None)
+        };
+
         loop {
-            match protocol_stream.next().await {
-                Some(msg) => {
-                    let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                    self.refresh_gas_price().await?;
-                    self.handle_tycho_message(msg).await?;
+            tokio::select! {
+                msg = protocol_stream.next() => {
+                    match msg {
+                        Some(msg) => {
+                            trace!("Received message from protocol stream: {:?}", msg);
+                            let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+                            self.refresh_gas_price().await?;
+                            self.handle_tycho_message(msg).await?;
+                        }
+                        None => {
+                            info!("Protocol stream ended");
+                            break;
+                        }
+                    }
                 }
-                None => {
-                    info!("Protocol stream ended");
-                    break;
+                msg = async {
+                    if let Some(rx) = &mut rfq_rx { rx.recv().await }
+                    else { std::future::pending().await }
+                } => {
+                    match msg {
+                        Some(msg) => {
+                            trace!("Received message from RFQ stream: {:?}", msg);
+                            self.handle_tycho_message(msg).await?;
+                        }
+                        None => {
+                            info!("RFQ stream ended");
+                            break;
+                        }
+                    }
+                }
+                rfq_result = async {
+                    if let Some(handle) = &mut rfq_handle { handle.await }
+                    else { std::future::pending().await }
+                } => {
+                    match rfq_result {
+                        Ok(Ok(())) => {
+                            return Err(DataFeedError::StreamError(
+                                "RFQ stream task ended unexpectedly".to_string(),
+                            ));
+                        }
+                        Ok(Err(e)) => {
+                            return Err(DataFeedError::StreamError(format!("RFQ stream error: {e}")));
+                        }
+                        Err(e) => {
+                            return Err(DataFeedError::StreamError(format!("RFQ task panicked: {e}")));
+                        }
+                    }
                 }
             }
         }
