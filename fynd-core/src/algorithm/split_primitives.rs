@@ -30,8 +30,7 @@ pub(crate) struct PathAllocation {
     pub(crate) amount_in: BigUint,
     pub(crate) amount_out: BigUint,
     /// Product of marginal prices along all hops at the time this allocation was
-    /// last simulated. Used to compute per-path price impact:
-    /// `PI = 1 - amount_out / (amount_in * marginal_price_product)`.
+    /// last simulated.
     pub(crate) marginal_price_product: f64,
 }
 
