@@ -21,13 +21,10 @@ use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 pub use tycho_execution::encoding::models::UserTransferType;
-use tycho_simulation::{
-    tycho_common::models::Address,
-    tycho_core::{
-        models::{protocol::ProtocolComponent, token::Token},
-        simulation::protocol_sim::ProtocolSim,
-        Bytes,
-    },
+use tycho_simulation::tycho_common::{
+    models::{protocol::ProtocolComponent, token::Token, Address},
+    simulation::protocol_sim::ProtocolSim,
+    Bytes,
 };
 use uuid::Uuid;
 
@@ -253,6 +250,10 @@ pub struct FeeBreakdown {
     /// This is the value encoded as min_amount_out in the transaction.
     #[serde_as(as = "DisplayFromStr")]
     min_amount_received: BigUint,
+    /// keccak256 of the ABI-encoded swap bytes, present when client fee params were provided.
+    /// Clients use this to compute the 10-field EIP-712 signing hash for the client fee.
+    #[serde(skip)]
+    swaps_hash: Option<[u8; 32]>,
 }
 
 impl FeeBreakdown {
@@ -263,7 +264,13 @@ impl FeeBreakdown {
         max_slippage: BigUint,
         min_amount_received: BigUint,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received }
+        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash: None }
+    }
+
+    /// Attaches the keccak256 hash of the encoded swap bytes.
+    pub fn with_swaps_hash(mut self, hash: [u8; 32]) -> Self {
+        self.swaps_hash = Some(hash);
+        self
     }
 
     /// Router protocol fee amount.
@@ -284,6 +291,12 @@ impl FeeBreakdown {
     /// Minimum amount the user receives on-chain.
     pub fn min_amount_received(&self) -> &BigUint {
         &self.min_amount_received
+    }
+
+    /// keccak256 of the ABI-encoded swap bytes.
+    /// Used by clients to construct the full 10-field EIP-712 `ClientFee` signing hash.
+    pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
+        self.swaps_hash.as_ref()
     }
 }
 
@@ -805,6 +818,15 @@ impl OrderQuote {
         self.transaction = Some(transaction);
     }
 
+    /// Sets the gas_estimate in place
+    pub fn set_gas_estimate(&mut self, gas_estimate: BigUint) {
+        self.gas_estimate = gas_estimate;
+    }
+
+    pub(crate) fn set_amount_out_net_gas(&mut self, value: BigUint) {
+        self.amount_out_net_gas = value;
+    }
+
     /// Returns the order ID.
     pub fn order_id(&self) -> &str {
         &self.order_id
@@ -979,12 +1001,17 @@ impl BlockInfo {
 pub struct Route {
     /// Ordered sequence of swaps to execute.
     swaps: Vec<Swap>,
+    /// Full `Token` objects keyed by address, populated by the algorithm that
+    /// built the route. Skipped during (de)serialization — only the in-process
+    /// encoding path consumes it.
+    #[serde(skip, default)]
+    tokens: HashMap<Bytes, Token>,
 }
 
 impl Route {
     /// Creates a new route from an ordered sequence of swaps.
-    pub fn new(swaps: Vec<Swap>) -> Self {
-        Self { swaps }
+    pub fn new(swaps: Vec<Swap>, tokens: HashMap<Bytes, Token>) -> Self {
+        Self { swaps, tokens }
     }
 
     /// Returns the swaps in this route.
@@ -995,6 +1022,12 @@ impl Route {
     /// Consumes the route and returns its swaps.
     pub fn into_swaps(self) -> Vec<Swap> {
         self.swaps
+    }
+
+    /// Returns the token map attached to this route. Empty unless populated via
+    /// [`Route::with_tokens`].
+    pub(crate) fn tokens(&self) -> &HashMap<Bytes, Token> {
+        &self.tokens
     }
 }
 
@@ -1092,7 +1125,7 @@ impl Route {
             .collect()
     }
 
-    /// Returns the total gas estimate for all swaps in this route.
+    /// Returns the total gas estimate for all swaps in this route (naive approach).
     pub fn total_gas(&self) -> BigUint {
         self.swaps
             .iter()
@@ -1308,12 +1341,22 @@ pub struct Transaction {
     value: num_bigint::BigUint,
     /// ABI-encoded calldata.
     data: Vec<u8>,
+    /// Byte offset of the client fee signature within `data`.
+    /// Clients use this to patch the 65-byte EIP-712 signature into the calldata.
+    #[serde(skip)]
+    client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
     /// Creates a new transaction.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
+    }
+
+    /// Attaches the byte offset of the client fee signature within the calldata.
+    pub fn with_client_fee_signature_offset(mut self, offset: usize) -> Self {
+        self.client_fee_signature_offset = Some(offset);
+        self
     }
 
     /// Returns the contract address to call.
@@ -1329,6 +1372,11 @@ impl Transaction {
     /// Returns the ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -1445,7 +1493,7 @@ mod tests {
             .into_iter()
             .map(|(a, b)| make_swap(a, b, 1000, 990))
             .collect();
-        Route::new(swaps)
+        Route::new(swaps, HashMap::new())
     }
 
     #[rstest]
@@ -1502,7 +1550,7 @@ mod tests {
         let swaps: Vec<Swap> = (0..num_swaps)
             .map(|i| make_swap(i as u8, (i + 1) as u8, 1000, 990))
             .collect();
-        let route = Route::new(swaps);
+        let route = Route::new(swaps, HashMap::new());
         assert_eq!(route.total_gas(), BigUint::from(expected_gas));
     }
 

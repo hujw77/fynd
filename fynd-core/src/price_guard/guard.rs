@@ -209,7 +209,7 @@ impl PriceGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::HashMap, str::FromStr};
 
     use num_bigint::BigUint;
     use rstest::rstest;
@@ -333,7 +333,7 @@ mod tests {
             Bytes::from([0xBB; 20].as_slice()),
             "1".to_string(),
         )
-        .with_route(Route::new(vec![weth_usdc_swap()]))
+        .with_route(Route::new(vec![weth_usdc_swap()], HashMap::new()))
     }
 
     fn price_guard(providers: Vec<Box<dyn PriceProvider>>) -> PriceGuard {

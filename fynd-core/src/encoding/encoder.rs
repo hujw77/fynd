@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use alloy::{
-    primitives::{aliases::U48, Address, Keccak256, U160, U256},
+    primitives::{aliases::U48, keccak256, Address, Keccak256, U160, U256},
     sol_types::SolValue,
 };
 use num_bigint::BigUint;
@@ -13,6 +13,7 @@ use tycho_execution::encoding::{
         get_router_address,
         swap_encoder::swap_encoder_registry::SwapEncoderRegistry,
         utils::{biguint_to_u256, bytes_to_address},
+        ROUTER_ETH_ADDRESS,
     },
     models::{EncodedSolution, Solution, Swap},
     tycho_encoder::TychoEncoder,
@@ -64,20 +65,35 @@ impl TryFrom<&OrderQuote> for Solution {
             .output_token()
             .ok_or_else(|| SolveError::FailedEncoding("route has no output token".to_string()))?;
 
+        let token_map = route.tokens();
+        let lookup_token = |addr: &Bytes| {
+            token_map
+                .get(addr)
+                .cloned()
+                .ok_or_else(|| {
+                    SolveError::FailedEncoding(format!(
+                        "token {addr:?} not found in route's token map; \
+                     algorithm must populate Route::with_tokens for every swap token"
+                    ))
+                })
+        };
         let swaps = route
             .swaps()
             .iter()
             .map(|s| {
-                Swap::new(
+                let token_in = lookup_token(s.token_in())?;
+                let token_out = lookup_token(s.token_out())?;
+                Ok(Swap::new(
                     s.protocol_component().clone(),
-                    s.token_in().clone(),
-                    s.token_out().clone(),
+                    token_in,
+                    token_out,
+                    s.gas_estimate().clone(),
                 )
                 .with_split(*s.split())
                 .with_protocol_state(Arc::from(s.protocol_state().clone_box()))
-                .with_estimated_amount_in(s.amount_in().clone())
+                .with_estimated_amount_in(s.amount_in().clone()))
             })
-            .collect();
+            .collect::<Result<Vec<_>, SolveError>>()?;
 
         Ok(Solution::new(
             quote.sender().clone(),
@@ -168,6 +184,7 @@ impl Encoder {
             .into_iter()
             .zip(to_encode)
         {
+            quotes[idx].set_gas_estimate(encoded_solution.estimated_gas().clone());
             let (transaction, fee_breakdown) =
                 self.encode_tycho_router_call(encoded_solution, &solution, &encoding_options)?;
             quotes[idx].set_transaction(transaction);
@@ -201,8 +218,18 @@ impl Encoder {
             encoding_options.slippage(),
         );
         let min_amount_out = biguint_to_u256(fee_breakdown.min_amount_received());
-        let token_in = bytes_to_address(solution.token_in())?;
-        let token_out = bytes_to_address(solution.token_out())?;
+        let native_address = &self.chain.native_token().address;
+        let router_eth = Address::from_slice(ROUTER_ETH_ADDRESS.as_ref());
+        let to_router_address = |raw: Address| {
+            if raw.as_slice() == native_address.as_ref() {
+                router_eth
+            } else {
+                raw
+            }
+        };
+
+        let token_in = to_router_address(bytes_to_address(solution.token_in())?);
+        let token_out = to_router_address(bytes_to_address(solution.token_out())?);
         let receiver = bytes_to_address(solution.receiver())?;
 
         let (permit, permit2_sig) = if let Some(p) = encoding_options.permit() {
@@ -234,7 +261,13 @@ impl Encoder {
                 bytes_to_address(fee.receiver())?,
                 biguint_to_u256(fee.max_contribution()),
                 U256::from(fee.deadline()),
-                fee.signature().to_vec(),
+                // Pad to 65 bytes so the ABI encoding always reserves room for
+                // the client to patch the real EIP-712 signature after signing.
+                {
+                    let mut sig = fee.signature().to_vec();
+                    sig.resize(65, 0);
+                    sig
+                },
             )
         } else {
             (0u16, Address::ZERO, U256::ZERO, U256::MAX, vec![])
@@ -242,6 +275,14 @@ impl Encoder {
 
         let fn_sig = encoded_solution.function_signature();
         let swaps = encoded_solution.swaps();
+        let fee_breakdown = if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            fee_breakdown.with_swaps_hash(keccak256(swaps).0)
+        } else {
+            fee_breakdown
+        };
 
         let method_calldata = if fn_sig.contains("Permit2") {
             let permit = permit.ok_or(EncodingError::FatalError(
@@ -296,21 +337,25 @@ impl Encoder {
             )));
         };
 
-        let native_address = &self.chain.native_token().address;
         let contract_interaction =
             Self::encode_input(encoded_solution.function_signature(), method_calldata);
-        let value = if *solution.token_in() == *native_address {
-            solution.amount_in().clone()
-        } else {
-            BigUint::ZERO
-        };
-        let transaction = Transaction::new(
+
+        let value =
+            if token_in == router_eth { solution.amount_in().clone() } else { BigUint::ZERO };
+        let mut transaction = Transaction::new(
             encoded_solution
                 .interacting_with()
                 .clone(),
             value,
             contract_interaction,
         );
+        if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            let offset = encoded_solution.client_fee_signature_offset();
+            transaction = transaction.with_client_fee_signature_offset(offset);
+        }
         Ok((transaction, fee_breakdown))
     }
 
@@ -382,6 +427,8 @@ impl From<EncodingError> for SolveError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use num_bigint::BigUint;
     use tycho_execution::encoding::{
         errors::EncodingError,
@@ -399,8 +446,8 @@ mod tests {
         BlockInfo, OrderQuote, QuoteStatus,
     };
 
-    fn make_route_swap_addrs(token_in: Address, token_out: Address) -> crate::types::Swap {
-        let make_token = |addr: Address| Token {
+    fn make_token(addr: Address) -> Token {
+        Token {
             address: addr,
             symbol: "T".to_string(),
             decimals: 18,
@@ -408,7 +455,10 @@ mod tests {
             gas: vec![],
             chain: SimChain::Ethereum,
             quality: 100,
-        };
+        }
+    }
+
+    fn make_route_swap_addrs(token_in: Address, token_out: Address) -> crate::types::Swap {
         let tin = make_token(token_in.clone());
         let tout = make_token(token_out.clone());
         // Component ID must be a valid address for the USV2 swap encoder
@@ -424,6 +474,25 @@ mod tests {
             component(pool_addr, &[tin, tout]),
             Box::new(MockProtocolSim::default()),
         )
+    }
+
+    /// Builds a `Route` with both swaps and the token map populated, mirroring
+    /// what the algorithms do in production.
+    fn make_route_with_tokens(pairs: &[(Address, Address)]) -> crate::types::Route {
+        let mut tokens = HashMap::new();
+        let swaps = pairs
+            .iter()
+            .map(|(tin, tout)| {
+                tokens
+                    .entry(tin.clone())
+                    .or_insert_with(|| make_token(tin.clone()));
+                tokens
+                    .entry(tout.clone())
+                    .or_insert_with(|| make_token(tout.clone()));
+                make_route_swap_addrs(tin.clone(), tout.clone())
+            })
+            .collect();
+        crate::types::Route::new(swaps, tokens)
     }
 
     fn make_address(byte: u8) -> Address {
@@ -471,14 +540,14 @@ mod tests {
 
     #[test]
     fn test_encoder_new_fails_on_unsupported_chain() {
-        // Arbitrum has no entry in ROUTER_ADDRESSES_JSON.
-        // Build a registry for Ethereum (which is valid) but pass Arbitrum to Encoder::new —
+        // Starknet has no entry in ROUTER_ADDRESSES_JSON.
+        // Build a registry for Ethereum (which is valid) but pass Starknet to Encoder::new —
         // the router address lookup must fail before the encoder builder is invoked.
         let registry =
             tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry::new(Chain::Ethereum)
                 .add_default_encoders(None)
                 .expect("registry should build for Ethereum");
-        let result = Encoder::new(Chain::Arbitrum, registry);
+        let result = Encoder::new(Chain::Starknet, registry);
         assert!(result.is_err(), "expected Err for chain without router address, got Ok");
     }
 
@@ -514,11 +583,8 @@ mod tests {
 
     #[test]
     fn test_try_from_maps_tokens_and_amounts() {
-        let quote =
-            make_order_quote().with_route(crate::types::Route::new(vec![make_route_swap_addrs(
-                make_address(0x01),
-                make_address(0x02),
-            )]));
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let solution = Solution::try_from(&quote).unwrap();
 
@@ -531,9 +597,9 @@ mod tests {
 
     #[test]
     fn test_try_from_multi_hop_uses_boundary_swap_tokens() {
-        let quote = make_order_quote().with_route(crate::types::Route::new(vec![
-            make_route_swap_addrs(make_address(0x01), make_address(0x02)),
-            make_route_swap_addrs(make_address(0x02), make_address(0x03)),
+        let quote = make_order_quote().with_route(make_route_with_tokens(&[
+            (make_address(0x01), make_address(0x02)),
+            (make_address(0x02), make_address(0x03)),
         ]));
 
         let solution = Solution::try_from(&quote).unwrap();
@@ -580,11 +646,8 @@ mod tests {
     #[tokio::test]
     async fn test_encode_sets_transaction_on_successful_solution() {
         let encoder = real_encoder();
-        let quote =
-            make_order_quote().with_route(crate::types::Route::new(vec![make_route_swap_addrs(
-                make_address(0x01),
-                make_address(0x02),
-            )]));
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let encoding_options = EncodingOptions::new(0.01);
 
@@ -603,11 +666,8 @@ mod tests {
     #[tokio::test]
     async fn test_encode_with_client_fee_params() {
         let encoder = real_encoder();
-        let quote =
-            make_order_quote().with_route(crate::types::Route::new(vec![make_route_swap_addrs(
-                make_address(0x01),
-                make_address(0x02),
-            )]));
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let fee = crate::ClientFeeParams::new(
             100,
@@ -633,11 +693,8 @@ mod tests {
     #[tokio::test]
     async fn test_encode_without_client_fee_produces_transaction() {
         let encoder = real_encoder();
-        let quote =
-            make_order_quote().with_route(crate::types::Route::new(vec![make_route_swap_addrs(
-                make_address(0x01),
-                make_address(0x02),
-            )]));
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let encoding_options = EncodingOptions::new(0.01);
 
@@ -647,5 +704,75 @@ mod tests {
             .unwrap();
 
         assert!(result[0].transaction().is_some());
+    }
+
+    // ==================== Signature Offset Tests ====================
+
+    fn make_client_fee(bps: u16) -> crate::ClientFeeParams {
+        crate::ClientFeeParams::new(
+            bps,
+            Bytes::from(make_address(0xBB).as_ref()),
+            BigUint::from(0u64),
+            1_893_456_000u64,
+            Bytes::from(vec![]),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_encode_with_client_fee_returns_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        tx.client_fee_signature_offset()
+            .expect("client_fee_signature_offset must be present with client fee");
+    }
+
+    #[tokio::test]
+    async fn test_encode_without_client_fee_has_no_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01);
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        assert!(tx
+            .client_fee_signature_offset()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signature_offset_allows_patching() {
+        let encoder = real_encoder();
+        let real_sig = vec![0xFF; 65];
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        let offset = tx
+            .client_fee_signature_offset()
+            .unwrap();
+
+        let mut calldata = tx.data().to_vec();
+        calldata[offset..offset + 65].copy_from_slice(&real_sig);
+        assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
     }
 }

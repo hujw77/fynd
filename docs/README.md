@@ -29,11 +29,6 @@ Fynd gives you quotes in 20ms, supports 1.000 RPS on commodity hardware (see [pe
 
 Fynd builds on [Tycho](https://www.propellerheads.xyz/tycho) the open source DEX indexer (see the [protocols it supports](https://docs.propellerheads.xyz/tycho/for-solvers/supported-protocols)).
 
-{% hint style="danger" %}
-**Alpha Software — Unaudited Contracts**
-
-Fynd's smart contracts ([TychoRouter V3,](https://docs.propellerheads.xyz/tycho/for-solvers/execution) Vault, Executors) are still undergoing a security audit. Funds stored in the router (including vault deposits) might be lost. Use at your own discretion.
-{% endhint %}
 
 ## Own Your Routing <a href="#own-your-dex-routing" id="own-your-dex-routing"></a>
 
@@ -92,4 +87,4 @@ Fynd works with any protocol Tycho supports. See the [list of supported protocol
 
 ## Try it out
 
-Head to the [quickstart](get-started/quickstart/ "mention") to get Fynd running.
+Head to the [quickstart](get-started/quickstart/README.md) to get Fynd running.

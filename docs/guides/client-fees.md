@@ -4,9 +4,6 @@ icon: coins
 
 # Client Fees
 
-{% hint style="danger" %}
-Client fees accumulate in the TychoRouter Vault, which is still undergoing a security audit. Keep balances minimal and withdraw regularly - funds stored here may be lost. Use at your own discretion.&#x20;
-{% endhint %}
 
 Every swap through the TychoRouter incurs two fees, deducted from the swap output:
 
@@ -17,7 +14,9 @@ When you request encoding, the quote response includes a `fee_breakdown` with th
 
 ## Fee breakdown
 
-The on-chain `FeeCalculator` deducts fees from the raw swap output. Fynd mirrors this calculation (identical integer arithmetic) to set `minAmountOut` in the encoded transaction.
+`amount_out` in the quote response is the raw pre-fee swap output — the amount produced by the route before any fees are deducted. It is **not** what the user receives. The amount the user receives on-chain is at least `fee_breakdown.min_amount_received`.
+
+The on-chain `FeeCalculator` deducts fees from `amount_out`. Fynd mirrors this calculation (identical integer arithmetic) to set `minAmountOut` in the encoded transaction.
 
 Given `amount_out` (raw swap output), `client_fee_bps` (0 if none), and `slippage`:
 
@@ -119,23 +118,58 @@ const opts = withClientFee(encodingOptions(0.005), {...feeParams, signature});
 
 {% tab title="Rust" %}
 ```rust
-    // Build the fee params (without signature).
+    // Step 1: request a quote using unsigned client fee params.
+    // The server encodes the full calldata and returns `swaps_hash`
+    // in the fee breakdown and `signature_offset` in the transaction
+    // so the client can patch the real signature in.
     let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),
         BigUint::ZERO,
         u64::MAX,
     );
+    let order = Order::new(
+        Bytes::copy_from_slice(sell_token.as_slice()),
+        Bytes::copy_from_slice(buy_token.as_slice()),
+        BigUint::from(SELL_AMOUNT),
+        OrderSide::Sell,
+        Bytes::copy_from_slice(sender.as_slice()),
+        None,
+    );
+    let quote = client
+        .quote(QuoteParams::new(
+            order,
+            QuoteOptions::default()
+                .with_timeout_ms(5_000)
+                .with_encoding_options(EncodingOptions::new(SLIPPAGE).with_client_fee(fee.clone())),
+        ))
+        .await?;
 
-    // Compute the EIP-712 signing hash and sign it with the fee receiver's key.
-    let hash = fee.eip712_signing_hash(chain_id, &router_address)?;
+    let fee_breakdown = quote
+        .fee_breakdown()
+        .ok_or("no fee breakdown in quote")?;
+    let swaps_hash = fee_breakdown
+        .swaps_hash()
+        .ok_or("no swaps_hash — server must support client fee signing")?;
+
+    // Step 2: sign the full 10-field EIP-712 ClientFee hash.
+    // receiver defaults to sender when the order has no explicit receiver.
+    let hash = fee.eip712_signing_hash(
+        chain_id,
+        &router_address,
+        quote.amount_in(),
+        &Bytes::copy_from_slice(sell_token.as_slice()),
+        &Bytes::copy_from_slice(buy_token.as_slice()),
+        fee_breakdown.min_amount_received(),
+        &Bytes::copy_from_slice(sender.as_slice()),
+        swaps_hash,
+    )?;
     let sig = fee_signer
         .sign_hash(&B256::from(hash))
         .await?;
 
-    // Attach the signature and wire it into encoding options.
-    let fee = fee.with_signature(Bytes::copy_from_slice(&sig.as_bytes()[..]));
-    let encoding_options = EncodingOptions::new(SLIPPAGE).with_client_fee(fee);
+    // Step 3: patch the real signature into the calldata.
+    let quote = quote.with_client_fee_signature(&sig.as_bytes()[..])?;
 ```
 
 See the full working example: [`clients/rust/examples/swap_client_fee.rs`](../../clients/rust/examples/swap_client_fee.rs)

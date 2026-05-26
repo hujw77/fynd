@@ -5,7 +5,7 @@ use alloy::{
 use bytes::Bytes;
 use num_bigint::BigUint;
 
-use crate::mapping::biguint_to_u256;
+use crate::{error::FyndError, mapping::biguint_to_u256};
 
 // ============================================================================
 // ENCODING TYPES
@@ -147,22 +147,48 @@ impl ClientFeeParams {
     /// Compute the EIP-712 signing hash for the client fee params.
     ///
     /// Pass the returned hash to the fee receiver's signer, then supply the
-    /// 65-byte result as `signature` when constructing [`ClientFeeParams`].
+    /// 65-byte result to [`ClientFeeParams::with_signature`].
     ///
-    /// `router_address` is the 20-byte address of the TychoRouter contract.
+    /// The hash covers all 10 `ClientFee` fields. The swap-specific inputs
+    /// (`amount_in`, `token_in`, `token_out`, `min_amount_out`, `receiver`,
+    /// `swaps_hash`) come from a prior unsigned quote request — see
+    /// [`FeeBreakdown`] and the `swap_client_fee` example for the two-step flow.
+    ///
+    /// - `router_address`: 20-byte address of the TychoRouter contract.
+    /// - `amount_in`: exact input amount from the order.
+    /// - `token_in`: 20-byte input token address.
+    /// - `token_out`: 20-byte output token address.
+    /// - `min_amount_out`: minimum output after fees — use [`FeeBreakdown::min_amount_received`].
+    /// - `receiver`: 20-byte address receiving the swap output.
+    /// - `swaps_hash`: keccak256 of the encoded swaps bytes — use [`FeeBreakdown::swaps_hash`].
+    #[allow(clippy::too_many_arguments)]
     pub fn eip712_signing_hash(
         &self,
         chain_id: u64,
         router_address: &Bytes,
+        amount_in: &num_bigint::BigUint,
+        token_in: &Bytes,
+        token_out: &Bytes,
+        min_amount_out: &num_bigint::BigUint,
+        receiver: &Bytes,
+        swaps_hash: &[u8; 32],
     ) -> Result<[u8; 32], crate::error::FyndError> {
         let router_addr = p2_bytes_to_address(router_address, "router_address")?;
         let fee_receiver = p2_bytes_to_address(&self.receiver, "receiver")?;
         let max_contrib = biguint_to_u256(&self.max_contribution);
         let dl = U256::from(self.deadline);
+        let amount_in_u256 = biguint_to_u256(amount_in);
+        let token_in_addr = p2_bytes_to_address(token_in, "token_in")?;
+        let token_out_addr = p2_bytes_to_address(token_out, "token_out")?;
+        let min_amount_out_u256 = biguint_to_u256(min_amount_out);
+        let receiver_addr = p2_bytes_to_address(receiver, "receiver")?;
+        let swaps_b256 = alloy::primitives::B256::from(*swaps_hash);
 
         let type_hash = keccak256(
             b"ClientFee(uint16 clientFeeBps,address clientFeeReceiver,\
-uint256 maxClientContribution,uint256 deadline)",
+uint256 maxClientContribution,uint256 deadline,\
+uint256 amountIn,address tokenIn,address tokenOut,\
+uint256 minAmountOut,address receiver,bytes swaps)",
         );
 
         let domain_type_hash = keccak256(
@@ -181,7 +207,20 @@ uint256 chainId,address verifyingContract)",
         );
 
         let struct_hash = keccak256(
-            (type_hash, U256::from(self.bps), fee_receiver, max_contrib, dl).abi_encode(),
+            (
+                type_hash,
+                U256::from(self.bps),
+                fee_receiver,
+                max_contrib,
+                dl,
+                amount_in_u256,
+                token_in_addr,
+                token_out_addr,
+                min_amount_out_u256,
+                receiver_addr,
+                swaps_b256,
+            )
+                .abi_encode(),
         );
 
         let mut data = [0u8; 66];
@@ -341,7 +380,8 @@ impl EncodingOptions {
 pub struct Transaction {
     to: Bytes,
     value: BigUint,
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
+    pub(crate) client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
@@ -351,7 +391,7 @@ impl Transaction {
     /// - `value`: native token value to send with the transaction.
     /// - `data`: ABI-encoded calldata.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
     }
 
     /// Router contract address (20 raw bytes).
@@ -367,6 +407,11 @@ impl Transaction {
     /// ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -717,6 +762,8 @@ pub struct FeeBreakdown {
     client_fee: BigUint,
     max_slippage: BigUint,
     min_amount_received: BigUint,
+    /// keccak256 of the ABI-encoded swap bytes. Use this for EIP-712 signing.
+    swaps_hash: Option<[u8; 32]>,
 }
 
 impl FeeBreakdown {
@@ -725,8 +772,9 @@ impl FeeBreakdown {
         client_fee: BigUint,
         max_slippage: BigUint,
         min_amount_received: BigUint,
+        swaps_hash: Option<[u8; 32]>,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received }
+        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash }
     }
 
     /// Router protocol fee (fee on output + router's share of client fee).
@@ -748,6 +796,15 @@ impl FeeBreakdown {
     /// Equal to amount_out - router_fee - client_fee - max_slippage.
     pub fn min_amount_received(&self) -> &BigUint {
         &self.min_amount_received
+    }
+
+    /// keccak256 of the ABI-encoded swap bytes.
+    ///
+    /// Use this together with `amount_in`, `token_in`, `token_out`,
+    /// `min_amount_received`, and `receiver` to call
+    /// [`ClientFeeParams::eip712_signing_hash`] in the two-step signing flow.
+    pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
+        self.swaps_hash.as_ref()
     }
 }
 
@@ -874,6 +931,39 @@ impl Quote {
     /// Populated by [`FyndClient::quote`](crate::FyndClient::quote). Returns `0` if not set.
     pub fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
+    }
+
+    /// Patches the 65-byte client fee EIP-712 signature into the transaction
+    /// calldata at the offset returned by the server.
+    ///
+    /// Use this after a single quote request:
+    ///
+    /// 1. Request a quote with unsigned [`ClientFeeParams`] (empty signature).
+    /// 2. Read [`FeeBreakdown::swaps_hash`] from the response.
+    /// 3. Sign the 10-field EIP-712 hash using [`ClientFeeParams::eip712_signing_hash`].
+    /// 4. Call this method to patch the signature into the calldata.
+    /// 5. Execute the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FyndError::Protocol`] if the quote has no transaction or no
+    /// `client_fee_signature_offset`.
+    pub fn with_client_fee_signature(mut self, signature: &[u8]) -> Result<Self, FyndError> {
+        let tx = self
+            .transaction
+            .as_mut()
+            .ok_or_else(|| {
+                FyndError::Protocol("transaction required for signature patching".into())
+            })?;
+        let offset = tx
+            .client_fee_signature_offset()
+            .ok_or_else(|| {
+                FyndError::Protocol(
+                    "client_fee_signature_offset required for signature patching".into(),
+                )
+            })?;
+        tx.data[offset..offset + signature.len()].copy_from_slice(signature);
+        Ok(self)
     }
 
     /// Create a new [`Quote`].
@@ -1227,6 +1317,30 @@ mod tests {
         ClientFeeParams::new(bps, receiver, BigUint::ZERO, 1_893_456_000)
     }
 
+    fn sample_token_in() -> Bytes {
+        Bytes::copy_from_slice(&[0x11; 20])
+    }
+
+    fn sample_token_out() -> Bytes {
+        Bytes::copy_from_slice(&[0x22; 20])
+    }
+
+    fn sample_swap_receiver() -> Bytes {
+        Bytes::copy_from_slice(&[0xAA; 20])
+    }
+
+    fn sample_min_amount_out() -> BigUint {
+        BigUint::from(1_000_000u64)
+    }
+
+    fn sample_amount_in() -> BigUint {
+        BigUint::from(1_000_000_000_000_000_000u64)
+    }
+
+    fn sample_swaps_hash() -> [u8; 32] {
+        [0xAB; 32]
+    }
+
     #[test]
     fn client_fee_with_client_fee_sets_fields() {
         let fee = ClientFeeParams::new(
@@ -1246,7 +1360,16 @@ mod tests {
     fn client_fee_signing_hash_returns_32_bytes() {
         let fee = sample_fee_params(100, sample_fee_receiver());
         let hash = fee
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         assert_eq!(hash.len(), 32);
         assert_ne!(hash, [0u8; 32]);
@@ -1256,10 +1379,28 @@ mod tests {
     fn client_fee_signing_hash_is_deterministic() {
         let fee = sample_fee_params(100, sample_fee_receiver());
         let h1 = fee
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         let h2 = fee
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         assert_eq!(h1, h2);
     }
@@ -1268,10 +1409,28 @@ mod tests {
     fn client_fee_signing_hash_differs_by_chain_id() {
         let fee = sample_fee_params(100, sample_fee_receiver());
         let h1 = fee
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         let h137 = fee
-            .eip712_signing_hash(137, &sample_router_address())
+            .eip712_signing_hash(
+                137,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         assert_ne!(h1, h137);
     }
@@ -1279,10 +1438,28 @@ mod tests {
     #[test]
     fn client_fee_signing_hash_differs_by_bps() {
         let h100 = sample_fee_params(100, sample_fee_receiver())
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         let h200 = sample_fee_params(200, sample_fee_receiver())
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         assert_ne!(h100, h200);
     }
@@ -1291,10 +1468,28 @@ mod tests {
     fn client_fee_signing_hash_differs_by_receiver() {
         let other_receiver = Bytes::copy_from_slice(&[0x55; 20]);
         let h1 = sample_fee_params(100, sample_fee_receiver())
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         let h2 = sample_fee_params(100, other_receiver)
-            .eip712_signing_hash(1, &sample_router_address())
+            .eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            )
             .unwrap();
         assert_ne!(h1, h2);
     }
@@ -1304,7 +1499,16 @@ mod tests {
         let bad_addr = Bytes::copy_from_slice(&[0x44; 4]);
         let fee = sample_fee_params(100, bad_addr);
         assert!(matches!(
-            fee.eip712_signing_hash(1, &sample_router_address()),
+            fee.eip712_signing_hash(
+                1,
+                &sample_router_address(),
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            ),
             Err(crate::error::FyndError::Protocol(_))
         ));
     }
@@ -1314,7 +1518,16 @@ mod tests {
         let bad_addr = Bytes::copy_from_slice(&[0x33; 4]);
         let fee = sample_fee_params(100, sample_fee_receiver());
         assert!(matches!(
-            fee.eip712_signing_hash(1, &bad_addr),
+            fee.eip712_signing_hash(
+                1,
+                &bad_addr,
+                &sample_amount_in(),
+                &sample_token_in(),
+                &sample_token_out(),
+                &sample_min_amount_out(),
+                &sample_swap_receiver(),
+                &sample_swaps_hash(),
+            ),
             Err(crate::error::FyndError::Protocol(_))
         ));
     }
