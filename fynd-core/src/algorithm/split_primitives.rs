@@ -186,6 +186,7 @@ pub(crate) fn golden_section_search(
 /// Split `total` into `(part, remainder)` where `part ≈ total * fraction`.
 ///
 /// Both values always sum exactly to `total` — no tokens lost to rounding.
+/// `fraction` is clamped to `[0.0, 1.0]` before use.
 pub(crate) fn split_amount(total: &BigUint, fraction: f64) -> (BigUint, BigUint) {
     let clamped = fraction.clamp(0.0, 1.0);
     // Scale fraction to fixed-point with 18 decimal digits of precision.
