@@ -340,25 +340,22 @@ impl Encoder {
         let contract_interaction =
             Self::encode_input(encoded_solution.function_signature(), method_calldata);
 
-        let fee_breakdown = if encoding_options
-            .client_fee_params()
-            .is_some()
-        {
-            let offset = encoded_solution.client_fee_signature_offset();
-            fee_breakdown.with_signature_offset(offset)
-        } else {
-            fee_breakdown
-        };
-
         let value =
             if token_in == router_eth { solution.amount_in().clone() } else { BigUint::ZERO };
-        let transaction = Transaction::new(
+        let mut transaction = Transaction::new(
             encoded_solution
                 .interacting_with()
                 .clone(),
             value,
             contract_interaction,
         );
+        if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            let offset = encoded_solution.client_fee_signature_offset();
+            transaction = transaction.with_client_fee_signature_offset(offset);
+        }
         Ok((transaction, fee_breakdown))
     }
 
@@ -733,9 +730,9 @@ mod tests {
             .await
             .unwrap();
 
-        let fb = result[0].fee_breakdown().unwrap();
-        fb.signature_offset()
-            .expect("signature_offset must be present with client fee");
+        let tx = result[0].transaction().unwrap();
+        tx.client_fee_signature_offset()
+            .expect("client_fee_signature_offset must be present with client fee");
     }
 
     #[tokio::test]
@@ -750,8 +747,10 @@ mod tests {
             .await
             .unwrap();
 
-        let fb = result[0].fee_breakdown().unwrap();
-        assert!(fb.signature_offset().is_none());
+        let tx = result[0].transaction().unwrap();
+        assert!(tx
+            .client_fee_signature_offset()
+            .is_none());
     }
 
     #[tokio::test]
@@ -767,17 +766,12 @@ mod tests {
             .await
             .unwrap();
 
-        let offset = result[0]
-            .fee_breakdown()
-            .unwrap()
-            .signature_offset()
+        let tx = result[0].transaction().unwrap();
+        let offset = tx
+            .client_fee_signature_offset()
             .unwrap();
 
-        let mut calldata = result[0]
-            .transaction()
-            .unwrap()
-            .data()
-            .to_vec();
+        let mut calldata = tx.data().to_vec();
         calldata[offset..offset + 65].copy_from_slice(&real_sig);
         assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
     }

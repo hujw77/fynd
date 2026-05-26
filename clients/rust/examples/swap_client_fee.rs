@@ -9,7 +9,7 @@
 //! The EIP-712 `ClientFee` type hash includes swap-specific fields (`amountIn`,
 //! `tokenIn`, `tokenOut`, `minAmountOut`, `receiver`, `bytes swaps`) that are
 //! only known after the server has encoded the transaction. The server returns
-//! `swaps_hash` and `signature_offset` in the fee breakdown so the client can
+//! `swaps_hash` in the fee breakdown and `signature_offset` in the transaction so the client can
 //! sign and patch the calldata locally:
 //!
 //! 1. Request a quote with unsigned client fee params (empty signature).
@@ -112,9 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // [doc:start client-fee-rust]
     // Step 1: request a quote with unsigned client fee params.
-    // The server encodes the full calldata and returns `swaps_hash` +
-    // `signature_offset` in the fee breakdown so the client can patch
-    // the real signature in.
+    // The server encodes the full calldata and returns `swaps_hash`
+    // in the fee breakdown and `signature_offset` in the transaction
+    // so the client can patch the real signature in.
     let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),
