@@ -119,9 +119,9 @@ const opts = withClientFee(encodingOptions(0.005), {...feeParams, signature});
 {% tab title="Rust" %}
 ```rust
     // Step 1: request a quote using unsigned client fee params.
-    // The server encodes the full calldata and returns `swaps_hash` +
-    // `signature_offset` in the fee breakdown so the client can patch
-    // the real signature in.
+    // The server encodes the full calldata and returns `swaps_hash`
+    // in the fee breakdown and `signature_offset` in the transaction
+    // so the client can patch the real signature in.
     let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),

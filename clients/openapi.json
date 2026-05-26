@@ -293,15 +293,6 @@
             "description": "Client's portion of the fee (after the router takes its share).",
             "example": "2800000"
           },
-          "client_fee_signature_offset": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "description": "Byte offset of the client fee signature within `Transaction.data`.\nClients use this to overwrite the placeholder signature with the real one after signing the\nEIP-712 hash (see [`swaps_hash`](Self::swaps_hash)).",
-            "example": null,
-            "minimum": 0
-          },
           "max_slippage": {
             "type": "string",
             "description": "Maximum slippage: (amount_out - router_fee - client_fee) * slippage.",
@@ -839,6 +830,15 @@
           "data"
         ],
         "properties": {
+          "client_fee_signature_offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Byte offset of the client fee signature within `data`.\nClients use this to overwrite the placeholder signature with the real one.",
+            "example": null,
+            "minimum": 0
+          },
           "data": {
             "type": "string",
             "description": "ABI-encoded calldata as hex string.",

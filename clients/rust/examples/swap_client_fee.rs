@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // [doc:start client-fee-rust]
-    // Step 1: request a quote with unsigned client fee params.
+    // Step 1: request a quote using unsigned client fee params.
     // The server encodes the full calldata and returns `swaps_hash`
     // in the fee breakdown and `signature_offset` in the transaction
     // so the client can patch the real signature in.

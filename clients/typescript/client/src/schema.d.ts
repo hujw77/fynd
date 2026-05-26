@@ -171,13 +171,6 @@ export interface components {
              */
             client_fee: string;
             /**
-             * @description Byte offset of the client fee signature within `Transaction.data`.
-             *     Clients use this to overwrite the placeholder signature with the real one after signing the
-             *     EIP-712 hash (see [`swaps_hash`](Self::swaps_hash)).
-             * @example null
-             */
-            client_fee_signature_offset?: number | null;
-            /**
              * @description Maximum slippage: (amount_out - router_fee - client_fee) * slippage.
              * @example 3496850
              */
@@ -528,6 +521,12 @@ export interface components {
         };
         /** @description An encoded EVM transaction ready to be submitted on-chain. */
         Transaction: {
+            /**
+             * @description Byte offset of the client fee signature within `data`.
+             *     Clients use this to overwrite the placeholder signature with the real one.
+             * @example null
+             */
+            client_fee_signature_offset?: number | null;
             /**
              * @description ABI-encoded calldata as hex string.
              * @example 0x1234567890abcdef
