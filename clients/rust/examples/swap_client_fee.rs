@@ -8,12 +8,14 @@
 //!
 //! The EIP-712 `ClientFee` type hash includes swap-specific fields (`amountIn`,
 //! `tokenIn`, `tokenOut`, `minAmountOut`, `receiver`, `bytes swaps`) that are
-//! only known after the server has encoded the transaction. This requires a
-//! two-step flow:
-//! 1. Request a quote with unsigned client fee params → receive `fee_breakdown` containing
-//!    `swaps_hash` and `min_amount_received`.
-//! 2. Sign the full 10-field EIP-712 hash.
-//! 3. Re-request the quote with the valid signature and execute.
+//! only known after the server has encoded the transaction. The server returns
+//! `swaps_hash` in the fee breakdown and `signature_offset` in the transaction so the client can
+//! sign and patch the calldata locally:
+//!
+//! 1. Request a quote with unsigned client fee params (empty signature).
+//! 2. Sign the full 10-field EIP-712 hash using `swaps_hash` from the response.
+//! 3. Patch the signature into the calldata via `quote.with_client_fee_signature()`.
+//! 4. Execute.
 //!
 //! ## Run with Anvil (mocked accounts)
 //!
@@ -109,10 +111,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // [doc:start client-fee-rust]
-    // The EIP-712 ClientFee type hash includes swap-specific fields that are
-    // only known after encoding. Step 1: request an unsigned quote to obtain
-    // `swaps_hash` and `min_amount_received` from the fee breakdown.
-    let fee_unsigned = ClientFeeParams::new(
+    // Step 1: request a quote using unsigned client fee params.
+    // The server encodes the full calldata and returns `swaps_hash`
+    // in the fee breakdown and `signature_offset` in the transaction
+    // so the client can patch the real signature in.
+    let fee = ClientFeeParams::new(
         FEE_BPS,
         Bytes::copy_from_slice(fee_receiver.as_slice()),
         BigUint::ZERO,
@@ -126,36 +129,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Bytes::copy_from_slice(sender.as_slice()),
         None,
     );
-    let quote_unsigned = client
+    let quote = client
         .quote(QuoteParams::new(
-            order.clone(),
+            order,
             QuoteOptions::default()
                 .with_timeout_ms(5_000)
-                .with_encoding_options(
-                    EncodingOptions::new(SLIPPAGE).with_client_fee(fee_unsigned),
-                ),
+                .with_encoding_options(EncodingOptions::new(SLIPPAGE).with_client_fee(fee.clone())),
         ))
         .await?;
 
-    let fee_breakdown = quote_unsigned
+    let fee_breakdown = quote
         .fee_breakdown()
-        .ok_or("no fee breakdown in unsigned quote")?;
+        .ok_or("no fee breakdown in quote")?;
     let swaps_hash = fee_breakdown
         .swaps_hash()
-        .ok_or("no swaps_hash in fee breakdown — server must support client fee signing")?;
+        .ok_or("no swaps_hash — server must support client fee signing")?;
 
     // Step 2: sign the full 10-field EIP-712 ClientFee hash.
     // receiver defaults to sender when the order has no explicit receiver.
-    let fee = ClientFeeParams::new(
-        FEE_BPS,
-        Bytes::copy_from_slice(fee_receiver.as_slice()),
-        BigUint::ZERO,
-        u64::MAX,
-    );
     let hash = fee.eip712_signing_hash(
         chain_id,
         &router_address,
-        quote_unsigned.amount_in(),
+        quote.amount_in(),
         &Bytes::copy_from_slice(sell_token.as_slice()),
         &Bytes::copy_from_slice(buy_token.as_slice()),
         fee_breakdown.min_amount_received(),
@@ -166,19 +161,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .sign_hash(&B256::from(hash))
         .await?;
 
-    // Step 3: re-request the quote with the valid signature attached.
-    let encoding_options = EncodingOptions::new(SLIPPAGE)
-        .with_client_fee(fee.with_signature(Bytes::copy_from_slice(&sig.as_bytes()[..])));
+    // Step 3: patch the real signature into the calldata.
+    let quote = quote.with_client_fee_signature(&sig.as_bytes()[..])?;
     // [doc:end client-fee-rust]
-
-    let quote = client
-        .quote(QuoteParams::new(
-            order,
-            QuoteOptions::default()
-                .with_timeout_ms(5_000)
-                .with_encoding_options(encoding_options),
-        ))
-        .await?;
 
     println!("amount_in:  {}", quote.amount_in());
     println!("amount_out: {}", quote.amount_out());

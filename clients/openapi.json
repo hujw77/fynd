@@ -830,6 +830,15 @@
           "data"
         ],
         "properties": {
+          "client_fee_signature_offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Byte offset of the client fee signature within `data`.\nClients use this to overwrite the placeholder signature with the real one.",
+            "example": null,
+            "minimum": 0
+          },
           "data": {
             "type": "string",
             "description": "ABI-encoded calldata as hex string.",

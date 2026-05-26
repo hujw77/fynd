@@ -261,7 +261,13 @@ impl Encoder {
                 bytes_to_address(fee.receiver())?,
                 biguint_to_u256(fee.max_contribution()),
                 U256::from(fee.deadline()),
-                fee.signature().to_vec(),
+                // Pad to 65 bytes so the ABI encoding always reserves room for
+                // the client to patch the real EIP-712 signature after signing.
+                {
+                    let mut sig = fee.signature().to_vec();
+                    sig.resize(65, 0);
+                    sig
+                },
             )
         } else {
             (0u16, Address::ZERO, U256::ZERO, U256::MAX, vec![])
@@ -333,15 +339,23 @@ impl Encoder {
 
         let contract_interaction =
             Self::encode_input(encoded_solution.function_signature(), method_calldata);
+
         let value =
             if token_in == router_eth { solution.amount_in().clone() } else { BigUint::ZERO };
-        let transaction = Transaction::new(
+        let mut transaction = Transaction::new(
             encoded_solution
                 .interacting_with()
                 .clone(),
             value,
             contract_interaction,
         );
+        if encoding_options
+            .client_fee_params()
+            .is_some()
+        {
+            let offset = encoded_solution.client_fee_signature_offset();
+            transaction = transaction.with_client_fee_signature_offset(offset);
+        }
         Ok((transaction, fee_breakdown))
     }
 
@@ -690,5 +704,75 @@ mod tests {
             .unwrap();
 
         assert!(result[0].transaction().is_some());
+    }
+
+    // ==================== Signature Offset Tests ====================
+
+    fn make_client_fee(bps: u16) -> crate::ClientFeeParams {
+        crate::ClientFeeParams::new(
+            bps,
+            Bytes::from(make_address(0xBB).as_ref()),
+            BigUint::from(0u64),
+            1_893_456_000u64,
+            Bytes::from(vec![]),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_encode_with_client_fee_returns_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        tx.client_fee_signature_offset()
+            .expect("client_fee_signature_offset must be present with client fee");
+    }
+
+    #[tokio::test]
+    async fn test_encode_without_client_fee_has_no_signature_offset() {
+        let encoder = real_encoder();
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01);
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        assert!(tx
+            .client_fee_signature_offset()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signature_offset_allows_patching() {
+        let encoder = real_encoder();
+        let real_sig = vec![0xFF; 65];
+        let quote = make_order_quote()
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let tx = result[0].transaction().unwrap();
+        let offset = tx
+            .client_fee_signature_offset()
+            .unwrap();
+
+        let mut calldata = tx.data().to_vec();
+        calldata[offset..offset + 65].copy_from_slice(&real_sig);
+        assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
     }
 }

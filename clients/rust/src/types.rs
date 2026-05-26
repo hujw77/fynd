@@ -5,7 +5,7 @@ use alloy::{
 use bytes::Bytes;
 use num_bigint::BigUint;
 
-use crate::mapping::biguint_to_u256;
+use crate::{error::FyndError, mapping::biguint_to_u256};
 
 // ============================================================================
 // ENCODING TYPES
@@ -380,7 +380,8 @@ impl EncodingOptions {
 pub struct Transaction {
     to: Bytes,
     value: BigUint,
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
+    pub(crate) client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
@@ -390,7 +391,7 @@ impl Transaction {
     /// - `value`: native token value to send with the transaction.
     /// - `data`: ABI-encoded calldata.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
     }
 
     /// Router contract address (20 raw bytes).
@@ -406,6 +407,11 @@ impl Transaction {
     /// ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -925,6 +931,39 @@ impl Quote {
     /// Populated by [`FyndClient::quote`](crate::FyndClient::quote). Returns `0` if not set.
     pub fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
+    }
+
+    /// Patches the 65-byte client fee EIP-712 signature into the transaction
+    /// calldata at the offset returned by the server.
+    ///
+    /// Use this after a single quote request:
+    ///
+    /// 1. Request a quote with unsigned [`ClientFeeParams`] (empty signature).
+    /// 2. Read [`FeeBreakdown::swaps_hash`] from the response.
+    /// 3. Sign the 10-field EIP-712 hash using [`ClientFeeParams::eip712_signing_hash`].
+    /// 4. Call this method to patch the signature into the calldata.
+    /// 5. Execute the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FyndError::Protocol`] if the quote has no transaction or no
+    /// `client_fee_signature_offset`.
+    pub fn with_client_fee_signature(mut self, signature: &[u8]) -> Result<Self, FyndError> {
+        let tx = self
+            .transaction
+            .as_mut()
+            .ok_or_else(|| {
+                FyndError::Protocol("transaction required for signature patching".into())
+            })?;
+        let offset = tx
+            .client_fee_signature_offset()
+            .ok_or_else(|| {
+                FyndError::Protocol(
+                    "client_fee_signature_offset required for signature patching".into(),
+                )
+            })?;
+        tx.data[offset..offset + signature.len()].copy_from_slice(signature);
+        Ok(self)
     }
 
     /// Create a new [`Quote`].

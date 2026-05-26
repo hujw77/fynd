@@ -1341,12 +1341,22 @@ pub struct Transaction {
     value: num_bigint::BigUint,
     /// ABI-encoded calldata.
     data: Vec<u8>,
+    /// Byte offset of the client fee signature within `data`.
+    /// Clients use this to patch the 65-byte EIP-712 signature into the calldata.
+    #[serde(skip)]
+    client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
     /// Creates a new transaction.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
+    }
+
+    /// Attaches the byte offset of the client fee signature within the calldata.
+    pub fn with_client_fee_signature_offset(mut self, offset: usize) -> Self {
+        self.client_fee_signature_offset = Some(offset);
+        self
     }
 
     /// Returns the contract address to call.
@@ -1362,6 +1372,11 @@ impl Transaction {
     /// Returns the ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 

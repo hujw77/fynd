@@ -258,11 +258,15 @@ fn order_quote_to_quote(
 
 impl From<dto::Transaction> for Transaction {
     fn from(dt: dto::Transaction) -> Self {
-        Transaction::new(
+        let mut tx = Transaction::new(
             bytes::Bytes::copy_from_slice(dt.to().as_ref()),
             dt.value().clone(),
             dt.data().to_vec(),
-        )
+        );
+        if let Some(offset) = dt.client_fee_signature_offset() {
+            tx.client_fee_signature_offset = Some(offset);
+        }
+        tx
     }
 }
 

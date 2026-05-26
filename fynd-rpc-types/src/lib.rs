@@ -1298,12 +1298,17 @@ pub struct Transaction {
     #[cfg_attr(feature = "openapi", schema(value_type = String, example = "0x1234567890abcdef"))]
     #[serde(serialize_with = "serialize_bytes_hex", deserialize_with = "deserialize_bytes_hex")]
     data: Vec<u8>,
+    /// Byte offset of the client fee signature within `data`.
+    /// Clients use this to overwrite the placeholder signature with the real one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(example = json!(null)))]
+    client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
     /// Create a new transaction.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
     }
 
     /// Contract address to call.
@@ -1319,6 +1324,11 @@ impl Transaction {
     /// ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -1784,6 +1794,7 @@ mod conversions {
                 to: core.to().clone().into(),
                 value: core.value().clone(),
                 data: core.data().to_vec(),
+                client_fee_signature_offset: core.client_fee_signature_offset(),
             }
         }
     }

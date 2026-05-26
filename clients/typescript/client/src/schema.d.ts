@@ -522,6 +522,12 @@ export interface components {
         /** @description An encoded EVM transaction ready to be submitted on-chain. */
         Transaction: {
             /**
+             * @description Byte offset of the client fee signature within `data`.
+             *     Clients use this to overwrite the placeholder signature with the real one.
+             * @example null
+             */
+            client_fee_signature_offset?: number | null;
+            /**
              * @description ABI-encoded calldata as hex string.
              * @example 0x1234567890abcdef
              */
