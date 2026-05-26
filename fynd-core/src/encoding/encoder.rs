@@ -255,16 +255,19 @@ impl Encoder {
             (None, vec![])
         };
 
-        // Use a known placeholder so find_signature_offset can locate it reliably.
-        // The client overwrites these bytes with the real signature after signing.
-        let sig_placeholder = vec![0x42u8; 65];
         let client_fee_params = if let Some(fee) = encoding_options.client_fee_params() {
             (
                 fee.bps(),
                 bytes_to_address(fee.receiver())?,
                 biguint_to_u256(fee.max_contribution()),
                 U256::from(fee.deadline()),
-                sig_placeholder.clone(),
+                // Pad to 65 bytes so the ABI encoding always reserves room for
+                // the client to patch the real EIP-712 signature after signing.
+                {
+                    let mut sig = fee.signature().to_vec();
+                    sig.resize(65, 0);
+                    sig
+                },
             )
         } else {
             (0u16, Address::ZERO, U256::ZERO, U256::MAX, vec![])
@@ -341,13 +344,8 @@ impl Encoder {
             .client_fee_params()
             .is_some()
         {
-            if let Some(offset) =
-                Self::find_signature_offset(&contract_interaction, &sig_placeholder)
-            {
-                fee_breakdown.with_signature_offset(offset)
-            } else {
-                fee_breakdown
-            }
+            let offset = encoded_solution.client_fee_signature_offset();
+            fee_breakdown.with_signature_offset(offset)
         } else {
             fee_breakdown
         };
@@ -384,30 +382,6 @@ impl Encoder {
         }
         call_data.extend(encoded_args);
         call_data
-    }
-
-    /// Finds the byte offset of `sig_bytes` within `calldata`.
-    ///
-    /// Returns `None` if the signature is not found or appears more than once
-    /// (ambiguous match).
-    fn find_signature_offset(calldata: &[u8], sig_bytes: &[u8]) -> Option<usize> {
-        if sig_bytes.is_empty() {
-            return None;
-        }
-        let mut found = None;
-        for (i, window) in calldata
-            .windows(sig_bytes.len())
-            .enumerate()
-        {
-            if window == sig_bytes {
-                if found.is_some() {
-                    // Ambiguous — signature pattern appears more than once
-                    return None;
-                }
-                found = Some(i);
-            }
-        }
-        found
     }
 
     /// Mirrors the on-chain `FeeCalculator.calculateFee` using identical integer arithmetic.
@@ -760,13 +734,8 @@ mod tests {
             .unwrap();
 
         let fb = result[0].fee_breakdown().unwrap();
-        let offset = fb
-            .signature_offset()
+        fb.signature_offset()
             .expect("signature_offset must be present with client fee");
-
-        // The server always encodes with the internal placeholder [0x42; 65]
-        let calldata = result[0].transaction().unwrap().data();
-        assert_eq!(&calldata[offset..offset + 65], &[0x42u8; 65]);
     }
 
     #[tokio::test]

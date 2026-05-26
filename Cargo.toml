@@ -135,8 +135,9 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 
 # Tycho
-tycho-simulation = "0.300.5"
-tycho-execution = "0.300.5"
+# TODO switch back before merging
+tycho-simulation = { git = "https://github.com/propeller-heads/tycho-indexer.git", rev = "592da60b1" }
+tycho-execution = { git = "https://github.com/propeller-heads/tycho-indexer.git", rev = "592da60b1" }
 typetag = "0.2"
 
 # Graph algorithms
