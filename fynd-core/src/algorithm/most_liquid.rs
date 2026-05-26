@@ -742,7 +742,7 @@ mod tests {
         algorithm::test_utils::{
             addr, component,
             fixtures::{addrs, diamond_graph, linear_graph, parallel_graph},
-            market_read, order, setup_market, token, MockProtocolSim, ONE_ETH,
+            market_read, order, setup_market_weighted, token, MockProtocolSim, ONE_ETH,
         },
         derived::{
             computation::{FailedItem, FailedItemError},
@@ -1301,7 +1301,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let paths = MostLiquidAlgorithm::find_paths(
             manager.graph(),
@@ -1334,7 +1334,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool2", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1374,7 +1374,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // A->B->A path requires min_hops=2, max_hops=2
         // Since the graph is bidirectional, we should get A->B->A path
@@ -1414,7 +1414,7 @@ mod tests {
         let token_c = token(0x03, "C");
 
         let (market, _) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
         let market = market_read(&market);
 
         // Add token C to graph but not to market (A->B->C)
@@ -1444,7 +1444,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // Remove the component but keep tokens and graph
         let mut market_write = market.try_write().unwrap();
@@ -1522,7 +1522,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let algorithm = MostLiquidAlgorithm::with_config(
             AlgorithmConfig::new(1, 1, Duration::from_millis(100), None).unwrap(),
@@ -1544,7 +1544,7 @@ mod tests {
         // Tests that route selection is based on net_amount_out (output - gas cost),
         // not just gross output. Three parallel pools with different spot_price/gas combos:
         //
-        // Gas price = 100 wei/gas (set by setup_market)
+        // Gas price = 100 wei/gas (set by setup_market_weighted)
         //
         // | Pool      | spot_price | gas | Output (1000 in) | Gas Cost (gas*100) | Net   |
         // |-----------|------------|-----|------------------|-------------------|-------|
@@ -1554,7 +1554,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("best", &token_a, &token_b, MockProtocolSim::new(3.0).with_gas(10)),
             ("low_out", &token_a, &token_b, MockProtocolSim::new(2.0).with_gas(5)),
             ("high_gas", &token_a, &token_b, MockProtocolSim::new(4.0).with_gas(30)),
@@ -1588,7 +1588,7 @@ mod tests {
         let token_c = token(0x03, "C"); // Disconnected
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let algorithm = MostLiquidAlgorithm::new();
         let order = order(&token_a, &token_c, ONE_ETH, OrderSide::Sell);
@@ -1605,7 +1605,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool2", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1748,7 +1748,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
         let mut market_write = market.try_write().unwrap();
 
         // Set a non-zero gas price so gas cost exceeds tiny output
@@ -1791,7 +1791,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![(
+        let (market, manager) = setup_market_weighted(vec![(
             "pool1",
             &token_a,
             &token_b,
@@ -1859,7 +1859,7 @@ mod tests {
         // MockProtocolSim::get_amount_out multiplies by spot_price when token_in < token_out.
         // After the first swap, spot_price increments to 3.
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // Use min_hops=2 to require at least 2 hops (circular)
         let algorithm = MostLiquidAlgorithm::with_config(
@@ -1900,7 +1900,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool_ab", &token_a, &token_b, MockProtocolSim::new(10.0)), /* Direct: 1-hop, high
                                                                           * output */
             ("pool_ac", &token_a, &token_c, MockProtocolSim::new(2.0)), // 2-hop path
@@ -1937,7 +1937,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool_ab", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool_bc", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1967,7 +1967,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         // Create many parallel pools to ensure multiple paths need processing
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(1.0)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(3.0)),
@@ -2058,7 +2058,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(4.0).with_liquidity(1_000_000)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(3.0).with_liquidity(2_000_000)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(2.0).with_liquidity(3_000_000)),
@@ -2090,7 +2090,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(4.0).with_liquidity(1_000_000)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(3.0).with_liquidity(2_000_000)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(2.0).with_liquidity(3_000_000)),

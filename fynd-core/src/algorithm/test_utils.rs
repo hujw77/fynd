@@ -437,7 +437,7 @@ pub fn order(token_in: &Token, token_out: &Token, amount: u128, side: OrderSide)
 /// Sets up market with components and a graph. Returns (market_ref, graph_manager).
 ///
 /// Use `market_read(&market_ref)` to get a `MarketState` reference for other tests.
-pub fn setup_market(
+pub fn setup_market_weighted(
     pools: Vec<(&str, &Token, &Token, MockProtocolSim)>,
 ) -> (MarketData, PetgraphStableDiGraphManager<DepthAndPrice>) {
     let mut market = MarketState::new();

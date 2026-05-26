@@ -488,7 +488,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{component, setup_market, token, MockProtocolSim},
+        algorithm::test_utils::{component, setup_market_weighted, token, MockProtocolSim},
         feed::market_data::{MarketData, MarketState},
         types::BlockInfo,
     };
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn invalid_slippage_threshold_returns_error() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let config = ComputationManagerConfig::new().with_depth_slippage_threshold(1.5);
 
         let result = ComputationManager::new(config, market);
@@ -521,8 +521,12 @@ mod tests {
         let eth = token(1, "ETH");
         let usdc = token(2, "USDC");
 
-        let (market, _) =
-            setup_market(vec![("eth_usdc", &eth, &usdc, MockProtocolSim::new(2000.0).with_gas(0))]);
+        let (market, _) = setup_market_weighted(vec![(
+            "eth_usdc",
+            &eth,
+            &usdc,
+            MockProtocolSim::new(2000.0).with_gas(0),
+        )]);
 
         let config = ComputationManagerConfig::new().with_gas_token(eth.address.clone());
         let (mut manager, _event_rx) = ComputationManager::new(config, market).unwrap();
@@ -549,7 +553,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_event_skips_empty_update() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let config = ComputationManagerConfig::new();
         let (mut manager, _event_rx) = ComputationManager::new(config, market).unwrap();
 
@@ -571,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_shuts_down_on_signal() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let config = ComputationManagerConfig::new();
         let (manager, _event_rx) = ComputationManager::new(config, market).unwrap();
 
@@ -700,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_shuts_down_on_channel_close() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let config = ComputationManagerConfig::new();
         let (manager, _event_rx) = ComputationManager::new(config, market).unwrap();
 
