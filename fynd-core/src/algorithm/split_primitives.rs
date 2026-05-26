@@ -143,8 +143,8 @@ impl ProtocolSim for ZeroGasSim {
 
 /// Find the `x` in `[lo, hi]` that maximises `f(x)` using golden-section search.
 ///
-/// Assumes `f` is roughly unimodal. `max_evals` controls the number of function
-/// evaluations (higher = more precise but slower).
+/// Assumes `f` is roughly unimodal (has one maximum). `max_evals` controls the
+/// number of function evaluations (higher = more precise but slower).
 pub(crate) fn golden_section_search(
     f: impl Fn(f64) -> f64,
     mut lo: f64,
@@ -187,21 +187,24 @@ pub(crate) fn golden_section_search(
 ///
 /// Both values always sum exactly to `total` — no tokens lost to rounding.
 pub(crate) fn split_amount(total: &BigUint, fraction: f64) -> (BigUint, BigUint) {
+    let clamped = fraction.clamp(0.0, 1.0);
     // Scale fraction to fixed-point with 18 decimal digits of precision.
     let scale: u64 = 1_000_000_000_000_000_000;
-    let numerator = (fraction * scale as f64) as u64;
+    let numerator = (clamped * scale as f64) as u64;
     let part = (total * BigUint::from(numerator)) / BigUint::from(scale);
     let remainder = total - &part;
     (part, remainder)
 }
 
 /// Errors from split-routing math utilities.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub(crate) enum SplitMathError {
     #[error("fractions slice must not be empty")]
     EmptyFractions,
     #[error("all fractions are zero, cannot normalize")]
     AllZeroFractions,
+    #[error("fractions must not be negative")]
+    NegativeFraction,
 }
 
 /// Normalize a slice of fractions so they sum to 1.0.
@@ -214,6 +217,9 @@ pub(crate) fn normalize_fractions(fractions: &mut [f64]) -> Result<(), SplitMath
     if fractions.is_empty() {
         return Err(SplitMathError::EmptyFractions);
     }
+    if fractions.iter().any(|&f| f < 0.0) {
+        return Err(SplitMathError::NegativeFraction);
+    }
     let sum: f64 = fractions.iter().sum();
     if sum == 0.0 {
         return Err(SplitMathError::AllZeroFractions);
@@ -224,10 +230,21 @@ pub(crate) fn normalize_fractions(fractions: &mut [f64]) -> Result<(), SplitMath
     Ok(())
 }
 
-/// Convert fractions (summing to 1.0) into `BigUint` amounts summing exactly to `total`.
+/// Convert fractions (summing to 1.0) into `BigUint` amounts summing exactly
+/// to `total`.
 ///
 /// The last element absorbs any rounding remainder so the sum is exact.
-pub(crate) fn fractions_to_amounts(total: &BigUint, fractions: &[f64]) -> Vec<BigUint> {
+///
+/// # Errors
+///
+/// Returns [`SplitMathError::EmptyFractions`] if `fractions` is empty.
+pub(crate) fn fractions_to_amounts(
+    total: &BigUint,
+    fractions: &[f64],
+) -> Result<Vec<BigUint>, SplitMathError> {
+    if fractions.is_empty() {
+        return Err(SplitMathError::EmptyFractions);
+    }
     let n = fractions.len();
     let mut amounts = Vec::with_capacity(n);
     let mut running_sum = BigUint::zero();
@@ -240,7 +257,7 @@ pub(crate) fn fractions_to_amounts(total: &BigUint, fractions: &[f64]) -> Vec<Bi
 
     // Last element gets the remainder to guarantee exact sum.
     amounts.push(total - &running_sum);
-    amounts
+    Ok(amounts)
 }
 
 #[cfg(test)]
@@ -271,13 +288,36 @@ mod tests {
     }
 
     #[test]
+    fn test_split_amount_clamps_above_one() {
+        let total = BigUint::from(1_000_000_000_000_000_000_u64);
+        let (part, remainder) = split_amount(&total, 1.5);
+        assert_eq!(part, total);
+        assert!(remainder.is_zero());
+    }
+
+    #[test]
+    fn test_split_amount_clamps_negative() {
+        let total = BigUint::from(1_000_000_000_000_000_000_u64);
+        let (part, remainder) = split_amount(&total, -0.5);
+        assert!(part.is_zero());
+        assert_eq!(remainder, total);
+    }
+
+    #[test]
     fn test_fractions_to_amounts_exact_sum() {
         let total = BigUint::from(999_999_999_999_999_999_u64);
         let fractions = [0.3, 0.5, 0.2];
-        let amounts = fractions_to_amounts(&total, &fractions);
+        let amounts = fractions_to_amounts(&total, &fractions).unwrap();
         assert_eq!(amounts.len(), 3);
         let sum: BigUint = amounts.iter().sum();
         assert_eq!(sum, total, "amounts must sum exactly to total");
+    }
+
+    #[test]
+    fn test_fractions_to_amounts_empty() {
+        let total = BigUint::from(1_000_u64);
+        let err = fractions_to_amounts(&total, &[]).unwrap_err();
+        assert_eq!(err, SplitMathError::EmptyFractions);
     }
 
     #[rstest]
@@ -293,10 +333,11 @@ mod tests {
     #[rstest]
     #[case::empty(&[], SplitMathError::EmptyFractions)]
     #[case::all_zeros(&[0.0, 0.0, 0.0], SplitMathError::AllZeroFractions)]
+    #[case::negative(&[-0.5, 0.5], SplitMathError::NegativeFraction)]
     fn test_normalize_fractions_invalid(#[case] input: &[f64], #[case] expected: SplitMathError) {
         let mut fractions = input.to_vec();
         let err = normalize_fractions(&mut fractions).unwrap_err();
-        assert_eq!(err.to_string(), expected.to_string());
+        assert_eq!(err, expected);
     }
 
     #[test]
