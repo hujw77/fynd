@@ -1,3 +1,10 @@
+## [0.60.0](https://github.com/propeller-heads/fynd/compare/0.59.1...0.60.0) (2026-05-26)
+
+
+### Features
+
+* **split-routing:** add split-route primitive types ([4b9779b](https://github.com/propeller-heads/fynd/commit/4b9779b2a33b8c6ed75bc9838239dab161577162))
+
 ## [0.59.1](https://github.com/propeller-heads/fynd/compare/0.59.0...0.59.1) (2026-05-25)
 
 ## [0.59.0](https://github.com/propeller-heads/fynd/compare/0.58.0...0.59.0) (2026-05-21)
