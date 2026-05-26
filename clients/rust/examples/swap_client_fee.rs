@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Step 3: patch the real signature into the calldata.
-    let quote = quote.with_client_fee_signature(&sig.as_bytes()[..]);
+    let quote = quote.with_client_fee_signature(&sig.as_bytes()[..])?;
     // [doc:end client-fee-rust]
 
     println!("amount_in:  {}", quote.amount_in());

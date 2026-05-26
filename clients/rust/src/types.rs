@@ -5,7 +5,7 @@ use alloy::{
 use bytes::Bytes;
 use num_bigint::BigUint;
 
-use crate::mapping::biguint_to_u256;
+use crate::{error::FyndError, mapping::biguint_to_u256};
 
 // ============================================================================
 // ENCODING TYPES
@@ -944,19 +944,26 @@ impl Quote {
     /// 4. Call this method to patch the signature into the calldata.
     /// 5. Execute the transaction.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the quote has no transaction or no `client_fee_signature_offset`.
-    pub fn with_client_fee_signature(mut self, signature: &[u8]) -> Self {
+    /// Returns [`FyndError::Protocol`] if the quote has no transaction or no
+    /// `client_fee_signature_offset`.
+    pub fn with_client_fee_signature(mut self, signature: &[u8]) -> Result<Self, FyndError> {
         let tx = self
             .transaction
             .as_mut()
-            .expect("transaction required for signature patching");
+            .ok_or_else(|| {
+                FyndError::Protocol("transaction required for signature patching".into())
+            })?;
         let offset = tx
             .client_fee_signature_offset()
-            .expect("client_fee_signature_offset required for signature patching");
+            .ok_or_else(|| {
+                FyndError::Protocol(
+                    "client_fee_signature_offset required for signature patching".into(),
+                )
+            })?;
         tx.data[offset..offset + signature.len()].copy_from_slice(signature);
-        self
+        Ok(self)
     }
 
     /// Create a new [`Quote`].
