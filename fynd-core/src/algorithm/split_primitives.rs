@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use num_bigint::BigUint;
-use num_traits::Zero;
+use num_traits::{ToPrimitive, Zero};
 use tycho_simulation::tycho_common::{
     dto::ProtocolStateDelta,
     models::token::Token,
@@ -12,7 +12,7 @@ use tycho_simulation::tycho_common::{
     Bytes,
 };
 
-use crate::types::ComponentId;
+use crate::{algorithm::AlgorithmError, feed::market_data::MarketState, types::ComponentId};
 
 pub(crate) struct HopDescriptor {
     pub(crate) component_id: ComponentId,
@@ -261,6 +261,167 @@ pub(crate) fn fractions_to_amounts(
     Ok(amounts)
 }
 
+/// Product of spot prices along a path — approximates the exchange rate at
+/// near-zero input.
+pub(crate) fn compute_marginal_price_product(
+    hops: &[HopDescriptor],
+    market: &MarketState,
+) -> Result<f64, AlgorithmError> {
+    let mut product = 1.0;
+    for hop in hops {
+        let sim = market
+            .get_simulation_state(&hop.component_id)
+            .ok_or_else(|| AlgorithmError::DataNotFound {
+                kind: "simulation state",
+                id: Some(hop.component_id.clone()),
+            })?;
+        let price = sim
+            .spot_price(&hop.token_in, &hop.token_out)
+            .map_err(|e| AlgorithmError::SimulationFailed {
+                component_id: hop.component_id.clone(),
+                error: e.to_string(),
+            })?;
+        product *= price;
+    }
+    Ok(product)
+}
+
+/// Simulates a path hop-by-hop, threading output of each hop as input to the
+/// next.
+///
+/// Checks `overrides` before falling back to the live market state for each
+/// hop. Returns the final output amount, raw gas sum, and marginal price
+/// product.
+pub(crate) fn simulate_path(
+    hops: &[HopDescriptor],
+    amount_in: &BigUint,
+    market: &MarketState,
+    overrides: &MarketOverrides,
+) -> Result<SimResult, AlgorithmError> {
+    let mut current_amount = amount_in.clone();
+    let mut total_gas: u64 = 0;
+
+    for hop in hops {
+        let sim = overrides
+            .get(&hop.component_id)
+            .or_else(|| market.get_simulation_state(&hop.component_id))
+            .ok_or_else(|| AlgorithmError::DataNotFound {
+                kind: "simulation state",
+                id: Some(hop.component_id.clone()),
+            })?;
+
+        let result = sim
+            .get_amount_out(current_amount, &hop.token_in, &hop.token_out)
+            .map_err(|e| AlgorithmError::SimulationFailed {
+                component_id: hop.component_id.clone(),
+                error: e.to_string(),
+            })?;
+
+        // Cap at u64::MAX instead of panicking on overflow.
+        total_gas = total_gas.saturating_add(result.gas.to_u64().unwrap_or(u64::MAX));
+        current_amount = result.amount;
+    }
+
+    let marginal_price_product = compute_marginal_price_product(hops, market)?;
+
+    Ok(SimResult { amount_out: current_amount, gas: total_gas, marginal_price_product })
+}
+
+/// Simulates all paths at their current fractions and returns
+/// `(total_amount_out, total_gas)`. `paths[i]` corresponds to `fractions[i]`.
+pub(crate) fn evaluate_total_output(
+    paths: &[&[HopDescriptor]],
+    fractions: &[f64],
+    total_amount: &BigUint,
+    market: &MarketState,
+    overrides: &MarketOverrides,
+) -> Result<(BigUint, u64), AlgorithmError> {
+    let amounts = fractions_to_amounts(total_amount, fractions)
+        .map_err(|e| AlgorithmError::Other(e.to_string()))?;
+
+    let mut total_out = BigUint::zero();
+    let mut total_gas: u64 = 0;
+
+    for (path, amount) in paths.iter().zip(amounts.iter()) {
+        if amount.is_zero() {
+            continue;
+        }
+
+        let mut current_amount = amount.clone();
+
+        for hop in path.iter() {
+            let sim = overrides
+                .get(&hop.component_id)
+                .or_else(|| market.get_simulation_state(&hop.component_id))
+                .ok_or_else(|| AlgorithmError::DataNotFound {
+                    kind: "simulation state",
+                    id: Some(hop.component_id.clone()),
+                })?;
+
+            let result = sim
+                .get_amount_out(current_amount, &hop.token_in, &hop.token_out)
+                .map_err(|e| AlgorithmError::SimulationFailed {
+                    component_id: hop.component_id.clone(),
+                    error: e.to_string(),
+                })?;
+
+            // Cap at u64::MAX instead of panicking on overflow.
+            total_gas = total_gas.saturating_add(result.gas.to_u64().unwrap_or(u64::MAX));
+            current_amount = result.amount;
+        }
+
+        total_out += current_amount;
+    }
+
+    Ok((total_out, total_gas))
+}
+
+/// Builds a post-swap view of the market after all paths in a single
+/// split-route solution have been executed.
+///
+/// For example, if the current solution splits 1000 USDC→ETH across:
+///   - Path 1: USDC→WETH via Uniswap (600 USDC)
+///   - Path 2: USDC→WBTC→WETH via Curve+Balancer (400 USDC)
+///
+/// this function simulates both swaps and returns overrides where Uniswap,
+/// Curve, and Balancer all reflect their post-swap reserves.
+///
+/// Paths are processed in order so shared pools accumulate the effects of
+/// all prior paths.
+pub(crate) fn build_degraded_market(
+    paths: &[&PathAllocation],
+    market: &MarketState,
+) -> MarketOverrides {
+    let mut states: HashMap<ComponentId, Box<dyn ProtocolSim>> = HashMap::new();
+
+    for path in paths {
+        let mut current_amount = path.amount_in.clone();
+
+        for hop in &path.hops {
+            let sim = states
+                .get(&hop.component_id)
+                .map(|b| b.as_ref())
+                .or_else(|| market.get_simulation_state(&hop.component_id));
+
+            let Some(sim) = sim else { break };
+
+            let Ok(result) = sim.get_amount_out(current_amount, &hop.token_in, &hop.token_out)
+            else {
+                break;
+            };
+
+            current_amount = result.amount;
+            states.insert(hop.component_id.clone(), result.new_state);
+        }
+    }
+
+    let mut overrides = MarketOverrides::empty();
+    for (id, sim) in states {
+        overrides = overrides.with_override(id, sim);
+    }
+    overrides
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -347,5 +508,326 @@ mod tests {
         let f = |x: f64| -(x - 0.3) * (x - 0.3);
         let result = golden_section_search(f, 0.0, 1.0, 100);
         assert!((result - 0.3).abs() < 1e-4, "expected ~0.3, got {result}");
+    }
+
+    // ==================== Simulation Utility Tests ====================
+
+    use crate::{
+        algorithm::test_utils::{component, token, ConstantProductSim, MockProtocolSim},
+        feed::market_data::MarketState,
+    };
+
+    fn make_market(pools: Vec<(&str, Vec<Token>, Box<dyn ProtocolSim>)>) -> MarketState {
+        let mut market = MarketState::new();
+        for (pool_id, tokens, sim) in pools {
+            market.upsert_components(std::iter::once(component(pool_id, &tokens)));
+            market.update_states([(pool_id.to_string(), sim)]);
+            market.upsert_tokens(tokens);
+        }
+        market
+    }
+
+    #[test]
+    fn test_compute_marginal_price_product_single_hop() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let market = make_market(vec![(
+            "pool_ab",
+            vec![token_a.clone(), token_b.clone()],
+            Box::new(MockProtocolSim::new(3.0)),
+        )]);
+
+        let hops = [HopDescriptor {
+            component_id: "pool_ab".to_string(),
+            token_in: token_a,
+            token_out: token_b,
+        }];
+
+        let product = compute_marginal_price_product(&hops, &market).unwrap();
+        assert!((product - 3.0).abs() < f64::EPSILON, "expected 3.0, got {product}");
+    }
+
+    #[test]
+    fn test_compute_marginal_price_product_multi_hop() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let market = make_market(vec![
+            (
+                "pool_ab",
+                vec![token_a.clone(), token_b.clone()],
+                Box::new(MockProtocolSim::new(2.0)),
+            ),
+            (
+                "pool_bc",
+                vec![token_b.clone(), token_c.clone()],
+                Box::new(MockProtocolSim::new(4.0)),
+            ),
+        ]);
+
+        let hops = [
+            HopDescriptor {
+                component_id: "pool_ab".to_string(),
+                token_in: token_a,
+                token_out: token_b.clone(),
+            },
+            HopDescriptor {
+                component_id: "pool_bc".to_string(),
+                token_in: token_b,
+                token_out: token_c,
+            },
+        ];
+
+        let product = compute_marginal_price_product(&hops, &market).unwrap();
+        // 2.0 * 4.0 = 8.0
+        assert!((product - 8.0).abs() < f64::EPSILON, "expected 8.0, got {product}");
+    }
+
+    #[test]
+    fn test_simulate_path_correct_output() {
+        // 2-hop path A→B→C with spot prices 2.0 and 3.0.
+        // Input 1000 should thread through: 1000*2=2000, 2000*3=6000.
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let market = make_market(vec![
+            (
+                "pool_ab",
+                vec![token_a.clone(), token_b.clone()],
+                Box::new(MockProtocolSim::new(2.0)),
+            ),
+            (
+                "pool_bc",
+                vec![token_b.clone(), token_c.clone()],
+                Box::new(MockProtocolSim::new(3.0)),
+            ),
+        ]);
+
+        let hops = [
+            HopDescriptor {
+                component_id: "pool_ab".to_string(),
+                token_in: token_a,
+                token_out: token_b.clone(),
+            },
+            HopDescriptor {
+                component_id: "pool_bc".to_string(),
+                token_in: token_b,
+                token_out: token_c,
+            },
+        ];
+
+        let amount_in = BigUint::from(1000u64);
+        let overrides = MarketOverrides::empty();
+        let result = simulate_path(&hops, &amount_in, &market, &overrides).unwrap();
+
+        assert_eq!(result.amount_out, BigUint::from(6000u64));
+
+        // spot_price(A→B) = 2.0, spot_price(B→C) = 3.0 → product = 6.0
+        assert!(
+            (result.marginal_price_product - 6.0).abs() < f64::EPSILON,
+            "expected marginal_price_product 6.0, got {}",
+            result.marginal_price_product
+        );
+    }
+
+    #[test]
+    fn test_market_overrides_with_zero_gas() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let sim_ab = MockProtocolSim::new(2.0).with_gas(100_000);
+        let sim_bc = MockProtocolSim::new(3.0).with_gas(70_000);
+        let market = make_market(vec![
+            ("pool_ab", vec![token_a.clone(), token_b.clone()], Box::new(sim_ab.clone())),
+            ("pool_bc", vec![token_b.clone(), token_c.clone()], Box::new(sim_bc.clone())),
+        ]);
+
+        // Zero gas on pool_ab, leave pool_bc as a normal override.
+        let overrides = MarketOverrides::empty()
+            .with_zero_gas("pool_ab".to_string(), Box::new(sim_ab))
+            .with_override("pool_bc".to_string(), Box::new(sim_bc));
+
+        let hops_ab = [HopDescriptor {
+            component_id: "pool_ab".to_string(),
+            token_in: token_a.clone(),
+            token_out: token_b.clone(),
+        }];
+        let hops_bc = [HopDescriptor {
+            component_id: "pool_bc".to_string(),
+            token_in: token_b,
+            token_out: token_c,
+        }];
+        let amount_in = BigUint::from(1000u64);
+
+        let normal_ab =
+            simulate_path(&hops_ab, &amount_in, &market, &MarketOverrides::empty()).unwrap();
+        let zero_gas_ab = simulate_path(&hops_ab, &amount_in, &market, &overrides).unwrap();
+
+        assert_eq!(normal_ab.amount_out, zero_gas_ab.amount_out);
+        assert!(normal_ab.gas > 0, "normal gas should be non-zero");
+        assert_eq!(zero_gas_ab.gas, 0, "zero-gas override should report gas=0");
+
+        // pool_bc is a normal override — its gas should be unaffected.
+        let result_bc = simulate_path(&hops_bc, &amount_in, &market, &overrides).unwrap();
+        assert_eq!(result_bc.gas, 70_000, "non-zero-gas override should keep its gas");
+    }
+
+    #[test]
+    fn test_evaluate_total_output_two_paths() {
+        // 50/50 split of 1000 across two parallel 1-hop paths:
+        //
+        //       500 -- pool_1 (price=2.0) --> 1000
+        //      /                                   \
+        //  1000                                     2500
+        //      \                                   /
+        //       500 -- pool_2 (price=3.0) --> 1500
+        //
+        // total_gas = 50k + 60k = 110k
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let market = make_market(vec![
+            (
+                "pool_1",
+                vec![token_a.clone(), token_b.clone()],
+                Box::new(MockProtocolSim::new(2.0).with_gas(50_000)),
+            ),
+            (
+                "pool_2",
+                vec![token_a.clone(), token_b.clone()],
+                Box::new(MockProtocolSim::new(3.0).with_gas(60_000)),
+            ),
+        ]);
+
+        let hops_1 = [HopDescriptor {
+            component_id: "pool_1".to_string(),
+            token_in: token_a.clone(),
+            token_out: token_b.clone(),
+        }];
+        let hops_2 = [HopDescriptor {
+            component_id: "pool_2".to_string(),
+            token_in: token_a,
+            token_out: token_b,
+        }];
+
+        let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
+        let fractions = [0.5, 0.5];
+        let total_amount = BigUint::from(1000u64);
+        let overrides = MarketOverrides::empty();
+
+        let (total_out, total_gas) =
+            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+
+        assert_eq!(total_out, BigUint::from(2500u64));
+        assert_eq!(total_gas, 110_000);
+    }
+
+    #[test]
+    fn test_evaluate_total_output_gas_counts_every_hop() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let token_d = token(0x0D, "D");
+        let market = make_market(vec![
+            (
+                "P1",
+                vec![token_a.clone(), token_b.clone()],
+                Box::new(MockProtocolSim::new(2.0).with_gas(100_000)),
+            ),
+            (
+                "P2",
+                vec![token_b.clone(), token_c.clone()],
+                Box::new(MockProtocolSim::new(1.5).with_gas(50_000)),
+            ),
+            (
+                "P3",
+                vec![token_b.clone(), token_d.clone()],
+                Box::new(MockProtocolSim::new(3.0).with_gas(70_000)),
+            ),
+        ]);
+
+        // Path 1: A -> P1 -> B -> P2 -> C (uses P1 and P2)
+        let hops_1 = [
+            HopDescriptor {
+                component_id: "P1".to_string(),
+                token_in: token_a.clone(),
+                token_out: token_b.clone(),
+            },
+            HopDescriptor {
+                component_id: "P2".to_string(),
+                token_in: token_b.clone(),
+                token_out: token_c,
+            },
+        ];
+        // Path 2: A -> P1 -> B -> P3 -> D (uses P1 and P3)
+        let hops_2 = [
+            HopDescriptor {
+                component_id: "P1".to_string(),
+                token_in: token_a,
+                token_out: token_b.clone(),
+            },
+            HopDescriptor { component_id: "P3".to_string(), token_in: token_b, token_out: token_d },
+        ];
+
+        let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
+        let fractions = [0.5, 0.5];
+        let total_amount = BigUint::from(1000u64);
+        let overrides = MarketOverrides::empty();
+
+        let (_, total_gas) =
+            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+
+        // Every hop counts: P1 + P2 + P1 + P3 = 100k + 50k + 100k + 70k
+        assert_eq!(total_gas, 320_000);
+    }
+
+    #[test]
+    fn test_build_degraded_market_degrades_used_pools() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let market = make_market(vec![(
+            "pool_ab",
+            vec![token_a.clone(), token_b.clone()],
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(10_000u64),
+                reserve_1: BigUint::from(20_000u64),
+                gas: 50_000,
+            }),
+        )]);
+
+        let allocation = PathAllocation {
+            hops: vec![HopDescriptor {
+                component_id: "pool_ab".to_string(),
+                token_in: token_a.clone(),
+                token_out: token_b.clone(),
+            }],
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(1000u64),
+            amount_out: BigUint::from(1818u64),
+            marginal_price_product: 2.0,
+        };
+
+        let degraded = build_degraded_market(&[&allocation], &market);
+
+        // xy=k: amount_out = amount_in * reserve_out / (reserve_in + amount_in)
+        // Fresh pool (10000/20000): 100 * 20000 / (10000 + 100) = 198
+        let probe = BigUint::from(100u64);
+        let fresh_out = market
+            .get_simulation_state("pool_ab")
+            .unwrap()
+            .get_amount_out(probe.clone(), &token_a, &token_b)
+            .unwrap()
+            .amount;
+        assert_eq!(fresh_out, BigUint::from(198u64));
+
+        // The 1000-in allocation produces 1000*20000/(10000+1000) = 1818 out,
+        // shifting reserves to (10000+1000, 20000-1818) = (11000, 18182).
+        // Degraded pool: 100 * 18182 / (11000 + 100) = 163
+        let degraded_out = degraded
+            .get(&"pool_ab".to_string())
+            .unwrap()
+            .get_amount_out(probe, &token_a, &token_b)
+            .unwrap()
+            .amount;
+        assert_eq!(degraded_out, BigUint::from(163u64));
     }
 }
