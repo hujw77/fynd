@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -341,6 +341,7 @@ pub(crate) fn evaluate_total_output(
 
     let mut total_out = BigUint::zero();
     let mut total_gas: u64 = 0;
+    let mut seen_hops: HashSet<(ComponentId, Bytes, Bytes)> = HashSet::new();
 
     for (path, amount) in paths.iter().zip(amounts.iter()) {
         if amount.is_zero() {
@@ -365,8 +366,17 @@ pub(crate) fn evaluate_total_output(
                     error: e.to_string(),
                 })?;
 
-            // Cap at u64::MAX instead of panicking on overflow.
-            total_gas = total_gas.saturating_add(result.gas.to_u64().unwrap_or(u64::MAX));
+            // Shared pre-split hops appear in multiple paths but are
+            // executed once on-chain — count gas only once per unique
+            // (pool, token_in, token_out).
+            let hop_key = (
+                hop.component_id.clone(),
+                hop.token_in.address.clone(),
+                hop.token_out.address.clone(),
+            );
+            if seen_hops.insert(hop_key) {
+                total_gas = total_gas.saturating_add(result.gas.to_u64().unwrap_or(u64::MAX));
+            }
             current_amount = result.amount;
         }
 
@@ -722,7 +732,16 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_total_output_gas_counts_every_hop() {
+    fn test_evaluate_total_output_gas_deduplication() {
+        // Two paths share pool P1 (pre-split hop). P1's gas should be
+        // counted once, not twice.
+        //
+        //              P2 (50k gas) --> C
+        //             /
+        //  A -- P1 --+
+        //             \
+        //              P3 (70k gas) --> D
+        //
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
@@ -776,8 +795,48 @@ mod tests {
         let (_, total_gas) =
             evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
 
-        // Every hop counts: P1 + P2 + P1 + P3 = 100k + 50k + 100k + 70k
-        assert_eq!(total_gas, 320_000);
+        // P1 counted once: 100k + 50k + 70k = 220k
+        assert_eq!(total_gas, 220_000);
+    }
+
+    #[test]
+    fn test_gas_dedup_different_tokens() {
+        // A single 3-token pool used for two different token pairs is two
+        // distinct hops — gas must be counted for each.
+        //
+        //  A -- TRIPOOL (A→B) --> B    (path 1)
+        //  B -- TRIPOOL (B→C) --> C    (path 2)
+        //
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let market = make_market(vec![(
+            "tripool",
+            vec![token_a.clone(), token_b.clone(), token_c.clone()],
+            Box::new(MockProtocolSim::new(1.0).with_gas(80_000)),
+        )]);
+
+        let hops_1 = [HopDescriptor {
+            component_id: "tripool".to_string(),
+            token_in: token_a,
+            token_out: token_b.clone(),
+        }];
+        let hops_2 = [HopDescriptor {
+            component_id: "tripool".to_string(),
+            token_in: token_b,
+            token_out: token_c,
+        }];
+
+        let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
+        let fractions = [0.5, 0.5];
+        let total_amount = BigUint::from(1000u64);
+        let overrides = MarketOverrides::empty();
+
+        let (_, total_gas) =
+            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+
+        // Different token pairs on the same pool: 80k + 80k = 160k
+        assert_eq!(total_gas, 160_000);
     }
 
     #[test]
