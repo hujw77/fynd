@@ -5,9 +5,9 @@ icon: coins
 # Client Fees
 
 
-Every swap through the TychoRouter incurs two fees, deducted from the swap output:
+Fees are deducted from the swap output:
 
-* **Router fee**: 10 bps (0.1%) on the swap output, always applied.
+* **Router fee**: 10 bps (0.1%) on the swap output by default. Contact us for discounts on volume.
 * **Client fee**: optional integrator fee via `ClientFeeParams`. The router takes a 20% share; the integrator keeps 80%.
 
 When you request encoding, the quote response includes a `fee_breakdown` with the exact amounts.
@@ -24,7 +24,7 @@ Given `amount_out` (raw swap output), `client_fee_bps` (0 if none), and `slippag
 1. client_fee        = amount_out * client_fee_bps / 10,000
 2. router_share      = amount_out * client_fee_bps * 2,000 / 100,000,000
 3. client_portion    = client_fee - router_share
-4. router_fee_output = amount_out * 10 / 10,000
+4. router_fee_output = amount_out * 10 / 10,000  // default 10 bps rate
 5. router_fee        = router_share + router_fee_output
 6. amount_after_fees = amount_out - client_portion - router_fee
 7. max_slippage      = amount_after_fees * slippage
@@ -64,7 +64,7 @@ min_amount_received  = 994,000 - 9,940                   = 984,060
 3. Attach the signed params to `EncodingOptions.clientFeeParams`.
 4. The router verifies the signature on-chain and deducts the fee. Fees go to the receiver's vault balance.
 
-No `ClientFeeParams`? No client fee. The 10 bps router fee still applies.
+No `ClientFeeParams`? No client fee. The default 10 bps router fee still applies.
 
 ### maxClientContribution
 
