@@ -24,6 +24,8 @@ pub mod most_liquid;
 pub(crate) mod split_primitives;
 
 #[cfg(test)]
+pub mod split_test_harness;
+#[cfg(test)]
 pub mod test_utils;
 
 use std::{collections::HashSet, time::Duration};
