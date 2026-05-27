@@ -346,7 +346,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{setup_market, token, token_with_decimals, MockProtocolSim},
+        algorithm::test_utils::{
+            setup_market_weighted, token, token_with_decimals, MockProtocolSim,
+        },
         derived::{
             computation::FailedItemError,
             store::DerivedData,
@@ -414,7 +416,8 @@ mod tests {
         let eth = token(0, "ETH");
         let usdc = token(1, "USDC");
 
-        let (market, _) = setup_market(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
+        let (market, _) =
+            setup_market_weighted(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
         let derived = DerivedData::new_shared(); // No spot prices
         let changed = ChangedComponents::default();
 
@@ -444,7 +447,7 @@ mod tests {
         let eth = token_with_decimals(0, "ETH", decimals_in);
         let usdc = token_with_decimals(1, "USDC", decimals_out);
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &eth,
             &usdc,
@@ -732,7 +735,7 @@ mod tests {
         let eth = token(0x01, "ETH");
         let usdc = token(0x02, "USDC");
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &eth,
             &usdc,
@@ -841,7 +844,7 @@ mod tests {
         let token_in = token_with_decimals(0x01, "A", 6);
         let token_out = token_with_decimals(0x02, "B", 18);
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &token_in,
             &token_out,

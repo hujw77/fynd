@@ -437,7 +437,7 @@ pub fn order(token_in: &Token, token_out: &Token, amount: u128, side: OrderSide)
 /// Sets up market with components and a graph. Returns (market_ref, graph_manager).
 ///
 /// Use `market_read(&market_ref)` to get a `MarketState` reference for other tests.
-pub fn setup_market(
+pub fn setup_market_weighted(
     pools: Vec<(&str, &Token, &Token, MockProtocolSim)>,
 ) -> (MarketData, PetgraphStableDiGraphManager<DepthAndPrice>) {
     let mut market = MarketState::new();
@@ -489,6 +489,34 @@ pub fn setup_market(
             )
             .unwrap();
     }
+
+    (MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market))), graph_manager)
+}
+
+/// Setup helper for algorithms that do not use pre-computed edge weights
+pub fn setup_market_unweighted(
+    pools: Vec<(&str, &Token, &Token, Box<dyn ProtocolSim>)>,
+) -> (MarketData, PetgraphStableDiGraphManager<()>) {
+    let mut market = MarketState::new();
+
+    market.update_gas_price(BlockGasPrice {
+        block_number: 1,
+        block_hash: Default::default(),
+        block_timestamp: 0,
+        pricing: GasPrice::Legacy { gas_price: BigUint::from(100u64) },
+    });
+    market.update_last_updated(BlockInfo::new(1, "0x00".into(), 0));
+
+    for (pool_id, token_in, token_out, state) in pools {
+        let tokens = vec![token_in.clone(), token_out.clone()];
+        let comp = component(pool_id, &tokens);
+        market.upsert_components(std::iter::once(comp));
+        market.update_states([(pool_id.to_string(), state)]);
+        market.upsert_tokens(tokens);
+    }
+
+    let mut graph_manager = PetgraphStableDiGraphManager::<()>::default();
+    graph_manager.initialize_graph(&market.component_topology());
 
     (MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market))), graph_manager)
 }
@@ -1037,6 +1065,31 @@ mod tests {
             }
             _ => panic!("expected InvalidInput error, got {result:?}"),
         }
+    }
+
+    // ==================== setup_market_unweighted Tests ====================
+
+    #[test]
+    fn test_setup_market_unweighted_with_const_product() {
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+        let sim = ConstantProductSim {
+            reserve_0: BigUint::from(1000u64),
+            reserve_1: BigUint::from(2000u64),
+            gas: 50_000,
+        };
+
+        let (market, _graph) =
+            setup_market_unweighted(vec![("pool1", &t_in, &t_out, Box::new(sim))]);
+
+        let view = market_read(&market);
+        let state = view
+            .get_simulation_state("pool1")
+            .expect("pool1 should be in market");
+        let result = state
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .expect("swap should succeed");
+        assert_eq!(result.amount, BigUint::from(181u64));
     }
 
     // ==================== Mock vs UniV2 Comparison Test ====================

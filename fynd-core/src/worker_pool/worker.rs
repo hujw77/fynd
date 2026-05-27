@@ -535,7 +535,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::{most_liquid::DepthAndPrice, test_utils::setup_market},
+        algorithm::{most_liquid::DepthAndPrice, test_utils::setup_market_weighted},
         derived::{
             computation::DerivedComputation,
             computations::{SpotPriceComputation, TokenGasPriceComputation},
@@ -594,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_when_no_requirements() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let algorithm = MockAlgorithm::new();
@@ -609,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_when_already_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -636,7 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_times_out_when_not_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -662,7 +662,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_wakes_up_on_notify() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -694,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_succeeds_when_notified_and_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -737,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_pattern_handles_multiple_waiters() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -782,7 +782,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_on_blocked_state() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -830,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_blocked_when_failure_already_processed() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -872,7 +872,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_updates_tracker_and_notifies_on_derived_event() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()

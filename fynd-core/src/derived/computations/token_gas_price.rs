@@ -627,7 +627,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{component, market_read, setup_market, token, MockProtocolSim},
+        algorithm::test_utils::{
+            component, market_read, setup_market_weighted, token, MockProtocolSim,
+        },
         derived::{computations::spot_price::SpotPriceComputation, store::DerivedData},
     };
     // ==================== Constants ====================
@@ -635,7 +637,7 @@ mod tests {
     /// Standard simulation amount: 1 ETH = 10^18 wei.
     const SIM_AMOUNT: u128 = 1_000_000_000_000_000_000;
 
-    /// Gas price set by setup_market: 100 wei/gas.
+    /// Gas price set by setup_market_weighted: 100 wei/gas.
     const GAS_PRICE: u64 = 100;
 
     // ==================== Test Helpers ====================
@@ -645,7 +647,7 @@ mod tests {
     async fn setup_test_env(
         pools: Vec<(&str, &Token, &Token, MockProtocolSim)>,
     ) -> (MarketData, SharedDerivedDataRef) {
-        let (wrapped_market, _) = setup_market(pools.clone());
+        let (wrapped_market, _) = setup_market_weighted(pools.clone());
 
         let wrapped_store = DerivedData::new_shared();
         let spot_comp = SpotPriceComputation::new();
@@ -1080,7 +1082,8 @@ mod tests {
         let usdc = token(1, "USDC");
 
         // Create market without spot prices set
-        let (market, _) = setup_market(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
+        let (market, _) =
+            setup_market_weighted(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
         let derived = DerivedData::new_shared(); // No spot prices
         let changed = ChangedComponents::default();
 
@@ -1301,7 +1304,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_paths_fail_reported() {
-        // gas_units = 1e16, gas_price = 100 (set by setup_market)
+        // gas_units = 1e16, gas_price = 100 (set by setup_market_weighted)
         // sell_gas_cost = 1e16 * 100 = 1e18 = sell_out (1e18 ETH) → path not viable
         // → all paths for USDC fail → USDC lands in failed_items
         let eth = token(0, "ETH");

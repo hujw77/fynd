@@ -190,7 +190,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{component, setup_market, token, MockProtocolSim},
+        algorithm::test_utils::{component, setup_market_weighted, token, MockProtocolSim},
         derived::store::DerivedData,
         feed::market_data::MarketData,
     };
@@ -222,7 +222,8 @@ mod tests {
         let usdc = token(0x02, "USDC");
         let dai = token(0x03, "DAI");
 
-        let (market, _) = setup_market(vec![("pool1", &eth, &usdc, MockProtocolSim::new(2000.0))]);
+        let (market, _) =
+            setup_market_weighted(vec![("pool1", &eth, &usdc, MockProtocolSim::new(2000.0))]);
 
         // Add pool2 without sim state
         {
