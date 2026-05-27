@@ -56,91 +56,110 @@ each time you want a fresh, independent draw from the 10k dataset.
 
 ---
 
-## Findings from the 2026-05-27 run (single-hop, n=1000)
+## Findings from the 2026-05-27 run (default routing, n=1000)
 
-This run used `single_hops.toml` (1-hop only, both `most_liquid` and
-`bellman_ford` pools) so the error attribution is per-protocol with no
-multi-hop overhead in the way. Mainnet gas price at the time was 0.21 gwei.
-Absolute ETH numbers scale linearly with gas price — the **relative** figures
-are the ones that matter.
+This run used Fynd's default `worker_pools.toml` (multi-hop enabled), so the
+sample includes both single-hop and sequential routes. Mainnet gas price at
+the time was 0.10 gwei. Absolute ETH numbers scale linearly with gas price —
+the **relative** figures are the ones that matter.
 
 **Sample yield (1000 trades attempted):**
 
 | outcome | count |
 |---|---|
-| success (quote + simulation) | 341 |
-| Fynd returned no route | 609 |
-| simulation reverted | 50 |
+| success (quote + simulation) | 523 |
+| Fynd returned no route | 399 |
+| simulation reverted | 78 |
 
-The no-quote rate (~61%) is high because pinning `max_hops=1` rules out every
-trade whose only routable path needs an intermediate token. 41 out of 50 simulation
-reverts are tokens whose balance/allowance storage slots the simulator's
-brute-force probe (slots 0..=20) couldn't locate — proxy patterns or
-non-Solidity-default storage layouts, biased toward small-caps. See
-limitation #2. The other 9 reverts just show "0x4e487b71" Panic().
+72 out of 78 simulation reverts are tokens whose balance/allowance storage slots the simulator's brute-force
+probe (slots 0..=20) couldn't locate — proxy patterns or non-Solidity-default
+storage layouts, biased toward small-caps. See limitation #2. The other 6 reverts 
+just show "0x4e487b71" Panic().
 
-**Gas accuracy on the 341 successful trades:**
+**Gas accuracy on the 523 successful trades:**
 
 | metric | value |
 |---|---|
-| Trades where Fynd **under**-estimated | **334 / 341** |
-| Trades where Fynd over-estimated | 7 / 341 |
-| Mean \|error\| / actual cost | **30.97%** |
-| Median signed error (ETH) | -0.000012 |
-| Mean signed error (ETH) | -0.000016 |
-| P95 absolute error (ETH) | 0.000040 |
-| Sum of signed error (341 trades, ETH) | -0.005403 |
+| Trades where Fynd **under**-estimated | **482 / 523** |
+| Trades where Fynd over-estimated | 41 / 523 |
+| Mean \|error\| / actual cost | **34.79%** |
+| Median signed error (ETH) | -0.000009 |
+| Mean signed error (ETH) | -0.000010 |
+| P95 absolute error (ETH) | 0.000020 |
+| Sum of signed error (523 trades, ETH) | -0.005169 |
 
-**Headline:** Fynd is systematically low by ~31% on gas.
+**Headline:** Fynd is systematically low by ~35% on gas.
 
-**By protocol** (single-hop isolates the simulator under test):
+**By route shape:**
+
+| shape | n | under | over | mean \|err\|/cost |
+|---|---|---|---|---|
+| sequential | 305 | 271 | 34 | 34.93% |
+| single | 218 | 211 | 7 | 34.58% |
+
+Single-hop and sequential routes have nearly identical mean error (~35%),
+showing the bias is additive across hops rather than a routing artifact.
+
+**By protocol — single-hop only:**
 
 | protocol | n | mean \|error\| / cost | under | over |
 |---|---|---|---|---|
-| uniswap_v4 | 75 | **68.24%** | 75 | 0 |
-| ekubo_v3 | 1 | 39.27% | 1 | 0 |
-| uniswap_v2 | 61 | 30.92% | 61 | 0 |
-| pancakeswap_v2 | 1 | 20.55% | 1 | 0 |
-| pancakeswap_v3 | 5 | 20.38% | 5 | 0 |
-| uniswap_v3 | 190 | 17.53% | 187 | 3 |
-| fluid_v1 | 2 | 14.79% | 2 | 0 |
-| sushiswap_v2 | 6 | 5.76% | 2 | 4 |
+| uniswap_v4 | 62 | **68.96%** | 62 | 0 |
+| ekubo_v3 | 1 | 39.63% | 1 | 0 |
+| uniswap_v2 | 51 | 29.60% | 51 | 0 |
+| pancakeswap_v3 | 1 | 19.06% | 1 | 0 |
+| fluid_v1 | 2 | 18.15% | 2 | 0 |
+| uniswap_v3 | 96 | 17.24% | 94 | 2 |
+| sushiswap_v2 | 5 | 1.00% | 0 | 5 |
 
-Uniswap v4 is the dominant outlier at ~68% mean error. 
+Uniswap v4 is the dominant outlier at ~69% mean error. 
 
 ---
 
-## What the 31% means for route selection
+## Grouped swaps: uniswap_v4 → uniswap_v4
+
+Consecutive uniswap_v4 hops are encoded as a single grouped PoolManager call.
+The gas estimate for the group sums per-swap estimates and discounts skipped
+intermediate token transfers.
+
+| sequence | n | mean \|err\|/cost |
+|---|---|---|
+| uniswap_v4 (single) | 62 | 68.96% |
+| uniswap_v4,uniswap_v4 | 74 | 60.63% |
+| uniswap_v4,uniswap_v4,uniswap_v4 | 14 | 57.16% |
+
+The error shrinks with each additional grouped leg because the batching
+discount partially offsets the baseline v4 under-estimation. The grouped
+estimates remain substantially under because the per-swap base estimates are
+already too low.
+
+---
+
+## What the 35% means for route selection
 
 - **Portfolio bias:** Fynd's `amount_out_net_gas` is consistently
-  over-estimated by roughly 31% of the gas cost. At the 0.21 gwei this run
-  saw, the per-trade loss is ~$0.03 on the mean (the -0.000016 ETH headline
-  at ETH ≈ $2,078); at 20 gwei it scales to ~$3/trade.
+  over-estimated by roughly 35% of the gas cost. At the 0.10 gwei this run
+  saw, the per-trade loss is ~$0.02 on the mean (the -0.000010 ETH headline
+  at ETH ≈ $2,080); at 20 gwei it scales to ~$4/trade.
 - **Per-trade ranking:** a systematic bias doesn't by itself flip the winner,
   but it narrows margins. Higher-liquidity multi-hop routes that cost more gas
   lose ground to lower-liquidity single-hop routes whenever the gas cost is
   the tie-breaker. So the bias is more likely to matter when top-2 routes
   have similar `amount_out`.
 
-Both claims can be checked with the CSV. `error_gas` is signed; group by
-protocol to see where the ranking-flip risk concentrates (uniswap_v4 is the
-clear outlier at ~68%).
-
 ---
 
 ## Known limitations of the current audit
 
-1. **`single_hops.toml` ↔ no-quote rate trade-off.** With `max_hops=1`, ~61%
-   of the 1000 sampled aggregator trades return `NoRouteFound` because the only
-   routable path needs an intermediate token (most multi-hop trades go via
-   WETH/USDC). That's the cost of clean per-protocol attribution. Drop the
-   `-w` flag and rerun against the default `worker_pools.toml` (2-hop) to
-   recover most of those trades — at the price of mixing protocols within a
-   route, which makes the per-protocol breakdown meaningless.
+1. **No-quote rate vs. per-protocol attribution trade-off.** With default
+   routing (~40% no-quote), sequential routes mix protocols, making the
+   single-protocol breakdown less clean. Use `-w tools/fynd-gas-audit/single_hops.toml`
+   (`max_hops=1`) to isolate per-protocol accuracy — at the cost of ~61%
+   no-quote and no sequential route coverage.
 2. **Non-standard ERC-20 tokens break slot detection.** The simulator's
    balance/allowance slot probe (brute-force slots 0..=20) misses tokens that
-   use proxy patterns or non-Solidity-default storage layouts (50 trades
-   reverted for this reason on the 1000-trade run, ~5%). These are biased
+   use proxy patterns or non-Solidity-default storage layouts (72 trades
+   reverted for this reason on the 1000-trade run, ~8%). These are biased
    toward small-caps.
 3. **Gas price is a single snapshot.** We multiply every trade by
    `eth_gasPrice()` at the start of the run. Mainnet gas varies tick-to-tick,
