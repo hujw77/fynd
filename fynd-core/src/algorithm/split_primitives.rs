@@ -266,11 +266,13 @@ pub(crate) fn fractions_to_amounts(
 pub(crate) fn compute_marginal_price_product(
     hops: &[HopDescriptor],
     market: &MarketState,
+    overrides: &MarketOverrides,
 ) -> Result<f64, AlgorithmError> {
     let mut product = 1.0;
     for hop in hops {
-        let sim = market
-            .get_simulation_state(&hop.component_id)
+        let sim = overrides
+            .get(&hop.component_id)
+            .or_else(|| market.get_simulation_state(&hop.component_id))
             .ok_or_else(|| AlgorithmError::DataNotFound {
                 kind: "simulation state",
                 id: Some(hop.component_id.clone()),
@@ -322,7 +324,7 @@ pub(crate) fn simulate_path(
         current_amount = result.amount;
     }
 
-    let marginal_price_product = compute_marginal_price_product(hops, market)?;
+    let marginal_price_product = compute_marginal_price_product(hops, market, overrides)?;
 
     Ok(SimResult { amount_out: current_amount, gas: total_gas, marginal_price_product })
 }
@@ -553,7 +555,8 @@ mod tests {
             token_out: token_b,
         }];
 
-        let product = compute_marginal_price_product(&hops, &market).unwrap();
+        let product =
+            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
         assert!((product - 3.0).abs() < f64::EPSILON, "expected 3.0, got {product}");
     }
 
@@ -588,9 +591,34 @@ mod tests {
             },
         ];
 
-        let product = compute_marginal_price_product(&hops, &market).unwrap();
+        let product =
+            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
         // 2.0 * 4.0 = 8.0
         assert!((product - 8.0).abs() < f64::EPSILON, "expected 8.0, got {product}");
+    }
+
+    #[test]
+    fn test_compute_marginal_price_product_uses_overrides() {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let market = make_market(vec![(
+            "pool_ab",
+            vec![token_a.clone(), token_b.clone()],
+            Box::new(MockProtocolSim::new(3.0)),
+        )]);
+
+        let hops = [HopDescriptor {
+            component_id: "pool_ab".to_string(),
+            token_in: token_a,
+            token_out: token_b,
+        }];
+
+        // Override pool_ab with a different spot price.
+        let overrides = MarketOverrides::empty()
+            .with_override("pool_ab".to_string(), Box::new(MockProtocolSim::new(7.0)));
+
+        let product = compute_marginal_price_product(&hops, &market, &overrides).unwrap();
+        assert!((product - 7.0).abs() < f64::EPSILON, "expected 7.0, got {product}");
     }
 
     #[test]
