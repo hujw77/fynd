@@ -12,7 +12,7 @@ use tycho_simulation::tycho_common::{
     Bytes,
 };
 
-use crate::{algorithm::AlgorithmError, feed::market_data::MarketState, types::ComponentId};
+use crate::{algorithm::AlgorithmError, feed::market_data::MarketDataView, types::ComponentId};
 
 pub(crate) struct HopDescriptor {
     pub(crate) component_id: ComponentId,
@@ -43,7 +43,7 @@ pub(crate) struct SimResult {
     pub(crate) marginal_price_product: f64,
 }
 
-/// Pool state overrides for reused pools in subsequent simulation/route searches.
+/// Pool state overrides for passing degraded states to `find_single_route`.
 #[derive(Default)]
 pub(crate) struct MarketOverrides(HashMap<ComponentId, Box<dyn ProtocolSim>>);
 
@@ -71,6 +71,12 @@ impl MarketOverrides {
     pub(crate) fn get(&self, id: &ComponentId) -> Option<&dyn ProtocolSim> {
         self.0.get(id).map(|b| b.as_ref())
     }
+}
+
+/// Wraps a sim so that `get_amount_out().gas` is always zero while amounts
+/// remain correct. Use for pools whose gas is already accounted for elsewhere.
+pub(crate) fn wrap_zero_gas(sim: Box<dyn ProtocolSim>) -> Box<dyn ProtocolSim> {
+    Box::new(ZeroGasSim(sim))
 }
 
 /// Wrapper that delegates all [`ProtocolSim`] calls unchanged except
@@ -265,14 +271,12 @@ pub(crate) fn fractions_to_amounts(
 /// near-zero input.
 pub(crate) fn compute_marginal_price_product(
     hops: &[HopDescriptor],
-    market: &MarketState,
-    overrides: &MarketOverrides,
+    market: &MarketDataView,
 ) -> Result<f64, AlgorithmError> {
     let mut product = 1.0;
     for hop in hops {
-        let sim = overrides
-            .get(&hop.component_id)
-            .or_else(|| market.get_simulation_state(&hop.component_id))
+        let sim = market
+            .get_simulation_state(&hop.component_id)
             .ok_or_else(|| AlgorithmError::DataNotFound {
                 kind: "simulation state",
                 id: Some(hop.component_id.clone()),
@@ -291,22 +295,19 @@ pub(crate) fn compute_marginal_price_product(
 /// Simulates a path hop-by-hop, threading output of each hop as input to the
 /// next.
 ///
-/// Checks `overrides` before falling back to the live market state for each
-/// hop. Returns the final output amount, raw gas sum, and marginal price
-/// product.
+/// Uses the overlay-aware `MarketDataView` for each hop's simulation state.
+/// Returns the final output amount, raw gas sum, and marginal price product.
 pub(crate) fn simulate_path(
     hops: &[HopDescriptor],
     amount_in: &BigUint,
-    market: &MarketState,
-    overrides: &MarketOverrides,
+    market: &MarketDataView,
 ) -> Result<SimResult, AlgorithmError> {
     let mut current_amount = amount_in.clone();
     let mut total_gas: u64 = 0;
 
     for hop in hops {
-        let sim = overrides
-            .get(&hop.component_id)
-            .or_else(|| market.get_simulation_state(&hop.component_id))
+        let sim = market
+            .get_simulation_state(&hop.component_id)
             .ok_or_else(|| AlgorithmError::DataNotFound {
                 kind: "simulation state",
                 id: Some(hop.component_id.clone()),
@@ -324,7 +325,7 @@ pub(crate) fn simulate_path(
         current_amount = result.amount;
     }
 
-    let marginal_price_product = compute_marginal_price_product(hops, market, overrides)?;
+    let marginal_price_product = compute_marginal_price_product(hops, market)?;
 
     Ok(SimResult { amount_out: current_amount, gas: total_gas, marginal_price_product })
 }
@@ -335,8 +336,7 @@ pub(crate) fn evaluate_total_output(
     paths: &[&[HopDescriptor]],
     fractions: &[f64],
     total_amount: &BigUint,
-    market: &MarketState,
-    overrides: &MarketOverrides,
+    market: &MarketDataView,
 ) -> Result<(BigUint, u64), AlgorithmError> {
     let amounts = fractions_to_amounts(total_amount, fractions)
         .map_err(|e| AlgorithmError::Other(e.to_string()))?;
@@ -353,9 +353,8 @@ pub(crate) fn evaluate_total_output(
         let mut current_amount = amount.clone();
 
         for hop in path.iter() {
-            let sim = overrides
-                .get(&hop.component_id)
-                .or_else(|| market.get_simulation_state(&hop.component_id))
+            let sim = market
+                .get_simulation_state(&hop.component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "simulation state",
                     id: Some(hop.component_id.clone()),
@@ -388,31 +387,31 @@ pub(crate) fn evaluate_total_output(
     Ok((total_out, total_gas))
 }
 
-/// Builds a post-swap view of the market after all paths in a single
-/// split-route solution have been executed.
+/// Builds post-swap pool states after all paths in a split-route solution
+/// have been executed.
 ///
 /// For example, if the current solution splits 1000 USDC→ETH across:
 ///   - Path 1: USDC→WETH via Uniswap (600 USDC)
 ///   - Path 2: USDC→WBTC→WETH via Curve+Balancer (400 USDC)
 ///
 /// this function simulates both swaps and returns overrides where Uniswap,
-/// Curve, and Balancer all reflect their post-swap reserves.
+/// Curve, and Balancer all reflect their post-swap reserves. Pass the result
+/// to `find_single_route` for the next iteration.
 ///
 /// Paths are processed in order so shared pools accumulate the effects of
 /// all prior paths.
 pub(crate) fn build_degraded_market(
     paths: &[&PathAllocation],
-    market: &MarketState,
+    market: &MarketDataView,
 ) -> MarketOverrides {
-    let mut states: HashMap<ComponentId, Box<dyn ProtocolSim>> = HashMap::new();
+    let mut overrides = MarketOverrides::empty();
 
     for path in paths {
         let mut current_amount = path.amount_in.clone();
 
         for hop in &path.hops {
-            let sim = states
+            let sim = overrides
                 .get(&hop.component_id)
-                .map(|b| b.as_ref())
                 .or_else(|| market.get_simulation_state(&hop.component_id));
 
             let Some(sim) = sim else { break };
@@ -423,14 +422,10 @@ pub(crate) fn build_degraded_market(
             };
 
             current_amount = result.amount;
-            states.insert(hop.component_id.clone(), result.new_state);
+            overrides = overrides.with_override(hop.component_id.clone(), result.new_state);
         }
     }
 
-    let mut overrides = MarketOverrides::empty();
-    for (id, sim) in states {
-        overrides = overrides.with_override(id, sim);
-    }
     overrides
 }
 
@@ -439,6 +434,20 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::{
+        algorithm::test_utils::{component, token, ConstantProductSim, MockProtocolSim},
+        feed::market_data::{MarketData, MarketState},
+    };
+
+    fn make_market_data(pools: Vec<(&str, Vec<Token>, Box<dyn ProtocolSim>)>) -> MarketData {
+        let mut market = MarketState::new();
+        for (pool_id, tokens, sim) in pools {
+            market.upsert_components(std::iter::once(component(pool_id, &tokens)));
+            market.update_states([(pool_id.to_string(), sim)]);
+            market.upsert_tokens(tokens);
+        }
+        MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market)))
+    }
 
     #[test]
     fn test_split_amount_exact_sum() {
@@ -524,30 +533,16 @@ mod tests {
 
     // ==================== Simulation Utility Tests ====================
 
-    use crate::{
-        algorithm::test_utils::{component, token, ConstantProductSim, MockProtocolSim},
-        feed::market_data::MarketState,
-    };
-
-    fn make_market(pools: Vec<(&str, Vec<Token>, Box<dyn ProtocolSim>)>) -> MarketState {
-        let mut market = MarketState::new();
-        for (pool_id, tokens, sim) in pools {
-            market.upsert_components(std::iter::once(component(pool_id, &tokens)));
-            market.update_states([(pool_id.to_string(), sim)]);
-            market.upsert_tokens(tokens);
-        }
-        market
-    }
-
-    #[test]
-    fn test_compute_marginal_price_product_single_hop() {
+    #[tokio::test]
+    async fn test_compute_marginal_price_product_single_hop() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
-        let market = make_market(vec![(
+        let market = make_market_data(vec![(
             "pool_ab",
             vec![token_a.clone(), token_b.clone()],
             Box::new(MockProtocolSim::new(3.0)),
         )]);
+        let view = market.read().await;
 
         let hops = [HopDescriptor {
             component_id: "pool_ab".to_string(),
@@ -555,17 +550,16 @@ mod tests {
             token_out: token_b,
         }];
 
-        let product =
-            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
+        let product = compute_marginal_price_product(&hops, &view).unwrap();
         assert!((product - 3.0).abs() < f64::EPSILON, "expected 3.0, got {product}");
     }
 
-    #[test]
-    fn test_compute_marginal_price_product_multi_hop() {
+    #[tokio::test]
+    async fn test_compute_marginal_price_product_multi_hop() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
-        let market = make_market(vec![
+        let market = make_market_data(vec![
             (
                 "pool_ab",
                 vec![token_a.clone(), token_b.clone()],
@@ -577,6 +571,7 @@ mod tests {
                 Box::new(MockProtocolSim::new(4.0)),
             ),
         ]);
+        let view = market.read().await;
 
         let hops = [
             HopDescriptor {
@@ -591,17 +586,16 @@ mod tests {
             },
         ];
 
-        let product =
-            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
+        let product = compute_marginal_price_product(&hops, &view).unwrap();
         // 2.0 * 4.0 = 8.0
         assert!((product - 8.0).abs() < f64::EPSILON, "expected 8.0, got {product}");
     }
 
-    #[test]
-    fn test_compute_marginal_price_product_uses_overrides() {
+    #[tokio::test]
+    async fn test_compute_marginal_price_product_uses_overlay() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
-        let market = make_market(vec![(
+        let market = make_market_data(vec![(
             "pool_ab",
             vec![token_a.clone(), token_b.clone()],
             Box::new(MockProtocolSim::new(3.0)),
@@ -613,22 +607,31 @@ mod tests {
             token_out: token_b,
         }];
 
-        // Override pool_ab with a different spot price.
-        let overrides = MarketOverrides::empty()
-            .with_override("pool_ab".to_string(), Box::new(MockProtocolSim::new(7.0)));
+        // Register an overlay with a different spot price.
+        let overlay = HashMap::from([(
+            "pool_ab".to_string(),
+            Box::new(MockProtocolSim::new(7.0)) as Box<dyn ProtocolSim>,
+        )]);
+        market
+            .register_labeled_state("degraded".to_string(), overlay, u64::MAX)
+            .await;
+        let view = market
+            .read_labeled(&"degraded".to_string())
+            .await
+            .unwrap();
 
-        let product = compute_marginal_price_product(&hops, &market, &overrides).unwrap();
+        let product = compute_marginal_price_product(&hops, &view).unwrap();
         assert!((product - 7.0).abs() < f64::EPSILON, "expected 7.0, got {product}");
     }
 
-    #[test]
-    fn test_simulate_path_correct_output() {
+    #[tokio::test]
+    async fn test_simulate_path_correct_output() {
         // 2-hop path A→B→C with spot prices 2.0 and 3.0.
         // Input 1000 should thread through: 1000*2=2000, 2000*3=6000.
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
-        let market = make_market(vec![
+        let market = make_market_data(vec![
             (
                 "pool_ab",
                 vec![token_a.clone(), token_b.clone()],
@@ -640,6 +643,7 @@ mod tests {
                 Box::new(MockProtocolSim::new(3.0)),
             ),
         ]);
+        let view = market.read().await;
 
         let hops = [
             HopDescriptor {
@@ -655,8 +659,7 @@ mod tests {
         ];
 
         let amount_in = BigUint::from(1000u64);
-        let overrides = MarketOverrides::empty();
-        let result = simulate_path(&hops, &amount_in, &market, &overrides).unwrap();
+        let result = simulate_path(&hops, &amount_in, &view).unwrap();
 
         assert_eq!(result.amount_out, BigUint::from(6000u64));
 
@@ -668,22 +671,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_market_overrides_with_zero_gas() {
+    #[tokio::test]
+    async fn test_zero_gas_overlay() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
         let sim_ab = MockProtocolSim::new(2.0).with_gas(100_000);
         let sim_bc = MockProtocolSim::new(3.0).with_gas(70_000);
-        let market = make_market(vec![
+        let market = make_market_data(vec![
             ("pool_ab", vec![token_a.clone(), token_b.clone()], Box::new(sim_ab.clone())),
             ("pool_bc", vec![token_b.clone(), token_c.clone()], Box::new(sim_bc.clone())),
         ]);
-
-        // Zero gas on pool_ab, leave pool_bc as a normal override.
-        let overrides = MarketOverrides::empty()
-            .with_zero_gas("pool_ab".to_string(), Box::new(sim_ab))
-            .with_override("pool_bc".to_string(), Box::new(sim_bc));
 
         let hops_ab = [HopDescriptor {
             component_id: "pool_ab".to_string(),
@@ -697,21 +695,37 @@ mod tests {
         }];
         let amount_in = BigUint::from(1000u64);
 
-        let normal_ab =
-            simulate_path(&hops_ab, &amount_in, &market, &MarketOverrides::empty()).unwrap();
-        let zero_gas_ab = simulate_path(&hops_ab, &amount_in, &market, &overrides).unwrap();
+        // No overlay: normal gas.
+        let normal_view = market.read().await;
+        let normal_ab = simulate_path(&hops_ab, &amount_in, &normal_view).unwrap();
+        drop(normal_view);
+
+        // Overlay: zero gas on pool_ab, normal override on pool_bc.
+        let overlay = HashMap::from([
+            ("pool_ab".to_string(), wrap_zero_gas(Box::new(sim_ab))),
+            ("pool_bc".to_string(), Box::new(sim_bc) as Box<dyn ProtocolSim>),
+        ]);
+        market
+            .register_labeled_state("test".to_string(), overlay, u64::MAX)
+            .await;
+        let overlay_view = market
+            .read_labeled(&"test".to_string())
+            .await
+            .unwrap();
+
+        let zero_gas_ab = simulate_path(&hops_ab, &amount_in, &overlay_view).unwrap();
 
         assert_eq!(normal_ab.amount_out, zero_gas_ab.amount_out);
         assert!(normal_ab.gas > 0, "normal gas should be non-zero");
-        assert_eq!(zero_gas_ab.gas, 0, "zero-gas override should report gas=0");
+        assert_eq!(zero_gas_ab.gas, 0, "zero-gas overlay should report gas=0");
 
         // pool_bc is a normal override — its gas should be unaffected.
-        let result_bc = simulate_path(&hops_bc, &amount_in, &market, &overrides).unwrap();
+        let result_bc = simulate_path(&hops_bc, &amount_in, &overlay_view).unwrap();
         assert_eq!(result_bc.gas, 70_000, "non-zero-gas override should keep its gas");
     }
 
-    #[test]
-    fn test_evaluate_total_output_two_paths() {
+    #[tokio::test]
+    async fn test_evaluate_total_output_two_paths() {
         // 50/50 split of 1000 across two parallel 1-hop paths:
         //
         //       500 -- pool_1 (price=2.0) --> 1000
@@ -723,7 +737,7 @@ mod tests {
         // total_gas = 50k + 60k = 110k
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
-        let market = make_market(vec![
+        let market = make_market_data(vec![
             (
                 "pool_1",
                 vec![token_a.clone(), token_b.clone()],
@@ -735,6 +749,7 @@ mod tests {
                 Box::new(MockProtocolSim::new(3.0).with_gas(60_000)),
             ),
         ]);
+        let view = market.read().await;
 
         let hops_1 = [HopDescriptor {
             component_id: "pool_1".to_string(),
@@ -750,17 +765,16 @@ mod tests {
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
         let fractions = [0.5, 0.5];
         let total_amount = BigUint::from(1000u64);
-        let overrides = MarketOverrides::empty();
 
         let (total_out, total_gas) =
-            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+            evaluate_total_output(&paths, &fractions, &total_amount, &view).unwrap();
 
         assert_eq!(total_out, BigUint::from(2500u64));
         assert_eq!(total_gas, 110_000);
     }
 
-    #[test]
-    fn test_evaluate_total_output_gas_deduplication() {
+    #[tokio::test]
+    async fn test_evaluate_total_output_gas_deduplication() {
         // Two paths share pool P1 (pre-split hop). P1's gas should be
         // counted once, not twice.
         //
@@ -774,7 +788,7 @@ mod tests {
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
         let token_d = token(0x0D, "D");
-        let market = make_market(vec![
+        let market = make_market_data(vec![
             (
                 "P1",
                 vec![token_a.clone(), token_b.clone()],
@@ -791,6 +805,7 @@ mod tests {
                 Box::new(MockProtocolSim::new(3.0).with_gas(70_000)),
             ),
         ]);
+        let view = market.read().await;
 
         // Path 1: A -> P1 -> B -> P2 -> C (uses P1 and P2)
         let hops_1 = [
@@ -818,17 +833,16 @@ mod tests {
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
         let fractions = [0.5, 0.5];
         let total_amount = BigUint::from(1000u64);
-        let overrides = MarketOverrides::empty();
 
         let (_, total_gas) =
-            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+            evaluate_total_output(&paths, &fractions, &total_amount, &view).unwrap();
 
         // P1 counted once: 100k + 50k + 70k = 220k
         assert_eq!(total_gas, 220_000);
     }
 
-    #[test]
-    fn test_gas_dedup_different_tokens() {
+    #[tokio::test]
+    async fn test_gas_dedup_different_tokens() {
         // A single 3-token pool used for two different token pairs is two
         // distinct hops — gas must be counted for each.
         //
@@ -838,11 +852,12 @@ mod tests {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
-        let market = make_market(vec![(
+        let market = make_market_data(vec![(
             "tripool",
             vec![token_a.clone(), token_b.clone(), token_c.clone()],
             Box::new(MockProtocolSim::new(1.0).with_gas(80_000)),
         )]);
+        let view = market.read().await;
 
         let hops_1 = [HopDescriptor {
             component_id: "tripool".to_string(),
@@ -858,20 +873,19 @@ mod tests {
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
         let fractions = [0.5, 0.5];
         let total_amount = BigUint::from(1000u64);
-        let overrides = MarketOverrides::empty();
 
         let (_, total_gas) =
-            evaluate_total_output(&paths, &fractions, &total_amount, &market, &overrides).unwrap();
+            evaluate_total_output(&paths, &fractions, &total_amount, &view).unwrap();
 
         // Different token pairs on the same pool: 80k + 80k = 160k
         assert_eq!(total_gas, 160_000);
     }
 
-    #[test]
-    fn test_build_degraded_market_degrades_used_pools() {
+    #[tokio::test]
+    async fn test_build_degraded_market_degrades_used_pools() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
-        let market = make_market(vec![(
+        let market = make_market_data(vec![(
             "pool_ab",
             vec![token_a.clone(), token_b.clone()],
             Box::new(ConstantProductSim {
@@ -880,6 +894,7 @@ mod tests {
                 gas: 50_000,
             }),
         )]);
+        let view = market.read().await;
 
         let allocation = PathAllocation {
             hops: vec![HopDescriptor {
@@ -893,18 +908,18 @@ mod tests {
             marginal_price_product: 2.0,
         };
 
-        let degraded = build_degraded_market(&[&allocation], &market);
-
         // xy=k: amount_out = amount_in * reserve_out / (reserve_in + amount_in)
         // Fresh pool (10000/20000): 100 * 20000 / (10000 + 100) = 198
         let probe = BigUint::from(100u64);
-        let fresh_out = market
+        let fresh_out = view
             .get_simulation_state("pool_ab")
             .unwrap()
             .get_amount_out(probe.clone(), &token_a, &token_b)
             .unwrap()
             .amount;
         assert_eq!(fresh_out, BigUint::from(198u64));
+
+        let degraded = build_degraded_market(&[&allocation], &view);
 
         // The 1000-in allocation produces 1000*20000/(10000+1000) = 1818 out,
         // shifting reserves to (10000+1000, 20000-1818) = (11000, 18182).
