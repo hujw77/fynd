@@ -400,7 +400,7 @@ pub(crate) fn evaluate_total_output(
 ///
 /// Paths are processed in order so shared pools accumulate the effects of
 /// all prior paths.
-pub(crate) fn build_degraded_market(
+pub(crate) fn build_post_swap_overrides(
     paths: &[&PathAllocation],
     market: &MarketDataView,
 ) -> MarketOverrides {
@@ -882,7 +882,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_degraded_market_degrades_used_pools() {
+    async fn test_build_post_swap_overrides_degrades_used_pools() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let market = make_market_data(vec![(
@@ -919,7 +919,7 @@ mod tests {
             .amount;
         assert_eq!(fresh_out, BigUint::from(198u64));
 
-        let degraded = build_degraded_market(&[&allocation], &view);
+        let degraded = build_post_swap_overrides(&[&allocation], &view);
 
         // The 1000-in allocation produces 1000*20000/(10000+1000) = 1818 out,
         // shifting reserves to (10000+1000, 20000-1818) = (11000, 18182).
