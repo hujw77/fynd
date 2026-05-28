@@ -411,15 +411,14 @@ pub(crate) fn build_post_swap_overrides(
     paths: &[&PathAllocation],
     market: &MarketState,
 ) -> MarketOverrides {
-    let mut states: HashMap<ComponentId, Box<dyn ProtocolSim>> = HashMap::new();
+    let mut overrides = MarketOverrides::empty();
 
     for path in paths {
         let mut current_amount = path.amount_in.clone();
 
         for hop in &path.hops {
-            let sim = states
+            let sim = overrides
                 .get(&hop.component_id)
-                .map(|b| b.as_ref())
                 .or_else(|| market.get_simulation_state(&hop.component_id));
 
             let Some(sim) = sim else { break };
@@ -430,14 +429,10 @@ pub(crate) fn build_post_swap_overrides(
             };
 
             current_amount = result.amount;
-            states.insert(hop.component_id.clone(), result.new_state);
+            overrides = overrides.with_override(hop.component_id.clone(), result.new_state);
         }
     }
 
-    let mut overrides = MarketOverrides::empty();
-    for (id, sim) in states {
-        overrides = overrides.with_override(id, sim);
-    }
     overrides
 }
 
