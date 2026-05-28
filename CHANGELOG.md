@@ -1,3 +1,31 @@
+## [0.61.0](https://github.com/propeller-heads/fynd/compare/0.60.0...0.61.0) (2026-05-28)
+
+
+### Features
+
+* Add single_swaps.toml and run gas audit tool for it ([346b361](https://github.com/propeller-heads/fynd/commit/346b361fe63f1bbd964da20706254cdf8c701fa5))
+* Add tokens attribute to Route ([1d7eac2](https://github.com/propeller-heads/fynd/commit/1d7eac2370c9a2bd7653e089fa24b46bb87b6f12))
+* **encoding:** allow client to patch calldata signature ([d35e761](https://github.com/propeller-heads/fynd/commit/d35e761347770a7b1c00c2704d805b87dbdb294a))
+* **gas-audit:** add fynd-gas-audit crate ([25594de](https://github.com/propeller-heads/fynd/commit/25594defbe8d14198dce75bdea970ebb1e8c7513))
+* **gas-estimation:** Use estimate_gas_usage to refine gas estimations ([af8b55d](https://github.com/propeller-heads/fynd/commit/af8b55dc0b24e6e4c9e82da980fd23840be3855a))
+* **split-routing:** add math utilities for split-route optimisation ([e2d002e](https://github.com/propeller-heads/fynd/commit/e2d002e557038c8474396391dc82288c9d8a0131))
+* Update to latest tycho version ([e2277be](https://github.com/propeller-heads/fynd/commit/e2277be0e9b09acf55cecba30b3356a37ba88fca))
+* update with main ([e7f4369](https://github.com/propeller-heads/fynd/commit/e7f43694c49dcb6e753a3813431710c9ba181e8e))
+* Upgrade to new tycho-execution that handles gas estimations ([c8e2e5a](https://github.com/propeller-heads/fynd/commit/c8e2e5a556fb1d736cdd4b3577c31bafd0505f98))
+
+
+### Bug Fixes
+
+* **client-fee:** update EIP-712 type hash to match tycho-execution 0.300.5 ([f73bc55](https://github.com/propeller-heads/fynd/commit/f73bc5504e9317be991d911a5f137e7c434dcc50))
+* **docker:** include erc20-overrides and fynd-gas-audit in workspace stubs ([11ff2d0](https://github.com/propeller-heads/fynd/commit/11ff2d02dc6f187aa2a7a7039e22f9bd0bafa5f4))
+* **encoding:** Use proper eth marker ([c5b45ae](https://github.com/propeller-heads/fynd/commit/c5b45ae5f3103d27ed28c83a8400b14d8494ab12))
+* Fix erc20-overrides versioning ([8b602f7](https://github.com/propeller-heads/fynd/commit/8b602f779795aa03eabea3b6edb7cd4d78666169))
+* **gas-estimation:** Add refined gas estimation to OrderQuote ([3a6634c](https://github.com/propeller-heads/fynd/commit/3a6634c9918269d6e8f124893bf15e71e1316cb0))
+* **gas:** Interface change in Route ([ca171cb](https://github.com/propeller-heads/fynd/commit/ca171cb78b898abb97bd670921f103d26918ddc1))
+* Handle edge cases in math utils ([39638ca](https://github.com/propeller-heads/fynd/commit/39638ca91c16f9d0e8adef4817ee58caa331117f))
+* OpenAPI drift ([304d940](https://github.com/propeller-heads/fynd/commit/304d940ada16efabeebf165ef0e118140e99e157))
+* Remove lost expects ([a83ba6e](https://github.com/propeller-heads/fynd/commit/a83ba6eb7078f64df56e966542b671f818fb4884))
+
 ## [0.60.0](https://github.com/propeller-heads/fynd/compare/0.59.1...0.60.0) (2026-05-26)
 
 
