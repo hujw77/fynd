@@ -2,11 +2,13 @@
 icon: coins
 ---
 
-# Router Fees
+# Fynd Fees
 
-Fynd charges a router fee when you execute a swap through the TychoRouter. Quotes are free.
+Fynd charges a fee when you execute a swap. Quotes are free.
 
-The default router fee is 10 bps (0.1%) of swap output. Contact us for volume discounts.
+The default Fynd fee is 10 bps (0.1%) of swap output. Contact us for volume discounts.
+
+If you charge your own swap fees, Fynd also takes 20% of those fees. See [Charge Fees on your Swaps](client-fees.md).
 
 ## Fee breakdown
 
@@ -29,8 +31,8 @@ All response fields use output token units:
 
 | Field                 | Description                                                   |
 | --------------------- | ------------------------------------------------------------- |
-| `router_fee`          | Fynd router fee                                               |
-| `client_fee`          | `0` unless you add a [client fee](client-fees.md)             |
+| `router_fee`          | Fynd fee                                                      |
+| `client_fee`          | `0` unless you [charge fees on your swaps](client-fees.md)    |
 | `max_slippage`        | Slippage allowance on the post-fee amount                     |
 | `min_amount_received` | On-chain minimum the user receives (`minAmountOut` in the tx) |
 
@@ -38,7 +40,7 @@ Invariant without client fees: `amount_out = router_fee + max_slippage + min_amo
 
 ### Example
 
-Example: 1,000,000 USDC output, 10 bps router fee, 1% slippage:
+Example: 1,000,000 USDC output, 10 bps Fynd fee, 1% slippage:
 
 ```
 router_fee           = 1,000,000 * 10 / 10,000          = 1,000
@@ -47,8 +49,8 @@ max_slippage         = 999,000 * 0.01                   = 9,990
 min_amount_received  = 999,000 - 9,990                  = 989,010
 ```
 
-## Client fees
+## Charge Fees on your Swaps
 
-Router fees are separate from integrator fees. If you want to monetize your swap flow, see [Client Fees](client-fees.md).
+Fynd fees are separate from integrator fees. If you want to monetize your swap flow, see [Charge Fees on your Swaps](client-fees.md).
 
 When you add a client fee, `router_fee` also includes Fynd's 20% share of that client fee.

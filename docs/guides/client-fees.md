@@ -2,13 +2,13 @@
 icon: coins
 ---
 
-# Client Fees
+# Charge Fees on your Swaps
 
 Use client fees to monetize your swap flow. Client fees are optional integrator fees set with `ClientFeeParams`.
 
 The integrator keeps 80% of the client fee. Fynd keeps 20%.
 
-Client fees are separate from Fynd's [router fee](router-fees.md), which still applies when no client fee is set.
+Client fees are separate from [Fynd fees](router-fees.md), which still apply when no client fee is set.
 
 ## Fee breakdown with client fees
 
@@ -18,7 +18,7 @@ Quotes with encoding include a `fee_breakdown` with the exact amounts.
 
 Fynd mirrors the on-chain `FeeCalculator` with identical integer arithmetic, then uses the result for `minAmountOut` in the encoded transaction.
 
-Given `amount_out`, `router_fee_bps` (see [Router Fees](router-fees.md)), `client_fee_bps`, and `slippage`:
+Given `amount_out`, `router_fee_bps` (see [Fynd Fees](router-fees.md)), `client_fee_bps`, and `slippage`:
 
 ```
 1. client_fee        = amount_out * client_fee_bps / 10,000
@@ -35,7 +35,7 @@ All response fields use output token units:
 
 | Field                 | Description                                                   |
 | --------------------- | ------------------------------------------------------------- |
-| `router_fee`          | Fynd router fee + 20% of client fee                           |
+| `router_fee`          | Fynd fee + 20% of client fee                                  |
 | `client_fee`          | Integrator's 80% share of the client fee                      |
 | `max_slippage`        | Slippage allowance on the post-fee amount                     |
 | `min_amount_received` | On-chain minimum the user receives (`minAmountOut` in the tx) |
@@ -44,7 +44,7 @@ Invariant: `amount_out = router_fee + client_fee + max_slippage + min_amount_rec
 
 ### Example
 
-Example: 1,000,000 USDC output, 10 bps router fee, 50 bps client fee, 1% slippage:
+Example: 1,000,000 USDC output, 10 bps Fynd fee, 50 bps client fee, 1% slippage:
 
 ```
 client_fee (total)   = 1,000,000 * 50 / 10,000         = 5,000
@@ -64,7 +64,7 @@ min_amount_received  = 994,000 - 9,940                   = 984,060
 3. Attach the signed params to `EncodingOptions.clientFeeParams`.
 4. The router verifies the signature on-chain and deducts the fee. Fees go to the receiver's vault balance.
 
-Without `ClientFeeParams`, no client fee is charged. Fynd's [router fee](router-fees.md) still applies.
+Without `ClientFeeParams`, no client fee is charged. [Fynd fees](router-fees.md) still apply.
 
 ### maxClientContribution
 
