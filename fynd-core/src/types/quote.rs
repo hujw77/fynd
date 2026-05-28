@@ -14,7 +14,7 @@
 //! - [`Route`] - Sequence of swaps to execute
 //! - [`Swap`] - A single swap on a specific protocol
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use num_bigint::{BigInt, BigUint};
 use num_traits::Zero;
@@ -1146,6 +1146,9 @@ impl Route {
         if self.swaps.is_empty() {
             return Err(RouteValidationError::EmptyRoute);
         }
+        if self.is_split() {
+            return self.validate_split_route();
+        }
 
         for window in self.swaps.windows(2) {
             if window[0].token_out != window[1].token_in {
@@ -1175,6 +1178,172 @@ impl Route {
                         last: last_token.clone(),
                     });
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns `true` if the route contains any swaps with non-zero split
+    /// fractions.
+    pub fn is_split(&self) -> bool {
+        self.swaps.iter().any(|s| s.split > 0.0)
+    }
+
+    /// Validates a split route.
+    ///
+    /// Groups swaps by `token_in`, then checks:
+    /// - Single-swap groups: `split` must be `0.0`
+    /// - Multi-swap groups: all but the last must have `0.0 < split < 1.0`, the last must have
+    ///   `split == 0.0` (remainder), and the sum must be strictly less than `1.0`
+    /// - BFS connectivity: outputs of each group connect to inputs of the next
+    fn validate_split_route(&self) -> Result<(), RouteValidationError> {
+        let mut group_index: HashMap<Address, usize> = HashMap::new();
+        let mut groups: Vec<(Address, Vec<&Swap>)> = Vec::new();
+        for swap in &self.swaps {
+            if let Some(&idx) = group_index.get(&swap.token_in) {
+                groups[idx].1.push(swap);
+            } else {
+                group_index.insert(swap.token_in.clone(), groups.len());
+                groups.push((swap.token_in.clone(), vec![swap]));
+            }
+        }
+
+        for (token_in, group) in &groups {
+            if group.len() == 1 {
+                if group[0].split != 0.0 {
+                    return Err(RouteValidationError::InvalidSplit {
+                        reason: format!(
+                            "single swap for token_in {token_in} \
+                             must have split == 0.0, got {}",
+                            group[0].split
+                        ),
+                    });
+                }
+                continue;
+            }
+
+            let mut sum = 0.0_f64;
+            let last_idx = group.len() - 1;
+            for (i, swap) in group.iter().enumerate() {
+                if i < last_idx {
+                    if swap.split <= 0.0 || swap.split >= 1.0 {
+                        return Err(RouteValidationError::InvalidSplit {
+                            reason: format!(
+                                "swap {} for token_in {token_in} \
+                                 must have 0.0 < split < 1.0, got {}",
+                                i, swap.split
+                            ),
+                        });
+                    }
+                    sum += swap.split;
+                } else if swap.split != 0.0 {
+                    return Err(RouteValidationError::InvalidSplit {
+                        reason: format!(
+                            "last swap in group for token_in {token_in} \
+                             must have split == 0.0 (remainder), got {}",
+                            swap.split
+                        ),
+                    });
+                }
+            }
+
+            if sum >= 1.0 {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "split sum for token_in {token_in} must be \
+                         < 1.0, got {sum}"
+                    ),
+                });
+            }
+        }
+
+        // BFS connectivity: starting from the first group's token_in,
+        // expand through swap outputs to verify all group inputs are reachable.
+        let first_token = &groups[0].0;
+        let mut reachable: HashSet<&Address> = HashSet::new();
+        reachable.insert(first_token);
+        let mut queue: VecDeque<&Address> = VecDeque::new();
+        queue.push_back(first_token);
+        while let Some(token) = queue.pop_front() {
+            if let Some(&idx) = group_index.get(token) {
+                for swap in &groups[idx].1 {
+                    if reachable.insert(&swap.token_out) {
+                        queue.push_back(&swap.token_out);
+                    }
+                }
+            }
+        }
+        for (token_in, _) in &groups {
+            if !reachable.contains(token_in) {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "group input {token_in} is not reachable from \
+                         the start token {first_token} (reachable: {reachable:?})",
+                    ),
+                });
+            }
+        }
+
+        let terminal_token = &self.swaps[self.swaps.len() - 1].token_out;
+
+        let non_first_input_tokens: HashSet<&Address> = groups
+            .iter()
+            .skip(1)
+            .map(|(token_in, _)| token_in)
+            .collect();
+
+        // Dead-end detection: every swap output must either feed a later group
+        // or be the terminal output token.
+        for (_, group) in &groups {
+            for swap in group {
+                if !non_first_input_tokens.contains(&swap.token_out) &&
+                    &swap.token_out != terminal_token
+                {
+                    return Err(RouteValidationError::InvalidSplit {
+                        reason: format!(
+                            "swap output {} is a dead end — not consumed by any \
+                             later group and not the terminal token {terminal_token}",
+                            swap.token_out
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Cycle detection: no swap output may match an earlier group's input.
+        // Exception: in a round-trip (first == terminal) exactly one group may
+        // produce back-edges to first_token. Multiple groups doing so means token
+        // is visited more than twice (e.g. A→…→A→…→A).
+        let is_round_trip = first_token == terminal_token;
+        let mut seen_back_edge_group = false;
+        let mut earlier_inputs: HashSet<&Address> = HashSet::new();
+        for (token_in, group) in &groups {
+            earlier_inputs.insert(token_in);
+            let mut group_has_back_edge = false;
+            for swap in group {
+                if !earlier_inputs.contains(&swap.token_out) {
+                    continue;
+                }
+                if is_round_trip && &swap.token_out == first_token {
+                    group_has_back_edge = true;
+                } else {
+                    return Err(RouteValidationError::UnsupportedCycle {
+                        token: swap.token_out.clone(),
+                        first: first_token.clone(),
+                        last: terminal_token.clone(),
+                    });
+                }
+            }
+            if group_has_back_edge {
+                if seen_back_edge_group {
+                    return Err(RouteValidationError::UnsupportedCycle {
+                        token: first_token.clone(),
+                        first: first_token.clone(),
+                        last: terminal_token.clone(),
+                    });
+                }
+                seen_back_edge_group = true;
             }
         }
 
@@ -1211,6 +1380,12 @@ pub enum RouteValidationError {
         first: Address,
         /// Last token in the route.
         last: Address,
+    },
+    /// A split route has invalid split fractions or disconnected groups.
+    #[error("invalid split route: {reason}")]
+    InvalidSplit {
+        /// Human-readable description of the violation.
+        reason: String,
     },
 }
 
@@ -1595,6 +1770,169 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Split Route Validation Tests
+    // -------------------------------------------------------------------------
+
+    fn make_split_swap(token_in: u8, token_out: u8, split: f64) -> Swap {
+        make_swap(token_in, token_out, 1000, 990).with_split(split)
+    }
+
+    #[test]
+    fn test_validate_interior_split_valid() {
+        // A→B sequential, then B→C parallel with remainder convention
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.0),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_interior_split_no_remainder() {
+        // A→B, then B→C parallel but last swap has nonzero split (no remainder)
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.3),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_interior_split_sum_exceeds_one() {
+        // A→B, then B→C parallel with explicit splits summing >= 1.0
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.6),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.0),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_source_split_valid() {
+        // Two parallel legs from A through different intermediates, converging on D
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5),
+            make_split_swap(0x01, 0x03, 0.0),
+            make_swap(0x02, 0x04, 490, 480),
+            make_swap(0x03, 0x04, 490, 480),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_diamond_split_valid() {
+        // Diamond: A splits to B and D via different intermediates, both converge on C.
+        // A→B (60%), B→C, A→D (remainder), D→C
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.6), // A→B, 60%
+            make_swap(0x02, 0x03, 590, 580),  // B→C
+            make_split_swap(0x01, 0x04, 0.0), // A→D, remainder
+            make_swap(0x04, 0x03, 390, 380),  // D→C
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_split_single_swap_nonzero_split() {
+        // A single swap for a given token_in must have split == 0.0
+        let swaps = vec![make_split_swap(0x01, 0x02, 0.5)];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_dead_end() {
+        // A splits to B and C, but the paths don't converge — B→D diverges
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D (dead end)
+            make_swap(0x03, 0x05, 490, 480),  // C→E (terminal)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_cycle() {
+        // Both split paths converge back to B, creating a cycle
+        let swaps = vec![
+            make_swap(0x01, 0x02, 1000, 990),                // A→B
+            make_swap(0x02, 0x03, 990, 980).with_split(0.5), // B→C
+            make_swap(0x02, 0x04, 490, 480).with_split(0.0), // B→D remainder
+            make_swap(0x03, 0x02, 980, 970),                 // C→B (cycle)
+            make_swap(0x04, 0x02, 480, 470),                 // D→B (cycle)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_round_trip_valid() {
+        // A splits to B and C, both converge on D, then D→A (round-trip).
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D
+            make_swap(0x03, 0x04, 490, 480),  // C→D
+            make_swap(0x04, 0x01, 960, 950),  // D→A (round-trip)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_split_multi_back_edge_groups() {
+        // A→B→D→A→F→A and A→C→D→E→F→A — two groups (D and F) produce
+        // back-edges to A, which means A is visited more than twice.
+        // A→F merges into group A so splits must account for all three.
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.3),                // A→B
+            make_split_swap(0x01, 0x03, 0.3),                // A→C
+            make_swap(0x02, 0x04, 290, 280),                 // B→D
+            make_swap(0x03, 0x04, 290, 280),                 // C→D
+            make_swap(0x04, 0x01, 560, 550).with_split(0.5), // D→A
+            make_swap(0x04, 0x05, 280, 270).with_split(0.0), // D→E
+            make_split_swap(0x01, 0x06, 0.0),                // A→F (remainder)
+            make_swap(0x05, 0x06, 270, 260),                 // E→F
+            make_swap(0x06, 0x01, 810, 800),                 // F→A
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_terminal_is_group_input() {
+        // A→C→B→C: terminal C is also a group input, creating a cycle.
+        // Not a round-trip (first=A ≠ terminal=C).
+        let swaps = vec![
+            make_swap(0x01, 0x03, 1000, 990),                // A→C
+            make_swap(0x03, 0x02, 990, 980).with_split(0.5), // C→B
+            make_swap(0x03, 0x04, 490, 480).with_split(0.0), // C→D
+            make_swap(0x02, 0x03, 980, 970),                 // B→C (cycle)
+            make_swap(0x04, 0x03, 480, 470),                 // D→C (cycle)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+    }
+
+    // -------------------------------------------------------------------------
     // Serialization Tests - BigUint as String
     // -------------------------------------------------------------------------
 
@@ -1807,6 +2145,36 @@ mod tests {
             100
         );
         assert!((deserialized.slippage() - 0.005).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_is_split_detection() {
+        // Single hop, no split
+        let route_single = make_route(vec![(0x01, 0x02)]);
+        assert!(!route_single.is_split());
+
+        // Multi-hop, no split
+        let route_multi = make_route(vec![(0x01, 0x02), (0x02, 0x03)]);
+        assert!(!route_multi.is_split());
+
+        // Interior split: A→B single, B→C through two parallel pools
+        let swaps_interior = vec![
+            make_swap(0x01, 0x02, 1000, 990),                // A→B, no split
+            make_swap(0x02, 0x03, 594, 580).with_split(0.6), // B→C via P2, 60%
+            make_swap(0x02, 0x03, 396, 385),                 // B→C via P3, remainder
+        ];
+        let route_interior = Route::new(swaps_interior, HashMap::new());
+        assert!(route_interior.is_split());
+
+        // Source-level split: two routes with different intermediates
+        let swaps_source = vec![
+            make_swap(0x01, 0x02, 600, 590).with_split(0.6), // A→B, 60%
+            make_swap(0x02, 0x03, 590, 580),                 // B→C
+            make_swap(0x01, 0x04, 400, 390),                 // A→D, remainder
+            make_swap(0x04, 0x03, 390, 380),                 // D→C
+        ];
+        let route_source = Route::new(swaps_source, HashMap::new());
+        assert!(route_source.is_split());
     }
 
     #[test]
