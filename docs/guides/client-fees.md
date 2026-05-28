@@ -4,39 +4,38 @@ icon: coins
 
 # Client Fees
 
+Fynd deducts fees from the swap output:
 
-Fees are deducted from the swap output:
+* **Router fee**: Defaults to 10 bps (0.1%) of swap output. Contact us for volume discounts.
+* **Client fee**: Optional integrator fee set with `ClientFeeParams`. The router keeps 20%; the integrator keeps 80%.
 
-* **Router fee**: 10 bps (0.1%) on the swap output by default. Contact us for discounts on volume.
-* **Client fee**: optional integrator fee via `ClientFeeParams`. The router takes a 20% share; the integrator keeps 80%.
-
-When you request encoding, the quote response includes a `fee_breakdown` with the exact amounts.
+Quotes with encoding include a `fee_breakdown` with the exact amounts.
 
 ## Fee breakdown
 
-`amount_out` in the quote response is the raw pre-fee swap output — the amount produced by the route before any fees are deducted. It is **not** what the user receives. The amount the user receives on-chain is at least `fee_breakdown.min_amount_received`.
+`amount_out` is the raw pre-fee swap output: what the route produces before Fynd deducts fees. It is **not** what the user receives. The user receives at least `fee_breakdown.min_amount_received` on-chain.
 
-The on-chain `FeeCalculator` deducts fees from `amount_out`. Fynd mirrors this calculation (identical integer arithmetic) to set `minAmountOut` in the encoded transaction.
+Fynd mirrors the on-chain `FeeCalculator` with identical integer arithmetic, then uses the result for `minAmountOut` in the encoded transaction.
 
-Given `amount_out` (raw swap output), `client_fee_bps` (0 if none), and `slippage`:
+Given `amount_out`, `client_fee_bps` (0 without a client fee), and `slippage`:
 
 ```
 1. client_fee        = amount_out * client_fee_bps / 10,000
 2. router_share      = amount_out * client_fee_bps * 2,000 / 100,000,000
 3. client_portion    = client_fee - router_share
-4. router_fee_output = amount_out * 10 / 10,000  // default 10 bps rate
+4. router_fee_output = amount_out * 10 / 10,000  // default 10 bps router fee
 5. router_fee        = router_share + router_fee_output
 6. amount_after_fees = amount_out - client_portion - router_fee
 7. max_slippage      = amount_after_fees * slippage
 8. min_amount_received = amount_after_fees - max_slippage
 ```
 
-The response fields (all absolute values in output token units):
+All response fields use output token units:
 
 | Field                 | Description                                                   |
 | --------------------- | ------------------------------------------------------------- |
-| `router_fee`          | Router's total take (output fee + 20% of client fee)          |
-| `client_fee`          | Integrator's portion (80% of the client fee)                  |
+| `router_fee`          | Router fee + 20% of client fee                                |
+| `client_fee`          | Integrator's 80% share of the client fee                      |
 | `max_slippage`        | Slippage allowance on the post-fee amount                     |
 | `min_amount_received` | On-chain minimum the user receives (`minAmountOut` in the tx) |
 
@@ -44,7 +43,7 @@ Invariant: `amount_out = router_fee + client_fee + max_slippage + min_amount_rec
 
 ### Example
 
-1,000,000 USDC output, 50 bps client fee, 1% slippage:
+Example: 1,000,000 USDC output, 50 bps client fee, 1% slippage:
 
 ```
 client_fee (total)   = 1,000,000 * 50 / 10,000         = 5,000
@@ -59,18 +58,18 @@ min_amount_received  = 994,000 - 9,940                   = 984,060
 
 ## Setting up client fees
 
-1. Choose a fee in basis points (e.g. `50` = 0.5%), a receiver address, and a `maxClientContribution`.
-2. The fee receiver signs an EIP-712 `ClientFee` message authorizing these parameters.
+1. Set a fee in basis points (e.g. `50` = 0.5%), a receiver address, and a `maxClientContribution`.
+2. Have the fee receiver sign an EIP-712 `ClientFee` message authorizing these parameters.
 3. Attach the signed params to `EncodingOptions.clientFeeParams`.
 4. The router verifies the signature on-chain and deducts the fee. Fees go to the receiver's vault balance.
 
-No `ClientFeeParams`? No client fee. The default 10 bps router fee still applies.
+Without `ClientFeeParams`, no client fee is charged. The default 10 bps router fee still applies.
 
 ### maxClientContribution
 
-The maximum amount (in output token units) the client will subsidize from their vault balance if slippage pushes the output below `minAmountOut`. If the shortfall exceeds this limit, the transaction reverts.
+`maxClientContribution` caps how much the client can subsidize from their vault balance if slippage pushes the output below `minAmountOut`. If the shortfall exceeds the cap, the transaction reverts.
 
-Set to `0` to collect fees without covering slippage losses. This is the common case.
+Set it to `0` to collect fees without covering slippage losses. This is the common case.
 
 See [Tycho encoding docs](https://docs.propellerheads.xyz/tycho/for-solvers/execution/encoding#encode) for vault details.
 
@@ -150,7 +149,7 @@ const opts = withClientFee(encodingOptions(0.005), {...feeParams, signature});
         .ok_or("no fee breakdown in quote")?;
     let swaps_hash = fee_breakdown
         .swaps_hash()
-        .ok_or("no swaps_hash — server must support client fee signing")?;
+        .ok_or("no swaps_hash, server must support client fee signing")?;
 
     // Step 2: sign the full 10-field EIP-712 ClientFee hash.
     // receiver defaults to sender when the order has no explicit receiver.
