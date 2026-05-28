@@ -133,6 +133,10 @@ pub(crate) fn register_exchanges(
                     Some(ekubo_v3::filter_fn),
                 );
             }
+            "quickswap_v2" => {
+                builder =
+                    builder.exchange::<UniswapV2State>("quickswap_v2", tvl_filter.clone(), None);
+            }
             p if p.starts_with("rfq:") => {
                 // RFQ protocols are handled in register_rfq
                 continue;
