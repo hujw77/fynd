@@ -1,0 +1,54 @@
+---
+icon: coins
+---
+
+# Router Fees
+
+Fynd charges a router fee when you execute a swap through the TychoRouter. Quotes are free.
+
+The default router fee is 10 bps (0.1%) of swap output. Contact us for volume discounts.
+
+## Fee breakdown
+
+Quotes with encoding include a `fee_breakdown` with the exact amounts.
+
+`amount_out` is the raw pre-fee swap output: what the route produces before router or client fees. It is **not** what the user receives. The user receives at least `fee_breakdown.min_amount_received` on-chain.
+
+Fynd mirrors the on-chain `FeeCalculator` with identical integer arithmetic, then uses the result for `minAmountOut` in the encoded transaction.
+
+Given `amount_out`, `router_fee_bps`, and `slippage`:
+
+```
+1. router_fee        = amount_out * router_fee_bps / 10,000
+2. amount_after_fees = amount_out - router_fee
+3. max_slippage      = amount_after_fees * slippage
+4. min_amount_received = amount_after_fees - max_slippage
+```
+
+All response fields use output token units:
+
+| Field                 | Description                                                   |
+| --------------------- | ------------------------------------------------------------- |
+| `router_fee`          | Fynd router fee                                               |
+| `client_fee`          | `0` unless you add a [client fee](client-fees.md)             |
+| `max_slippage`        | Slippage allowance on the post-fee amount                     |
+| `min_amount_received` | On-chain minimum the user receives (`minAmountOut` in the tx) |
+
+Invariant without client fees: `amount_out = router_fee + max_slippage + min_amount_received`
+
+### Example
+
+Example: 1,000,000 USDC output, 10 bps router fee, 1% slippage:
+
+```
+router_fee           = 1,000,000 * 10 / 10,000          = 1,000
+amount_after_fees    = 1,000,000 - 1,000                = 999,000
+max_slippage         = 999,000 * 0.01                   = 9,990
+min_amount_received  = 999,000 - 9,990                  = 989,010
+```
+
+## Client fees
+
+Router fees are separate from integrator fees. If you want to monetize your swap flow, see [Client Fees](client-fees.md).
+
+When you add a client fee, `router_fee` also includes Fynd's 20% share of that client fee.

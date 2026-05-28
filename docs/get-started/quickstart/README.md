@@ -216,6 +216,7 @@ To swap native ETH, use `0x0000...0000` as the `token_in` or `token_out` address
 ## Next steps
 
 * [Encoding options](../../guides/encoding-options.md) — encode quotes into ready-to-submit transactions
+* [Router fees](../../guides/router-fees.md) - understand Fynd fees on executed swaps
 * [Client fees](../../guides/client-fees.md) — charge integrator fees on swaps
 * [Server configuration](../../guides/server-configuration.md)
 * [Custom algorithm](../../guides/custom-algorithm.md)
