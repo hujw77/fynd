@@ -150,7 +150,7 @@ const opts = withClientFee(encodingOptions(0.005), {...feeParams, signature});
         .ok_or("no fee breakdown in quote")?;
     let swaps_hash = fee_breakdown
         .swaps_hash()
-        .ok_or("no swaps_hash, server must support client fee signing")?;
+        .ok_or("no swaps_hash — server must support client fee signing")?;
 
     // Step 2: sign the full 10-field EIP-712 ClientFee hash.
     // receiver defaults to sender when the order has no explicit receiver.
