@@ -1,7 +1,7 @@
 //! Test helpers for split-routing algorithm split_scenarios.
 
-use num_bigint::BigUint;
 use tycho_simulation::tycho_core::{models::token::Token, simulation::protocol_sim::ProtocolSim};
+use num_bigint::{BigInt, BigUint};
 
 use crate::{
     algorithm::test_utils::setup_market_unweighted, feed::market_data::MarketData,
@@ -45,14 +45,18 @@ pub(crate) struct ScenarioPool {
 
 /// A self-contained algorithm test case with pre-computed bounds.
 ///
-/// `lower_bound` is the BF single-route output — the algorithm under test must produce ≥ this.
-/// `analytical_optimum` is the best output derivable from the simplified model used in the
-/// scenario (see each constructor for how it is computed). It is a quality target, not a hard
-/// ceiling: integer arithmetic can shift results by ±1 wei, and richer topologies the algorithm
-/// discovers (e.g. diamonds) could in principle exceed it.
+/// ## Bounds
 ///
-/// Both values are hardcoded constants derived from the scenario's fixed reserves, so they remain
-/// stable regression targets rather than values that drift with the algorithm under test.
+/// Both bounds are net values (gross - gas cost). Gas cost uses the test market's fixed
+/// assumptions:
+/// - gas price: 100 wei/gas (set in `setup_market_unweighted`)
+/// - token price: 1 output-token = 1 ETH, so gas cost in token units = gas_units × 100
+///
+/// `lower_bound` is the BF single-route net output — the minimum the algorithm must produce.
+/// `analytical_optimum` is the best net output for the simplified model (quality target, not a
+/// hard ceiling). Equals `lower_bound` when splitting is not beneficial.
+///
+/// Both are hardcoded from the scenario's fixed reserves and stay stable as regression targets.
 #[allow(dead_code)]
 pub(crate) struct TestScenario {
     pub name: &'static str,
@@ -61,10 +65,11 @@ pub(crate) struct TestScenario {
     pub token_in: Token,
     pub token_out: Token,
     pub trade_amount: BigUint,
-    /// BF single-route output (xy=k CP formula). Algorithm under test must produce ≥ this.
-    pub lower_bound: BigUint,
-    /// Analytically optimal output for the simplified model used in this scenario.
-    pub analytical_optimum: BigUint,
+    /// BF single-route net output. Algorithm must produce `net_output >= lower_bound`.
+    pub lower_bound: BigInt,
+    /// Best net output for the simplified model. Equals `lower_bound` when splitting is not
+    /// beneficial.
+    pub analytical_optimum: BigInt,
 }
 
 impl TestScenario {
@@ -108,7 +113,7 @@ impl TestScenario {
 // ==================== Named split_scenarios ====================
 
 pub(crate) mod split_scenarios {
-    use num_bigint::BigUint;
+    use num_bigint::{BigInt, BigUint};
 
     use super::{ScenarioPool, TestScenario};
     use crate::algorithm::test_utils::{token, ConstantProductSim, ONE_ETH};
@@ -150,8 +155,10 @@ pub(crate) mod split_scenarios {
             token_in: token_a,
             token_out: token_b,
             trade_amount: BigUint::from(100_000u64) * BigUint::from(ONE_ETH),
-            lower_bound: BigUint::from(90_909_090_909_090_909_090_909u128),
-            analytical_optimum: BigUint::from(95_238_095_238_095_236_709_344u128),
+            // gross 90_909_090_909_090_909_090_909 − 1 pool × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(90_909_090_909_090_904_090_909u128),
+            // gross 95_238_095_238_095_236_709_344 − 2 pools × 50_000 gas × 100 wei/gas
+            analytical_optimum: BigInt::from(95_238_095_238_095_226_709_344u128),
         }
     }
 
@@ -195,28 +202,25 @@ pub(crate) mod split_scenarios {
             token_in: token_a,
             token_out: token_b,
             trade_amount: BigUint::from(200_000u64) * &one_eth,
-            lower_bound: BigUint::from(166_666_666_666_666_666_666_666u128),
-            analytical_optimum: BigUint::from(176_470_588_235_294_097_103_232u128),
+            // gross 166_666_666_666_666_666_666_666 − 1 pool × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(166_666_666_666_666_661_666_666u128),
+            // gross 176_470_588_235_294_097_103_232 − 2 pools × 50_000 gas × 100 wei/gas
+            analytical_optimum: BigInt::from(176_470_588_235_294_087_103_232u128),
         }
     }
 
-    /// S3: tiny trade with high per-pool gas; gas overhead outweighs the split benefit.
+    /// S3: split has a real gross benefit, but the extra-hop gas cost exceeds it.
     ///
-    /// `analytical_optimum`: equals `lower_bound`. Only two pools exist so no diamond is possible,
-    /// and gas overhead makes splitting strictly worse than single-route — the best achievable
-    /// output is the BF single-route result.
+    /// `analytical_optimum`: equals `lower_bound`. Gas overhead makes splitting strictly worse than
+    /// single-route — the best achievable output is the BF single-route result.
     pub(crate) fn gas_kills_split() -> TestScenario {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
-        let r = BigUint::from(1_000_000u64) * BigUint::from(ONE_ETH);
-        // trade amount of 1_000 wei has near-zero price impact. Gas dwarfs any marginal benefit
-        // from splitting.
-        let bound = BigUint::from(999u64);
+        let r = BigUint::from(20_000_000u64);
 
         TestScenario {
             name: "GAS_KILLS_SPLIT",
-            description:
-                "Tiny trade, high gas per pool. Splitting adds gas without meaningful output gain.",
+            description: "Split has a real gross benefit but the extra-hop gas exceeds it, making the split net-negative.",
             pools: vec![
                 ScenarioPool {
                     id: "pool_1",
@@ -225,7 +229,7 @@ pub(crate) mod split_scenarios {
                     sim: Box::new(ConstantProductSim {
                         reserve_0: r.clone(),
                         reserve_1: r.clone(),
-                        gas: 150_000,
+                        gas: 50_000,
                     }),
                 },
                 ScenarioPool {
@@ -235,15 +239,17 @@ pub(crate) mod split_scenarios {
                     sim: Box::new(ConstantProductSim {
                         reserve_0: r.clone(),
                         reserve_1: r.clone(),
-                        gas: 150_000,
+                        gas: 50_000,
                     }),
                 },
             ],
             token_in: token_a,
             token_out: token_b,
-            trade_amount: BigUint::from(1_000u64),
-            lower_bound: bound.clone(),
-            analytical_optimum: bound,
+            trade_amount: BigUint::from(10_000_000u64),
+            // gross 6_666_666 − 1 pool × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(1_666_666i64),
+            // optimal net strategy is single route; gross split output (8M) loses on net
+            analytical_optimum: BigInt::from(1_666_666i64),
         }
     }
 
@@ -255,7 +261,6 @@ pub(crate) mod split_scenarios {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let r = BigUint::from(1_000_000u64) * BigUint::from(ONE_ETH);
-        let bound = BigUint::from(90_909_090_909_090_909_090_909u128);
 
         TestScenario {
             name: "NO_ALTERNATIVE_PATH",
@@ -274,8 +279,10 @@ pub(crate) mod split_scenarios {
             token_in: token_a,
             token_out: token_b,
             trade_amount: BigUint::from(100_000u64) * BigUint::from(ONE_ETH),
-            lower_bound: bound.clone(),
-            analytical_optimum: bound,
+            // gross 90_909_090_909_090_909_090_909 − 1 pool × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(90_909_090_909_090_904_090_909u128),
+            // single pool only — no split possible; net optimum equals lower_bound
+            analytical_optimum: BigInt::from(90_909_090_909_090_904_090_909u128),
         }
     }
 
@@ -288,7 +295,7 @@ pub(crate) mod split_scenarios {
     /// `lower_bound`: best single 2-hop route A→B→C through the larger B→C pool.
     /// `analytical_optimum`: only one A→B pool (P_AB) exists so the B amount is fixed;
     /// `optimal_two_pool_output` gives the exact optimum for splitting that B across the two B→C
-    /// pools. No diamond is possible.
+    /// pools.
     pub(crate) fn multi_hop_bottleneck() -> TestScenario {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
@@ -336,8 +343,10 @@ pub(crate) mod split_scenarios {
             token_in: token_a,
             token_out: token_c,
             trade_amount: BigUint::from(200_000u64) * &one_eth,
-            lower_bound: BigUint::from(163_934_426_229_508_196_721_311u128),
-            analytical_optimum: BigUint::from(173_410_404_624_277_463_881_280u128),
+            // gross 163_934_426_229_508_196_721_311 − 2 pools × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(163_934_426_229_508_186_721_311u128),
+            // gross 173_410_404_624_277_463_881_280 − 3 pools × 50_000 gas × 100 wei/gas
+            analytical_optimum: BigInt::from(173_410_404_624_277_448_881_280u128),
         }
     }
 
