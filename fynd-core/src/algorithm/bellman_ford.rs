@@ -37,7 +37,9 @@ use tycho_simulation::{
     tycho_core::{models::token::Token, simulation::protocol_sim::Price},
 };
 
-use super::{Algorithm, AlgorithmConfig, AlgorithmError, NoPathReason};
+use super::{
+    split_primitives::MarketOverrides, Algorithm, AlgorithmConfig, AlgorithmError, NoPathReason,
+};
 use crate::{
     derived::{
         computation::ComputationRequirements,
@@ -52,6 +54,46 @@ use crate::{
 /// BFS subgraph: adjacency list, token node set, and component ID set.
 type Subgraph =
     (HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>>, HashSet<NodeIndex>, HashSet<ComponentId>);
+
+/// Everything needed to call `find_single_route` repeatedly without redoing setup.
+///
+/// Graph data and derived snapshots are captured at build time via `build_context`.
+/// `find_single_route` acquires a fresh market lock on each call to see current pool states.
+#[allow(dead_code)]
+pub(crate) struct BellmanFordContext {
+    pub(crate) token_in_node: NodeIndex,
+    pub(crate) token_out_node: NodeIndex,
+    pub(crate) adj: HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>>,
+    pub(crate) token_nodes: HashSet<NodeIndex>,
+    pub(crate) component_ids: HashSet<ComponentId>,
+    pub(crate) token_map: HashMap<NodeIndex, Token>,
+    pub(crate) market_data: MarketData,
+    pub(crate) gas_price_wei: Option<BigUint>,
+    pub(crate) token_prices: Option<TokenGasPrices>,
+    pub(crate) marginal_prices: Option<SpotPrices>,
+    pub(crate) node_address: HashMap<NodeIndex, Address>,
+    pub(crate) max_idx: usize,
+    pub(crate) max_hops: usize,
+    pub(crate) timeout: Duration,
+    pub(crate) scoring: RouteScoringMode,
+}
+
+/// Controls how `find_single_route` ranks candidate routes after simulation.
+#[allow(dead_code)]
+pub(crate) enum RouteScoringMode {
+    /// Rank by gross output (ignore gas cost). Used when the caller accounts for gas externally.
+    GrossOutput,
+    /// Rank by net output (gross output minus gas cost in output token units). Default.
+    NetOutput,
+}
+
+/// Per-call overrides for `find_single_route`.
+#[derive(Default)]
+#[allow(dead_code)]
+pub(crate) struct FindRouteOptions {
+    /// Pool state overrides: degrade or zero-gas specific pools without modifying market data.
+    pub(crate) overrides: MarketOverrides,
+}
 
 /// Bellman-Ford algorithm with SPFA optimisation for simulation-driven DEX routing.
 ///
