@@ -350,7 +350,80 @@ pub(crate) mod split_scenarios {
         }
     }
 
-    /// Returns all 5 named split_scenarios.
+    /// S6: two A→B pools then two B→C pools; pool sizes mismatched between hops so the optimal
+    /// A→B and B→C splits differ. An algorithm that routes independent per-path hops without
+    /// pooling B first will use the wrong cross-allocations and miss the optimum.
+    ///
+    /// `lower_bound`: best single 2-hop path (larger pool at each hop).
+    /// `analytical_optimum`: chained `optimal_two_pool_output` across both hops.
+    pub(crate) fn double_split() -> TestScenario {
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+        let token_c = token(0x0C, "C");
+        let one_eth = BigUint::from(ONE_ETH);
+        let r_ab1 = BigUint::from(1_000_000u64) * &one_eth;
+        let r_ab2 = BigUint::from(500_000u64) * &one_eth;
+        let r_bc1 = BigUint::from(500_000u64) * &one_eth;
+        let r_bc2 = BigUint::from(1_500_000u64) * &one_eth;
+
+        TestScenario {
+            name: "DOUBLE_SPLIT",
+            description: "Two A→B pools (1M and 500k ETH) then two B→C pools (500k and 1.5M \
+                          ETH). Optimal splits differ at each hop, forcing B to be pooled before \
+                          re-splitting.",
+            pools: vec![
+                ScenarioPool {
+                    id: "pool_ab_1",
+                    token_1: token_a.clone(),
+                    token_2: token_b.clone(),
+                    sim: Box::new(ConstantProductSim {
+                        reserve_0: r_ab1.clone(),
+                        reserve_1: r_ab1,
+                        gas: 50_000,
+                    }),
+                },
+                ScenarioPool {
+                    id: "pool_ab_2",
+                    token_1: token_a.clone(),
+                    token_2: token_b.clone(),
+                    sim: Box::new(ConstantProductSim {
+                        reserve_0: r_ab2.clone(),
+                        reserve_1: r_ab2,
+                        gas: 50_000,
+                    }),
+                },
+                ScenarioPool {
+                    id: "pool_bc_1",
+                    token_1: token_b.clone(),
+                    token_2: token_c.clone(),
+                    sim: Box::new(ConstantProductSim {
+                        reserve_0: r_bc1.clone(),
+                        reserve_1: r_bc1,
+                        gas: 50_000,
+                    }),
+                },
+                ScenarioPool {
+                    id: "pool_bc_2",
+                    token_1: token_b.clone(),
+                    token_2: token_c.clone(),
+                    sim: Box::new(ConstantProductSim {
+                        reserve_0: r_bc2.clone(),
+                        reserve_1: r_bc2,
+                        gas: 50_000,
+                    }),
+                },
+            ],
+            token_in: token_a,
+            token_out: token_c,
+            trade_amount: BigUint::from(500_000u64) * &one_eth,
+            // gross floor(3×10²⁴/11) = 272_727_272_727_272_727_272_727 − 2 pools × 50_000 gas × 100 wei/gas
+            lower_bound: BigInt::from(272_727_272_727_272_717_272_727u128),
+            // gross floor(6×10²⁴/19) = 315_789_473_684_210_526_315_789 − 4 pools × 50_000 gas × 100 wei/gas
+            analytical_optimum: BigInt::from(315_789_473_684_210_526_295_789u128),
+        }
+    }
+
+    /// Returns all 6 named split_scenarios.
     pub(crate) fn all() -> Vec<TestScenario> {
         vec![
             symmetric_split(),
@@ -358,6 +431,7 @@ pub(crate) mod split_scenarios {
             gas_kills_split(),
             no_alternative_path(),
             multi_hop_bottleneck(),
+            double_split(),
         ]
     }
 }
