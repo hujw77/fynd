@@ -1,7 +1,7 @@
 //! Test helpers for split-routing algorithm split_scenarios.
 
-use tycho_simulation::tycho_core::{models::token::Token, simulation::protocol_sim::ProtocolSim};
 use num_bigint::{BigInt, BigUint};
+use tycho_simulation::tycho_core::{models::token::Token, simulation::protocol_sim::ProtocolSim};
 
 use crate::{
     algorithm::test_utils::setup_market_unweighted, feed::market_data::MarketData,
@@ -45,18 +45,9 @@ pub(crate) struct ScenarioPool {
 
 /// A self-contained algorithm test case with pre-computed bounds.
 ///
-/// ## Bounds
-///
-/// Both bounds are net values (gross - gas cost). Gas cost uses the test market's fixed
-/// assumptions:
-/// - gas price: 100 wei/gas (set in `setup_market_unweighted`)
-/// - token price: 1 output-token = 1 ETH, so gas cost in token units = gas_units × 100
-///
-/// `lower_bound` is the BF single-route net output — the minimum the algorithm must produce.
-/// `analytical_optimum` is the best net output for the simplified model (quality target, not a
-/// hard ceiling). Equals `lower_bound` when splitting is not beneficial.
-///
-/// Both are hardcoded from the scenario's fixed reserves and stay stable as regression targets.
+/// Both bounds are net output amounts (gross minus gas cost), hardcoded from the scenario's fixed
+/// reserves. Gas cost uses the test market's fixed assumptions: 100 wei/gas, 1 output-token = 1
+/// ETH.
 #[allow(dead_code)]
 pub(crate) struct TestScenario {
     pub name: &'static str,
@@ -65,10 +56,10 @@ pub(crate) struct TestScenario {
     pub token_in: Token,
     pub token_out: Token,
     pub trade_amount: BigUint,
-    /// BF single-route net output. Algorithm must produce `net_output >= lower_bound`.
+    /// Floor: the algorithm must produce at least this much net output.
     pub lower_bound: BigInt,
-    /// Best net output for the simplified model. Equals `lower_bound` when splitting is not
-    /// beneficial.
+    /// Target: the best net output achievable under the scenario's simplified pool model. A
+    /// quality ceiling to measure against, not a hard constraint.
     pub analytical_optimum: BigInt,
 }
 
@@ -416,9 +407,11 @@ pub(crate) mod split_scenarios {
             token_in: token_a,
             token_out: token_c,
             trade_amount: BigUint::from(500_000u64) * &one_eth,
-            // gross floor(3×10²⁴/11) = 272_727_272_727_272_727_272_727 − 2 pools × 50_000 gas × 100 wei/gas
+            // gross floor(3×10²⁴/11) = 272_727_272_727_272_727_272_727 − 2 pools × 50_000 gas × 100
+            // wei/gas
             lower_bound: BigInt::from(272_727_272_727_272_717_272_727u128),
-            // gross floor(6×10²⁴/19) = 315_789_473_684_210_526_315_789 − 4 pools × 50_000 gas × 100 wei/gas
+            // gross floor(6×10²⁴/19) = 315_789_473_684_210_526_315_789 − 4 pools × 50_000 gas × 100
+            // wei/gas
             analytical_optimum: BigInt::from(315_789_473_684_210_526_295_789u128),
         }
     }
