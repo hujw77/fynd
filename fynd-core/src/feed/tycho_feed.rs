@@ -66,9 +66,8 @@ impl TychoFeed {
         self.event_tx.subscribe()
     }
 
-    /// Returns an additional event sender. Currently only used for testing.
-    #[cfg(test)]
-    pub fn event_sender_clone(&self) -> broadcast::Sender<MarketEvent> {
+    /// Returns a clone of the event sender.
+    pub(crate) fn event_sender(&self) -> broadcast::Sender<MarketEvent> {
         self.event_tx.clone()
     }
 
@@ -705,7 +704,7 @@ mod tests {
         let mut sub2 = feed.subscribe();
 
         // Get event sender
-        let sender = feed.event_sender_clone();
+        let sender = feed.event_sender();
 
         sender
             .send(MarketEvent::MarketUpdated {

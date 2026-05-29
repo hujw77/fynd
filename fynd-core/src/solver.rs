@@ -337,6 +337,7 @@ struct BuiltComponents {
     chain: Chain,
     router_address: Bytes,
     pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
+    market_event_tx: broadcast::Sender<MarketEvent>,
 }
 
 /// Builder for assembling the full solver pipeline.
@@ -645,6 +646,7 @@ impl FyndBuilder {
             GasPriceFetcher::new(ethereum_client, market_data.clone(), self.gas_refresh_interval);
 
         let tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
+        let market_event_tx = tycho_feed.event_sender();
 
         let gas_token = native_token(&self.chain).map_err(|_| SolverBuildError::GasToken)?;
         let computation_config = ComputationManagerConfig::new()
@@ -776,6 +778,7 @@ impl FyndBuilder {
             chain,
             router_address,
             pending_indexers: self.pending_indexers,
+            market_event_tx,
         })
     }
 
@@ -812,6 +815,7 @@ impl FyndBuilder {
             computation_shutdown_tx: c.computation_shutdown_tx,
             chain: c.chain,
             router_address: c.router_address,
+            market_event_tx: c.market_event_tx,
         })
     }
 
@@ -870,6 +874,7 @@ impl FyndBuilder {
                 computation_shutdown_tx: c.computation_shutdown_tx,
                 chain: c.chain,
                 router_address: c.router_address,
+                market_event_tx: c.market_event_tx,
             },
             pending,
         ))
@@ -888,6 +893,7 @@ pub struct Solver {
     computation_shutdown_tx: broadcast::Sender<()>,
     chain: Chain,
     router_address: Bytes,
+    market_event_tx: broadcast::Sender<MarketEvent>,
 }
 
 impl Solver {
@@ -899,6 +905,14 @@ impl Solver {
     /// Returns a clone of the shared derived data reference.
     pub fn derived_data(&self) -> SharedDerivedDataRef {
         Arc::clone(&self.derived_data)
+    }
+
+    /// Returns a new receiver for [`MarketEvent`]s broadcast by the Tycho feed.
+    ///
+    /// Each call returns an independent receiver. Events are broadcast on every block update.
+    /// Receivers created after a block has been processed will miss that block's event.
+    pub fn subscribe_market_events(&self) -> broadcast::Receiver<crate::feed::events::MarketEvent> {
+        self.market_event_tx.subscribe()
     }
 
     /// Submits a [`QuoteRequest`] to the worker pools and returns the best [`Quote`].

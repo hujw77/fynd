@@ -2,7 +2,8 @@ use std::{collections::HashSet, time::Duration};
 
 use tycho_simulation::tycho_common::models::Chain;
 
-pub(crate) mod events;
+/// Market events broadcast by the Tycho feed on every block update.
+pub mod events;
 pub(crate) mod gas;
 /// Shared market data store (`MarketState`, `MarketData`).
 pub mod market_data;
