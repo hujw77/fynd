@@ -22,6 +22,22 @@ pub(crate) struct HopDescriptor {
     pub(crate) component_id: ComponentId,
     pub(crate) token_in: Token,
     pub(crate) token_out: Token,
+    /// Per-hop output amount, populated by the solving algorithm.
+    pub(crate) amount_out: BigUint,
+    /// Per-hop gas estimate, populated by the solving algorithm.
+    pub(crate) gas: BigUint,
+}
+
+impl HopDescriptor {
+    pub(crate) fn new(component_id: ComponentId, token_in: Token, token_out: Token) -> Self {
+        Self { component_id, token_in, token_out, amount_out: BigUint::ZERO, gas: BigUint::ZERO }
+    }
+
+    pub(crate) fn with_amounts(mut self, amount_out: BigUint, gas: BigUint) -> Self {
+        self.amount_out = amount_out;
+        self.gas = gas;
+        self
+    }
 }
 
 /// A fully-simulated path allocation.
@@ -444,6 +460,8 @@ struct SplitSwap {
     hop: HopDescriptor,
     split: f64,
     amount_in: BigUint,
+    amount_out: BigUint,
+    gas: BigUint,
 }
 
 /// Merge shared hops across paths, summing their flow fractions, and return
@@ -461,15 +479,20 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                 hop.token_out.address.clone(),
             );
             hops.entry(key)
-                .and_modify(|h| h.split += path.flow_fraction)
+                .and_modify(|h| {
+                    h.split += path.flow_fraction;
+                    h.amount_out += &hop.amount_out;
+                })
                 .or_insert(SplitSwap {
-                    hop: HopDescriptor {
-                        component_id: hop.component_id.clone(),
-                        token_in: hop.token_in.clone(),
-                        token_out: hop.token_out.clone(),
-                    },
+                    hop: HopDescriptor::new(
+                        hop.component_id.clone(),
+                        hop.token_in.clone(),
+                        hop.token_out.clone(),
+                    ),
                     split: path.flow_fraction,
                     amount_in: BigUint::ZERO,
+                    amount_out: hop.amount_out.clone(),
+                    gas: hop.gas.clone(),
                 });
         }
     }
@@ -531,8 +554,8 @@ pub(crate) fn build_split_route(
 ) -> Result<Route, AlgorithmError> {
     let mut hops_by_token = merge_shared_hops(paths);
 
-    let mut queue = VecDeque::new();
-    queue.push_back(order.token_in().clone());
+    let mut pending_tokens = VecDeque::new();
+    pending_tokens.push_back(order.token_in().clone());
 
     let mut available: HashMap<Bytes, BigUint> = HashMap::new();
     available.insert(order.token_in().clone(), order.amount().clone());
@@ -540,11 +563,10 @@ pub(crate) fn build_split_route(
     let mut swaps = Vec::new();
     let mut route_tokens: HashMap<Bytes, Token> = HashMap::new();
     let mut visited: HashSet<Bytes> = HashSet::new();
-    let mut state_overrides = MarketOverrides::empty();
 
-    // BFS from the source token: at each token, simulate outgoing hops,
-    // build Swap objects, and track post-swap pool states for downstream hops.
-    while let Some(token_addr) = queue.pop_front() {
+    // BFS from the source token: at each token, assemble Swap objects from
+    // pre-computed hop amounts (populated by the solving algorithm).
+    while let Some(token_addr) = pending_tokens.pop_front() {
         // Converging paths (e.g. B→D and C→D) add D to the queue twice — skip duplicates.
         if !visited.insert(token_addr.clone()) {
             continue;
@@ -558,63 +580,48 @@ pub(crate) fn build_split_route(
             .cloned()
             .unwrap_or_default();
 
-        for SplitSwap {
-            hop: HopDescriptor { component_id, token_in, token_out },
-            split,
-            amount_in,
-        } in apply_remainder_convention(group, &total)
-        {
-            let sim = state_overrides
-                .get(&component_id)
-                .or_else(|| market.get_simulation_state(&component_id))
+        for split_swap in apply_remainder_convention(group, &total) {
+            let sim = market
+                .get_simulation_state(&split_swap.hop.component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "simulation state",
-                    id: Some(component_id.clone()),
+                    id: Some(split_swap.hop.component_id.clone()),
                 })?;
 
             let component = market
-                .get_component(&component_id)
+                .get_component(&split_swap.hop.component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "protocol component",
-                    id: Some(component_id.clone()),
+                    id: Some(split_swap.hop.component_id.clone()),
                 })?;
 
-            // Simulate to obtain amount_out, gas, and post-swap state needed by Swap.
-            let result = sim
-                .get_amount_out(amount_in.clone(), &token_in, &token_out)
-                .map_err(|e| AlgorithmError::SimulationFailed {
-                    component_id: component_id.clone(),
-                    error: e.to_string(),
-                })?;
-
-            let in_addr = token_in.address.clone();
-            let out_addr = token_out.address.clone();
+            let in_addr = split_swap.hop.token_in.address.clone();
+            let out_addr = split_swap.hop.token_out.address.clone();
+            *available
+                .entry(out_addr.clone())
+                .or_default() += &split_swap.amount_out;
             swaps.push(
                 Swap::new(
-                    component_id.clone(),
+                    split_swap.hop.component_id,
                     component.protocol_system.clone(),
                     in_addr.clone(),
                     out_addr.clone(),
-                    amount_in,
-                    result.amount.clone(),
-                    result.gas,
+                    split_swap.amount_in,
+                    split_swap.amount_out,
+                    split_swap.gas,
                     component.clone(),
                     sim.clone_box(),
                 )
-                .with_split(split),
+                .with_split(split_swap.split),
             );
             route_tokens
                 .entry(in_addr)
-                .or_insert(token_in);
+                .or_insert(split_swap.hop.token_in);
             route_tokens
                 .entry(out_addr.clone())
-                .or_insert(token_out);
-            state_overrides = state_overrides.with_override(component_id, result.new_state);
-            *available
-                .entry(out_addr.clone())
-                .or_default() += &result.amount;
+                .or_insert(split_swap.hop.token_out);
             if !visited.contains(&out_addr) {
-                queue.push_back(out_addr);
+                pending_tokens.push_back(out_addr);
             }
         }
     }
@@ -736,11 +743,7 @@ mod tests {
             Box::new(MockProtocolSim::new(3.0)),
         )]);
 
-        let hops = [HopDescriptor {
-            component_id: "pool_ab".to_string(),
-            token_in: token_a,
-            token_out: token_b,
-        }];
+        let hops = [HopDescriptor::new("pool_ab".to_string(), token_a, token_b)];
 
         let product =
             compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
@@ -766,16 +769,8 @@ mod tests {
         ]);
 
         let hops = [
-            HopDescriptor {
-                component_id: "pool_ab".to_string(),
-                token_in: token_a,
-                token_out: token_b.clone(),
-            },
-            HopDescriptor {
-                component_id: "pool_bc".to_string(),
-                token_in: token_b,
-                token_out: token_c,
-            },
+            HopDescriptor::new("pool_ab".to_string(), token_a, token_b.clone()),
+            HopDescriptor::new("pool_bc".to_string(), token_b, token_c),
         ];
 
         let product =
@@ -794,11 +789,7 @@ mod tests {
             Box::new(MockProtocolSim::new(3.0)),
         )]);
 
-        let hops = [HopDescriptor {
-            component_id: "pool_ab".to_string(),
-            token_in: token_a,
-            token_out: token_b,
-        }];
+        let hops = [HopDescriptor::new("pool_ab".to_string(), token_a, token_b)];
 
         // Override pool_ab with a different spot price.
         let overrides = MarketOverrides::empty()
@@ -829,16 +820,8 @@ mod tests {
         ]);
 
         let hops = [
-            HopDescriptor {
-                component_id: "pool_ab".to_string(),
-                token_in: token_a,
-                token_out: token_b.clone(),
-            },
-            HopDescriptor {
-                component_id: "pool_bc".to_string(),
-                token_in: token_b,
-                token_out: token_c,
-            },
+            HopDescriptor::new("pool_ab".to_string(), token_a, token_b.clone()),
+            HopDescriptor::new("pool_bc".to_string(), token_b, token_c),
         ];
 
         let amount_in = BigUint::from(1000u64);
@@ -872,16 +855,8 @@ mod tests {
             .with_zero_gas("pool_ab".to_string(), Box::new(sim_ab))
             .with_override("pool_bc".to_string(), Box::new(sim_bc));
 
-        let hops_ab = [HopDescriptor {
-            component_id: "pool_ab".to_string(),
-            token_in: token_a.clone(),
-            token_out: token_b.clone(),
-        }];
-        let hops_bc = [HopDescriptor {
-            component_id: "pool_bc".to_string(),
-            token_in: token_b,
-            token_out: token_c,
-        }];
+        let hops_ab = [HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())];
+        let hops_bc = [HopDescriptor::new("pool_bc".to_string(), token_b, token_c)];
         let amount_in = BigUint::from(1000u64);
 
         let normal_ab =
@@ -923,16 +898,8 @@ mod tests {
             ),
         ]);
 
-        let hops_1 = [HopDescriptor {
-            component_id: "pool_1".to_string(),
-            token_in: token_a.clone(),
-            token_out: token_b.clone(),
-        }];
-        let hops_2 = [HopDescriptor {
-            component_id: "pool_2".to_string(),
-            token_in: token_a,
-            token_out: token_b,
-        }];
+        let hops_1 = [HopDescriptor::new("pool_1".to_string(), token_a.clone(), token_b.clone())];
+        let hops_2 = [HopDescriptor::new("pool_2".to_string(), token_a, token_b)];
 
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
         let fractions = [0.5, 0.5];
@@ -981,25 +948,13 @@ mod tests {
 
         // Path 1: A -> P1 -> B -> P2 -> C (uses P1 and P2)
         let hops_1 = [
-            HopDescriptor {
-                component_id: "P1".to_string(),
-                token_in: token_a.clone(),
-                token_out: token_b.clone(),
-            },
-            HopDescriptor {
-                component_id: "P2".to_string(),
-                token_in: token_b.clone(),
-                token_out: token_c,
-            },
+            HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
+            HopDescriptor::new("P2".to_string(), token_b.clone(), token_c),
         ];
         // Path 2: A -> P1 -> B -> P3 -> D (uses P1 and P3)
         let hops_2 = [
-            HopDescriptor {
-                component_id: "P1".to_string(),
-                token_in: token_a,
-                token_out: token_b.clone(),
-            },
-            HopDescriptor { component_id: "P3".to_string(), token_in: token_b, token_out: token_d },
+            HopDescriptor::new("P1".to_string(), token_a, token_b.clone()),
+            HopDescriptor::new("P3".to_string(), token_b, token_d),
         ];
 
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
@@ -1031,16 +986,8 @@ mod tests {
             Box::new(MockProtocolSim::new(1.0).with_gas(80_000)),
         )]);
 
-        let hops_1 = [HopDescriptor {
-            component_id: "tripool".to_string(),
-            token_in: token_a,
-            token_out: token_b.clone(),
-        }];
-        let hops_2 = [HopDescriptor {
-            component_id: "tripool".to_string(),
-            token_in: token_b,
-            token_out: token_c,
-        }];
+        let hops_1 = [HopDescriptor::new("tripool".to_string(), token_a, token_b.clone())];
+        let hops_2 = [HopDescriptor::new("tripool".to_string(), token_b, token_c)];
 
         let paths: Vec<&[HopDescriptor]> = vec![&hops_1, &hops_2];
         let fractions = [0.5, 0.5];
@@ -1069,11 +1016,7 @@ mod tests {
         )]);
 
         let allocation = PathAllocation {
-            hops: vec![HopDescriptor {
-                component_id: "pool_ab".to_string(),
-                token_in: token_a.clone(),
-                token_out: token_b.clone(),
-            }],
+            hops: vec![HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())],
             flow_fraction: 1.0,
             amount_in: BigUint::from(1000u64),
             amount_out: BigUint::from(1818u64),
@@ -1117,16 +1060,8 @@ mod tests {
         let paths = vec![
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "P1".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_b.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "P2".to_string(),
-                        token_in: token_b.clone(),
-                        token_out: token_c.clone(),
-                    },
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
+                    HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone()),
                 ],
                 flow_fraction: 0.6,
                 amount_in: BigUint::from(600u64),
@@ -1135,16 +1070,8 @@ mod tests {
             },
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "P1".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_b.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "P3".to_string(),
-                        token_in: token_b.clone(),
-                        token_out: token_c.clone(),
-                    },
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
+                    HopDescriptor::new("P3".to_string(), token_b.clone(), token_c.clone()),
                 ],
                 flow_fraction: 0.4,
                 amount_in: BigUint::from(400u64),
@@ -1177,22 +1104,18 @@ mod tests {
 
         let group = vec![
             SplitSwap {
-                hop: HopDescriptor {
-                    component_id: "pool1".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                },
+                hop: HopDescriptor::new("pool1".to_string(), token_a.clone(), token_b.clone()),
                 split: 0.7,
                 amount_in: BigUint::ZERO,
+                amount_out: BigUint::ZERO,
+                gas: BigUint::ZERO,
             },
             SplitSwap {
-                hop: HopDescriptor {
-                    component_id: "pool2".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                },
+                hop: HopDescriptor::new("pool2".to_string(), token_a.clone(), token_b.clone()),
                 split: 0.3,
                 amount_in: BigUint::ZERO,
+                amount_out: BigUint::ZERO,
+                gas: BigUint::ZERO,
             },
         ];
 
@@ -1226,35 +1149,39 @@ mod tests {
         ]);
         let ord = order(&token_a, &token_b, 1000, OrderSide::Sell);
 
+        let gas = BigUint::from(50_000u64);
         let paths = vec![
             PathAllocation {
-                hops: vec![HopDescriptor {
-                    component_id: "pool1".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                }],
+                hops: vec![HopDescriptor::new(
+                    "pool1".to_string(),
+                    token_a.clone(),
+                    token_b.clone(),
+                )
+                .with_amounts(BigUint::from(1000u64), gas.clone())],
                 flow_fraction: 0.5,
                 amount_in: BigUint::from(500u64),
                 amount_out: BigUint::from(1000u64),
                 marginal_price_product: 2.0,
             },
             PathAllocation {
-                hops: vec![HopDescriptor {
-                    component_id: "pool2".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                }],
+                hops: vec![HopDescriptor::new(
+                    "pool2".to_string(),
+                    token_a.clone(),
+                    token_b.clone(),
+                )
+                .with_amounts(BigUint::from(900u64), gas.clone())],
                 flow_fraction: 0.3,
                 amount_in: BigUint::from(300u64),
                 amount_out: BigUint::from(900u64),
                 marginal_price_product: 3.0,
             },
             PathAllocation {
-                hops: vec![HopDescriptor {
-                    component_id: "pool3".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                }],
+                hops: vec![HopDescriptor::new(
+                    "pool3".to_string(),
+                    token_a.clone(),
+                    token_b.clone(),
+                )
+                .with_amounts(BigUint::from(800u64), gas)],
                 flow_fraction: 0.2,
                 amount_in: BigUint::from(200u64),
                 amount_out: BigUint::from(800u64),
@@ -1296,18 +1223,13 @@ mod tests {
         ]);
         let ord = order(&token_a, &token_c, 1000, OrderSide::Sell);
 
+        let gas = BigUint::from(50_000u64);
         let paths = vec![PathAllocation {
             hops: vec![
-                HopDescriptor {
-                    component_id: "pool_ab".to_string(),
-                    token_in: token_a.clone(),
-                    token_out: token_b.clone(),
-                },
-                HopDescriptor {
-                    component_id: "pool_bc".to_string(),
-                    token_in: token_b,
-                    token_out: token_c,
-                },
+                HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())
+                    .with_amounts(BigUint::from(2000u64), gas.clone()),
+                HopDescriptor::new("pool_bc".to_string(), token_b, token_c)
+                    .with_amounts(BigUint::from(6000u64), gas),
             ],
             flow_fraction: 1.0,
             amount_in: BigUint::from(1000u64),
@@ -1343,19 +1265,14 @@ mod tests {
         ]);
         let ord = order(&token_a, &token_c, 1000, OrderSide::Sell);
 
+        let gas = BigUint::from(50_000u64);
         let paths = vec![
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "P1".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_b.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "P2".to_string(),
-                        token_in: token_b.clone(),
-                        token_out: token_c.clone(),
-                    },
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                        .with_amounts(BigUint::from(1400u64), gas.clone()),
+                    HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone())
+                        .with_amounts(BigUint::from(4200u64), gas.clone()),
                 ],
                 flow_fraction: 0.7,
                 amount_in: BigUint::from(700u64),
@@ -1364,16 +1281,10 @@ mod tests {
             },
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "P1".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_b.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "P3".to_string(),
-                        token_in: token_b.clone(),
-                        token_out: token_c.clone(),
-                    },
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                        .with_amounts(BigUint::from(600u64), gas.clone()),
+                    HopDescriptor::new("P3".to_string(), token_b.clone(), token_c.clone())
+                        .with_amounts(BigUint::from(2400u64), gas),
                 ],
                 flow_fraction: 0.3,
                 amount_in: BigUint::from(300u64),
@@ -1388,13 +1299,18 @@ mod tests {
         // Exactly 3 swaps: one combined A→B, two divergent B→C.
         assert_eq!(swaps.len(), 3, "expected 3 swaps, got {}", swaps.len());
 
-        // First swap: combined A→B via P1 with the full order amount.
+        // First swap: combined A→B via P1 — amount_out is sum of per-path outputs.
         let ab_swap = &swaps[0];
         assert_eq!(ab_swap.component_id(), "P1");
         assert_eq!(
             *ab_swap.amount_in(),
             BigUint::from(1000u64),
             "A→B swap amount_in should equal sum of both paths"
+        );
+        assert_eq!(
+            *ab_swap.amount_out(),
+            BigUint::from(2000u64),
+            "A→B amount_out should be sum of per-path outputs (1400+600)"
         );
         assert_eq!(*ab_swap.split(), 0.0, "only swap at A→B should be remainder");
 
@@ -1443,19 +1359,14 @@ mod tests {
         ]);
         let ord = order(&token_a, &token_z, 1000, OrderSide::Sell);
 
+        let gas = BigUint::from(50_000u64);
         let paths = vec![
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "pool_ab".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_b.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "pool_bz".to_string(),
-                        token_in: token_b,
-                        token_out: token_z.clone(),
-                    },
+                    HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())
+                        .with_amounts(BigUint::from(1200u64), gas.clone()),
+                    HopDescriptor::new("pool_bz".to_string(), token_b, token_z.clone())
+                        .with_amounts(BigUint::from(4800u64), gas.clone()),
                 ],
                 flow_fraction: 0.6,
                 amount_in: BigUint::from(600u64),
@@ -1464,16 +1375,10 @@ mod tests {
             },
             PathAllocation {
                 hops: vec![
-                    HopDescriptor {
-                        component_id: "pool_ac".to_string(),
-                        token_in: token_a.clone(),
-                        token_out: token_c.clone(),
-                    },
-                    HopDescriptor {
-                        component_id: "pool_cz".to_string(),
-                        token_in: token_c,
-                        token_out: token_z,
-                    },
+                    HopDescriptor::new("pool_ac".to_string(), token_a.clone(), token_c.clone())
+                        .with_amounts(BigUint::from(1200u64), gas.clone()),
+                    HopDescriptor::new("pool_cz".to_string(), token_c, token_z)
+                        .with_amounts(BigUint::from(6000u64), gas),
                 ],
                 flow_fraction: 0.4,
                 amount_in: BigUint::from(400u64),
