@@ -1,3 +1,11 @@
+## [0.62.0](https://github.com/propeller-heads/fynd/compare/0.61.0...0.62.0) (2026-05-29)
+
+
+### Features
+
+* **client:** make rpc_url optional in FyndClientBuilder::new ([3aa7b1f](https://github.com/propeller-heads/fynd/commit/3aa7b1fbaa1c97b86fcb211ddad267430eacf094))
+* **ts-client:** derive chainId from /v1/info instead of options ([278f33c](https://github.com/propeller-heads/fynd/commit/278f33c972f1cc83e8419d1ba5b1ad2a6cd75a0a))
+
 ## [0.61.0](https://github.com/propeller-heads/fynd/compare/0.60.0...0.61.0) (2026-05-28)
 
 
