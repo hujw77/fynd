@@ -1,6 +1,6 @@
 use chrono::Utc;
 use metrics::{counter, gauge};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::warn;
 use tycho_simulation::{tycho_core::traits::FeePriceGetter, tycho_ethereum::gas::BlockGasPrice};
 
@@ -9,7 +9,7 @@ use crate::feed::{market_data::MarketData, DataFeedError};
 // TODO: Refactor gas price fetching into a `DerivedComputation`.
 pub(crate) struct GasPriceFetcher<C: FeePriceGetter<FeePrice = BlockGasPrice>> {
     client: C,
-    signal_rx: mpsc::Receiver<oneshot::Sender<()>>,
+    signal_rx: mpsc::Receiver<()>,
     shared_market_data: MarketData,
 }
 
@@ -17,15 +17,14 @@ impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
     pub(crate) fn new(
         client: C,
         shared_market_data: MarketData,
-    ) -> (Self, mpsc::Sender<oneshot::Sender<()>>) {
+    ) -> (Self, mpsc::Sender<()>) {
         let (signal_tx, signal_rx) = mpsc::channel(5);
         (Self { client, signal_rx, shared_market_data }, signal_tx)
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), DataFeedError> {
         loop {
-            let update_tx = self
-                .signal_rx
+            self.signal_rx
                 .recv()
                 .await
                 .ok_or(DataFeedError::GasPriceFetcherError("Trigger channel closed".to_string()))?;
@@ -35,35 +34,29 @@ impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
                 Err(e) => {
                     counter!("gas_price_fetch_failures_total").increment(1);
                     warn!(error = ?e, "Failed to fetch gas price, skipping update. Configure --gas-price-stale-threshold-secs to surface this in health checks");
-                    if update_tx.send(()).is_err() {
-                        warn!("Failed to send update notification");
-                    }
                     continue;
                 }
             };
 
-            {
-                let mut lock = self.shared_market_data.write().await;
-                let update_block_number = fee_price.block_number;
-                lock.update_gas_price(fee_price);
-                if let Some(last_block_info) = lock.last_updated() {
-                    let update_lag_ms =
-                        Utc::now().timestamp_millis() - (last_block_info.timestamp() as i64 * 1000);
-                    gauge!("gas_price_update_lag_ms").set(update_lag_ms as f64);
+            let mut lock = self.shared_market_data.write().await;
+            let update_block_number = fee_price.block_number;
+            lock.update_gas_price(fee_price);
+            if let Some(last_block_info) = lock.last_updated() {
+                let update_lag_ms =
+                    Utc::now().timestamp_millis() - (last_block_info.timestamp() as i64 * 1000);
+                gauge!("gas_price_update_lag_ms").set(update_lag_ms as f64);
 
-                    if last_block_info
-                        .number()
-                        .abs_diff(update_block_number) >
-                        3
-                    {
-                        warn!("Gas price update is out of sync with the last block info. Gas price: {}, Last block info: {}", update_block_number, last_block_info.number());
-                    }
+                if last_block_info
+                    .number()
+                    .abs_diff(update_block_number) >
+                    3
+                {
+                    warn!(
+                        gas_price_block = update_block_number,
+                        last_tycho_block = last_block_info.number(),
+                        "gas price is more than 3 blocks ahead of the last Tycho update"
+                    );
                 }
-            }
-
-            // Warn if the update notification is not correctly sent.
-            if update_tx.send(()).is_err() {
-                warn!("Failed to send update notification");
             }
         }
     }
@@ -71,11 +64,13 @@ impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
     use async_trait::async_trait;
     use num_bigint::BigUint;
-    use tokio::sync::oneshot;
     use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
 
     use super::*;
@@ -114,35 +109,45 @@ mod tests {
         }
     }
 
-    /// Helper: send one signal and wait for the ack (with timeout).
-    async fn trigger_and_await_ack(
-        signal_tx: &mpsc::Sender<oneshot::Sender<()>>,
-    ) -> Result<(), &'static str> {
-        let (ack_tx, ack_rx) = oneshot::channel();
+    /// Sends a signal and waits up to `timeout` for `predicate` to hold.
+    async fn trigger_and_wait(
+        signal_tx: &mpsc::Sender<()>,
+        market_data: &MarketData,
+        timeout: Duration,
+        predicate: impl Fn(&crate::feed::market_data::MarketDataView<'_>) -> bool,
+    ) {
         signal_tx
-            .send(ack_tx)
+            .send(())
             .await
-            .map_err(|_| "signal_tx send failed")?;
-        tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx)
-            .await
-            .map_err(|_| "ack timed out")?
-            .map_err(|_| "ack channel dropped")
+            .expect("signal send failed");
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if predicate(&market_data.read().await) {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timed out waiting for gas price update");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     #[tokio::test]
-    async fn fetch_error_does_not_crash_and_acks_oneshot() {
+    async fn fetch_error_does_not_crash() {
         let market_data = MarketData::new_shared();
         let (mut fetcher, signal_tx) =
             GasPriceFetcher::new(MockFeePriceGetter::new(1), market_data.clone());
 
         let handle = tokio::spawn(async move { fetcher.run().await });
 
-        // First signal → mock returns error → should NOT panic, should ack
-        trigger_and_await_ack(&signal_tx)
+        // First signal → mock errors → gas price stays None, fetcher keeps running.
+        // We send and yield; no ack to wait for.
+        signal_tx
+            .send(())
             .await
-            .expect("ack should be received even on fetch error");
-
-        // Gas price should still be None (error path skips update)
+            .expect("signal send failed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             market_data
                 .read()
@@ -152,21 +157,15 @@ mod tests {
             "gas price should remain None after failed fetch"
         );
 
-        // Second signal → mock succeeds → gas price should be updated
-        trigger_and_await_ack(&signal_tx)
-            .await
-            .expect("ack should be received on successful fetch");
+        // Second signal → mock succeeds → gas price updated.
+        trigger_and_wait(
+            &signal_tx,
+            &market_data,
+            Duration::from_secs(2),
+            |m| m.gas_price().is_some(),
+        )
+        .await;
 
-        assert!(
-            market_data
-                .read()
-                .await
-                .gas_price()
-                .is_some(),
-            "gas price should be set after successful fetch"
-        );
-
-        // Clean up: drop signal_tx so the loop exits
         drop(signal_tx);
         let result = handle
             .await
@@ -177,18 +176,18 @@ mod tests {
     #[tokio::test]
     async fn persistent_failure_keeps_loop_alive() {
         let market_data = MarketData::new_shared();
-        // Fail 3 times, then succeed
         let (mut fetcher, signal_tx) =
             GasPriceFetcher::new(MockFeePriceGetter::new(3), market_data.clone());
 
         let handle = tokio::spawn(async move { fetcher.run().await });
 
-        // All 3 failures should ack without crashing
-        for i in 0..3 {
-            trigger_and_await_ack(&signal_tx)
+        // 3 failures — gas price remains None throughout.
+        for _ in 0..3 {
+            signal_tx
+                .send(())
                 .await
-                .unwrap_or_else(|e| panic!("ack failed on failure iteration {i}: {e}"));
-
+                .expect("signal send failed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
             assert!(
                 market_data
                     .read()
@@ -199,17 +198,14 @@ mod tests {
             );
         }
 
-        // 4th call succeeds — solver recovers
-        trigger_and_await_ack(&signal_tx)
-            .await
-            .expect("ack should succeed after recovery");
-
-        let gas = market_data
-            .read()
-            .await
-            .gas_price()
-            .cloned();
-        assert!(gas.is_some(), "gas price should be set after recovery");
+        // 4th signal → mock succeeds → fetcher recovers.
+        trigger_and_wait(
+            &signal_tx,
+            &market_data,
+            Duration::from_secs(2),
+            |m| m.gas_price().is_some(),
+        )
+        .await;
 
         drop(signal_tx);
         let _ = handle

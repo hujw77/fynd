@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc},
     task::JoinHandle,
 };
 use tokio_stream::StreamExt;
@@ -49,7 +49,7 @@ pub(crate) struct TychoFeed {
     /// Event broadcaster.
     event_tx: broadcast::Sender<MarketEvent>,
     /// Signal channel to notify the gas price worker to refresh gas price.
-    gas_price_worker_signal_tx: Option<mpsc::Sender<oneshot::Sender<()>>>,
+    gas_price_worker_signal_tx: Option<mpsc::Sender<()>>,
 }
 
 impl TychoFeed {
@@ -74,7 +74,7 @@ impl TychoFeed {
     /// If not set, gas price refresh will not be triggered by the TychoFeed.
     pub(crate) fn with_gas_price_worker_signal_tx(
         self,
-        gas_price_worker_signal_tx: mpsc::Sender<oneshot::Sender<()>>,
+        gas_price_worker_signal_tx: mpsc::Sender<()>,
     ) -> Self {
         Self { gas_price_worker_signal_tx: Some(gas_price_worker_signal_tx), ..self }
     }
@@ -202,9 +202,9 @@ impl TychoFeed {
                         Some(msg) => {
                             trace!("Received message from protocol stream: {:?}", msg);
                             let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                            // Refresh gas price before broadcasting the event so that
-                            // ComputationManager has gas price available when it starts computing.
-                            self.refresh_gas_price().await?;
+                            // Signal the gas price worker to refresh concurrently. Best-effort:
+                            // skipped if the worker is already busy with a previous fetch.
+                            self.signal_gas_price_refresh();
                             self.handle_tycho_message(msg).await?;
                         }
                         None => {
@@ -376,29 +376,12 @@ impl TychoFeed {
         Ok(())
     }
 
-    /// Updates gas price from RPC.
-    async fn refresh_gas_price(&self) -> Result<(), DataFeedError> {
-        if let Some(gas_price_worker_signal_tx) = &self.gas_price_worker_signal_tx {
-            let (signal_tx, signal_rx) = oneshot::channel();
-
-            gas_price_worker_signal_tx
-                .send(signal_tx)
-                .await
-                .map_err(|e| {
-                    DataFeedError::GasPriceFetcherError(format!(
-                        "Failed to send gas price refresh signal: {}",
-                        e
-                    ))
-                })?;
-
-            signal_rx.await.map_err(|e| {
-                DataFeedError::GasPriceFetcherError(format!(
-                    "Failed to receive gas price refresh confirmation: {}",
-                    e
-                ))
-            })?;
+    /// Signals the gas price worker to refresh. Non-blocking: skipped if the worker is
+    /// already processing a previous signal (channel capacity 5).
+    fn signal_gas_price_refresh(&self) {
+        if let Some(tx) = &self.gas_price_worker_signal_tx {
+            let _ = tx.try_send(());
         }
-        Ok(())
     }
 }
 
