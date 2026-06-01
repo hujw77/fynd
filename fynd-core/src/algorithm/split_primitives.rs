@@ -1136,6 +1136,30 @@ mod tests {
         assert_eq!(result[1].amount_in, BigUint::from(300u64));
     }
 
+    #[test]
+    fn test_apply_remainder_convention_single_hop() {
+        // A single hop receives the entire amount with split = 0.0.
+        //
+        //  1000 -- pool1 (split=0.0) --> B
+        let token_a = token(0x0A, "A");
+        let token_b = token(0x0B, "B");
+
+        let group = vec![SplitSwap {
+            hop: HopDescriptor::new("pool1".to_string(), token_a, token_b),
+            split: 1.0,
+            amount_in: BigUint::ZERO,
+            amount_out: BigUint::ZERO,
+            gas: BigUint::ZERO,
+        }];
+
+        let total = BigUint::from(1000u64);
+        let result = apply_remainder_convention(group, &total);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].split, 0.0);
+        assert_eq!(result[0].amount_in, total);
+    }
+
     // ==================== build_split_route Tests ====================
 
     #[test]
