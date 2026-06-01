@@ -1,3 +1,16 @@
+## [0.63.0](https://github.com/propeller-heads/fynd/compare/0.62.0...0.63.0) (2026-06-01)
+
+
+### Features
+
+* **BF:** Define BellmanFordContext, FindRouteOptions, and RouteScoringMode ([7c5465c](https://github.com/propeller-heads/fynd/commit/7c5465c5bb50c3390b892d3a0326aa62789008da))
+* **BF:** Extract build_context async method ([40fe37d](https://github.com/propeller-heads/fynd/commit/40fe37d21c667b1ebc1de70f4ee1de368d6195ae))
+
+
+### Bug Fixes
+
+* **BF:** Remove token_nodes, component_ids, max_hops and timeout from ctx ([809447a](https://github.com/propeller-heads/fynd/commit/809447a6e8693073d93d0c00f350d016fa003345))
+
 ## [0.62.0](https://github.com/propeller-heads/fynd/compare/0.61.0...0.62.0) (2026-05-29)
 
 
