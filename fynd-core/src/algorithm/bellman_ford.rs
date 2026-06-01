@@ -37,14 +37,16 @@ use tycho_simulation::{
     tycho_core::{models::token::Token, simulation::protocol_sim::Price},
 };
 
-use super::{Algorithm, AlgorithmConfig, AlgorithmError, NoPathReason};
+use super::{
+    split_primitives::MarketOverrides, Algorithm, AlgorithmConfig, AlgorithmError, NoPathReason,
+};
 use crate::{
     derived::{
         computation::ComputationRequirements,
         types::{SpotPrices, TokenGasPrices},
         SharedDerivedDataRef,
     },
-    feed::market_data::{MarketData, StateLabel},
+    feed::market_data::{MarketData, MarketState, StateLabel},
     graph::{petgraph::StableDiGraph, PetgraphStableDiGraphManager},
     types::{ComponentId, Order, Route, RouteResult, Swap},
 };
@@ -52,6 +54,41 @@ use crate::{
 /// BFS subgraph: adjacency list, token node set, and component ID set.
 type Subgraph =
     (HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>>, HashSet<NodeIndex>, HashSet<ComponentId>);
+
+/// Everything needed to call `find_single_route` repeatedly without redoing setup.
+///
+/// Built once by `build_context`, which acquires the market and derived locks and snapshots all
+/// relevant state. `find_single_route` uses this snapshot directly — no lock re-acquisition — so
+/// all route evaluations within one order see a consistent view of the same block's pool states.
+pub(crate) struct BellmanFordContext {
+    pub(crate) token_in_node: NodeIndex,
+    pub(crate) token_out_node: NodeIndex,
+    pub(crate) adj: HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>>,
+    pub(crate) token_map: HashMap<NodeIndex, Token>,
+    pub(crate) market_data: MarketState,
+    pub(crate) gas_price_wei: Option<BigUint>,
+    pub(crate) token_prices: Option<TokenGasPrices>,
+    pub(crate) spot_prices: Option<SpotPrices>,
+    pub(crate) node_address: HashMap<NodeIndex, Address>,
+    pub(crate) max_idx: usize,
+    pub(crate) scoring: RouteScoringMode,
+}
+
+/// Controls how `find_single_route` ranks candidate routes after simulation.
+pub(crate) enum RouteScoringMode {
+    /// Rank by gross output (ignore gas cost). Used when the caller accounts for gas externally.
+    GrossOutput,
+    /// Rank by net output (gross output minus gas cost in output token units). Default.
+    NetOutput,
+}
+
+/// Per-call overrides for `find_single_route`.
+#[derive(Default)]
+#[allow(dead_code)]
+pub(crate) struct FindRouteOptions {
+    /// Pool state overrides: degrade or zero-gas specific pools without modifying market data.
+    pub(crate) overrides: MarketOverrides,
+}
 
 /// Bellman-Ford algorithm with SPFA optimisation for simulation-driven DEX routing.
 ///
@@ -72,6 +109,116 @@ impl BellmanFordAlgorithm {
             timeout: config.timeout(),
             gas_aware: config.gas_aware(),
             connector_tokens: config.connector_tokens().cloned(),
+        })
+    }
+
+    /// One-time async setup for repeated `find_single_route` calls.
+    ///
+    /// Validates the order, extracts the subgraph, acquires the market and derived data
+    /// locks exactly once, and snapshots all state into a [`BellmanFordContext`]. All
+    /// subsequent `find_single_route` calls on the returned context use the same block's
+    /// pool states.
+    pub(crate) async fn build_context(
+        &self,
+        graph: &StableDiGraph<()>,
+        market: MarketData,
+        label: Option<StateLabel>,
+        derived: Option<SharedDerivedDataRef>,
+        order: &Order,
+    ) -> Result<BellmanFordContext, AlgorithmError> {
+        if !order.is_sell() {
+            return Err(AlgorithmError::ExactOutNotSupported);
+        }
+
+        let (token_prices, spot_prices) = if let Some(ref d) = derived {
+            let guard = d.read().await;
+            (guard.token_prices().cloned(), guard.spot_prices().cloned())
+        } else {
+            (None, None)
+        };
+
+        let token_in_node = graph
+            .node_indices()
+            .find(|&n| &graph[n] == order.token_in())
+            .ok_or(AlgorithmError::NoPath {
+                from: order.token_in().clone(),
+                to: order.token_out().clone(),
+                reason: NoPathReason::SourceTokenNotInGraph,
+            })?;
+        let token_out_node = graph
+            .node_indices()
+            .find(|&n| &graph[n] == order.token_out())
+            .ok_or(AlgorithmError::NoPath {
+                from: order.token_in().clone(),
+                to: order.token_out().clone(),
+                reason: NoPathReason::DestinationTokenNotInGraph,
+            })?;
+
+        // BFS from token_in up to max_hops, building adjacency list and component set.
+        let (adj, token_nodes, component_ids) =
+            Self::get_subgraph(graph, token_in_node, self.max_hops, order)?;
+
+        let market_view = match label.as_ref() {
+            Some(l) => market
+                .read_labeled(l)
+                .await
+                .map_err(|e| AlgorithmError::Other(e.to_string()))?,
+            None => market.read().await,
+        };
+        let token_map: HashMap<NodeIndex, Token> = token_nodes
+            .iter()
+            .filter_map(|&node| {
+                market_view
+                    .get_token(&graph[node])
+                    .cloned()
+                    .map(|t| (node, t))
+            })
+            .collect();
+        let market_data = market_view.extract_subset_with_overlay(&component_ids);
+        let gas_price_wei = market_data
+            .gas_price()
+            .map(|gp| gp.effective_gas_price().clone());
+        drop(market_view);
+
+        let node_address: HashMap<NodeIndex, Address> = token_map
+            .iter()
+            .map(|(&node, token)| (node, token.address.clone()))
+            .collect();
+
+        let max_idx = graph
+            .node_indices()
+            .map(|n| n.index())
+            .max()
+            .unwrap_or(0) +
+            1;
+
+        let scoring = if self.gas_aware {
+            RouteScoringMode::NetOutput
+        } else {
+            RouteScoringMode::GrossOutput
+        };
+
+        debug!(
+            edges = adj
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            tokens = token_map.len(),
+            "subgraph extracted"
+        );
+
+        Ok(BellmanFordContext {
+            token_in_node,
+            token_out_node,
+            adj,
+            token_map,
+            market_data,
+            gas_price_wei,
+            token_prices,
+            spot_prices,
+            node_address,
+            max_idx,
+            scoring,
         })
     }
 
@@ -345,114 +492,36 @@ impl Algorithm for BellmanFordAlgorithm {
     ) -> Result<RouteResult, AlgorithmError> {
         let start = Instant::now();
 
-        if !order.is_sell() {
-            return Err(AlgorithmError::ExactOutNotSupported);
-        }
-
-        let (token_prices, spot_prices) = if let Some(ref derived) = derived {
-            let guard = derived.read().await;
-            (guard.token_prices().cloned(), guard.spot_prices().cloned())
-        } else {
-            (None, None)
-        };
-
-        let token_in_node = graph
-            .node_indices()
-            .find(|&n| &graph[n] == order.token_in())
-            .ok_or(AlgorithmError::NoPath {
-                from: order.token_in().clone(),
-                to: order.token_out().clone(),
-                reason: NoPathReason::SourceTokenNotInGraph,
-            })?;
-        let token_out_node = graph
-            .node_indices()
-            .find(|&n| &graph[n] == order.token_out())
-            .ok_or(AlgorithmError::NoPath {
-                from: order.token_in().clone(),
-                to: order.token_out().clone(),
-                reason: NoPathReason::DestinationTokenNotInGraph,
-            })?;
-
-        // BFS from token_in up to max_hops, building adjacency list and component set.
-        let (adj, token_nodes, component_ids) =
-            Self::get_subgraph(graph, token_in_node, self.max_hops, order)?;
-
-        // Acquire read lock only for market data extraction, then release.
-        let (token_map, market_subset) = {
-            let market = match label.as_ref() {
-                Some(l) => market
-                    .read_labeled(l)
-                    .await
-                    .map_err(|e| AlgorithmError::Other(e.to_string()))?,
-                None => market.read().await,
-            };
-
-            let token_map: HashMap<NodeIndex, Token> = token_nodes
-                .iter()
-                .filter_map(|&node| {
-                    market
-                        .get_token(&graph[node])
-                        .cloned()
-                        .map(|t| (node, t))
-                })
-                .collect();
-
-            let market_subset = market.extract_subset_with_overlay(&component_ids);
-
-            (token_map, market_subset)
-        };
-
-        debug!(
-            edges = adj
-                .values()
-                .map(Vec::len)
-                .sum::<usize>(),
-            tokens = token_map.len(),
-            "subgraph extracted"
-        );
+        let ctx = self
+            .build_context(graph, market, label, derived, order)
+            .await?;
 
         // SPFA relaxation with forbid-revisits.
         // amount[node] = best gross output amount reachable at node.
         // edge_gas[node] = gas estimate for the edge that last improved amount[node].
         // cumul_gas[node] = total gas units along the best path to this node.
-        let max_idx = graph
-            .node_indices()
-            .map(|n| n.index())
-            .max()
-            .unwrap_or(0) +
-            1;
+        let mut amount: Vec<BigUint> = vec![BigUint::ZERO; ctx.max_idx];
+        let mut predecessor: Vec<Option<(NodeIndex, ComponentId)>> = vec![None; ctx.max_idx];
+        let mut edge_gas: Vec<BigUint> = vec![BigUint::ZERO; ctx.max_idx];
+        let mut cumul_gas: Vec<BigUint> = vec![BigUint::ZERO; ctx.max_idx];
 
-        let mut amount: Vec<BigUint> = vec![BigUint::ZERO; max_idx];
-        let mut predecessor: Vec<Option<(NodeIndex, ComponentId)>> = vec![None; max_idx];
-        let mut edge_gas: Vec<BigUint> = vec![BigUint::ZERO; max_idx];
-        let mut cumul_gas: Vec<BigUint> = vec![BigUint::ZERO; max_idx];
-
-        amount[token_in_node.index()] = order.amount().clone();
-
-        // Gas-aware relaxation: pre-compute gas price and build address map for lookups.
-        let gas_price_wei = market_subset
-            .gas_price()
-            .map(|gp| gp.effective_gas_price().clone());
-
-        // Build node->address map for token price lookups during relaxation.
-        let node_address: HashMap<NodeIndex, Address> = token_map
-            .iter()
-            .map(|(&node, token)| (node, token.address.clone()))
-            .collect();
+        amount[ctx.token_in_node.index()] = order.amount().clone();
 
         // Track cumulative spot price product from token_in for fallback gas estimation.
         // spot_product[v] = product of spot prices along the path from token_in to v.
-        let mut spot_product: Vec<f64> = vec![0.0; max_idx];
-        spot_product[token_in_node.index()] = 1.0;
+        let mut spot_product: Vec<f64> = vec![0.0; ctx.max_idx];
+        spot_product[ctx.token_in_node.index()] = 1.0;
 
-        let gas_aware = self.gas_aware && gas_price_wei.is_some() && token_prices.is_some();
-        if !gas_aware && self.gas_aware {
+        let gas_aware = matches!(ctx.scoring, RouteScoringMode::NetOutput) &&
+            ctx.gas_price_wei.is_some() &&
+            ctx.token_prices.is_some();
+        if !gas_aware && matches!(ctx.scoring, RouteScoringMode::NetOutput) {
             debug!("gas-aware comparison disabled (missing gas_price or token_prices)");
-        } else if !self.gas_aware {
+        } else if matches!(ctx.scoring, RouteScoringMode::GrossOutput) {
             debug!("gas-aware comparison disabled by config");
         }
 
-        let mut active_nodes: Vec<NodeIndex> = vec![token_in_node];
+        let mut active_nodes: Vec<NodeIndex> = vec![ctx.token_in_node];
 
         for round in 0..self.max_hops {
             if start.elapsed() >= self.timeout {
@@ -472,8 +541,8 @@ impl Algorithm for BellmanFordAlgorithm {
                     continue;
                 }
 
-                let Some(token_u) = token_map.get(&u) else { continue };
-                let Some(edges) = adj.get(&u) else { continue };
+                let Some(token_u) = ctx.token_map.get(&u) else { continue };
+                let Some(edges) = ctx.adj.get(&u) else { continue };
 
                 for (v, component_id) in edges {
                     let v_idx = v.index();
@@ -486,7 +555,7 @@ impl Algorithm for BellmanFordAlgorithm {
                     // Skip disallowed connector tokens. Endpoints (token_in / token_out) are
                     // always permitted regardless of the allowlist.
                     if let (Some(tokens), Some(v_addr)) =
-                        (&self.connector_tokens, node_address.get(v))
+                        (&self.connector_tokens, ctx.node_address.get(v))
                     {
                         if v_addr != order.token_in() &&
                             v_addr != order.token_out() &&
@@ -496,8 +565,11 @@ impl Algorithm for BellmanFordAlgorithm {
                         }
                     }
 
-                    let Some(token_v) = token_map.get(v) else { continue };
-                    let Some(sim) = market_subset.get_simulation_state(component_id) else {
+                    let Some(token_v) = ctx.token_map.get(v) else { continue };
+                    let Some(sim) = ctx
+                        .market_data
+                        .get_simulation_state(component_id)
+                    else {
                         continue;
                     };
 
@@ -520,30 +592,30 @@ impl Algorithm for BellmanFordAlgorithm {
                     let candidate_spot = Self::compute_edge_spot_product(
                         spot_product[u_idx],
                         component_id,
-                        node_address.get(&u),
-                        node_address.get(v),
-                        spot_prices.as_ref(),
+                        ctx.node_address.get(&u),
+                        ctx.node_address.get(v),
+                        ctx.spot_prices.as_ref(),
                     );
 
                     // Gas-aware comparison: compare net amounts (gross - gas cost in token terms)
                     let is_better = if gas_aware {
                         let v_price = Self::resolve_token_price(
-                            node_address.get(v),
-                            token_prices.as_ref(),
+                            ctx.node_address.get(v),
+                            ctx.token_prices.as_ref(),
                             candidate_spot,
-                            node_address.get(&token_in_node),
+                            ctx.node_address.get(&ctx.token_in_node),
                         );
 
                         let net_candidate = Self::gas_adjusted_amount(
                             &result.amount,
                             &candidate_cumul_gas,
-                            gas_price_wei.as_ref().unwrap(),
+                            ctx.gas_price_wei.as_ref().unwrap(),
                             v_price.as_ref(),
                         );
                         let net_existing = Self::gas_adjusted_amount(
                             &amount[v_idx],
                             &cumul_gas[v_idx],
-                            gas_price_wei.as_ref().unwrap(),
+                            ctx.gas_price_wei.as_ref().unwrap(),
                             v_price.as_ref(),
                         );
                         net_candidate > net_existing
@@ -570,8 +642,8 @@ impl Algorithm for BellmanFordAlgorithm {
             active_nodes.sort_unstable();
         }
 
-        // Check if destination was reached
-        let out_idx = token_out_node.index();
+        // Check if destination was reached.
+        let out_idx = ctx.token_out_node.index();
         if amount[out_idx].is_zero() {
             return Err(AlgorithmError::NoPath {
                 from: order.token_in().clone(),
@@ -583,30 +655,35 @@ impl Algorithm for BellmanFordAlgorithm {
         // Reconstruct path and build route directly from stored distances/gas
         // (no re-simulation needed since forbid-revisits guarantees relaxation
         // amounts match sequential execution).
-        let path_edges = Self::reconstruct_path(token_out_node, token_in_node, &predecessor)?;
+        let path_edges =
+            Self::reconstruct_path(ctx.token_out_node, ctx.token_in_node, &predecessor)?;
 
         let mut swaps = Vec::with_capacity(path_edges.len());
         let mut tokens: HashMap<Address, Token> = HashMap::new();
         for (from_node, to_node, component_id) in &path_edges {
-            let token_in = token_map
+            let token_in = ctx
+                .token_map
                 .get(from_node)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "token",
                     id: Some(format!("{:?}", from_node)),
                 })?;
-            let token_out = token_map
+            let token_out = ctx
+                .token_map
                 .get(to_node)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "token",
                     id: Some(format!("{:?}", to_node)),
                 })?;
-            let component = market_subset
+            let component = ctx
+                .market_data
                 .get_component(component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "component",
                     id: Some(component_id.clone()),
                 })?;
-            let sim_state = market_subset
+            let sim_state = ctx
+                .market_data
                 .get_simulation_state(component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
                     kind: "simulation state",
@@ -635,16 +712,16 @@ impl Algorithm for BellmanFordAlgorithm {
         let route = Route::new(swaps, tokens);
         let final_amount_out = amount[out_idx].clone();
 
-        let gas_price = gas_price_wei.unwrap_or_default();
+        let gas_price = ctx.gas_price_wei.unwrap_or_default();
 
         let net_amount_out = Self::compute_net_amount_out(
             &final_amount_out,
             &route,
             &gas_price,
-            token_prices.as_ref(),
+            ctx.token_prices.as_ref(),
             &spot_product,
-            &node_address,
-            token_in_node,
+            &ctx.node_address,
+            ctx.token_in_node,
         );
 
         let result = RouteResult::new(route, net_amount_out, gas_price);
