@@ -1,3 +1,21 @@
+## [0.64.0](https://github.com/propeller-heads/fynd/compare/0.63.0...0.64.0) (2026-06-01)
+
+
+### Features
+
+* simulation utils for split-route optimisation ([3d8e524](https://github.com/propeller-heads/fynd/commit/3d8e524055a4d0b7bda3fb28dd52ea4f1cbbafaf))
+
+
+### Bug Fixes
+
+* deduplicate gas by hop in evaluate_total_output ([3dd5f49](https://github.com/propeller-heads/fynd/commit/3dd5f4986fd9e8b5512dc558d23ad78338dfa5c6))
+* use overrides in compute_marginal_price_product ([f5d8845](https://github.com/propeller-heads/fynd/commit/f5d884572e1feadb5dc57a17bbf11cd22aaad87d))
+
+
+### Reverts
+
+* use &MarketState instead of MarketDataView ([4463461](https://github.com/propeller-heads/fynd/commit/44634610279141dd8d9918254fa32c01dfa90770))
+
 ## [0.63.0](https://github.com/propeller-heads/fynd/compare/0.62.0...0.63.0) (2026-06-01)
 
 
