@@ -572,7 +572,7 @@ impl BellmanFordAlgorithm {
 
     /// Checks whether the target node or pool conflicts with the existing path to `from`.
     /// Walks the predecessor chain once, checking both conditions simultaneously.
-    fn path_has_conflict(
+    pub(crate) fn path_has_conflict(
         from: NodeIndex,
         target_node: NodeIndex,
         target_pool: &ComponentId,
@@ -597,7 +597,7 @@ impl BellmanFordAlgorithm {
 
     /// Reconstructs the path from token_out back to token_in by walking the predecessor
     /// array.
-    fn reconstruct_path(
+    pub(crate) fn reconstruct_path(
         token_out: NodeIndex,
         token_in: NodeIndex,
         predecessor: &[Option<(NodeIndex, ComponentId)>],
@@ -636,7 +636,7 @@ impl BellmanFordAlgorithm {
     ///
     /// Returns `(adjacency_list, token_nodes, component_ids)` or `NoPath` if the
     /// subgraph is empty (no outgoing edges from the source).
-    fn get_subgraph(
+    pub(crate) fn get_subgraph(
         graph: &StableDiGraph<()>,
         token_in_node: NodeIndex,
         max_hops: usize,
