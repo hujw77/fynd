@@ -23,19 +23,19 @@ pub(crate) struct HopDescriptor {
     pub(crate) token_in: Token,
     pub(crate) token_out: Token,
     /// Per-hop output amount, populated by the solving algorithm.
-    pub(crate) amount_out: BigUint,
+    pub(crate) amount_out: Option<BigUint>,
     /// Per-hop gas estimate, populated by the solving algorithm.
-    pub(crate) gas: BigUint,
+    pub(crate) gas: Option<BigUint>,
 }
 
 impl HopDescriptor {
     pub(crate) fn new(component_id: ComponentId, token_in: Token, token_out: Token) -> Self {
-        Self { component_id, token_in, token_out, amount_out: BigUint::ZERO, gas: BigUint::ZERO }
+        Self { component_id, token_in, token_out, amount_out: None, gas: None }
     }
 
     pub(crate) fn with_amounts(mut self, amount_out: BigUint, gas: BigUint) -> Self {
-        self.amount_out = amount_out;
-        self.gas = gas;
+        self.amount_out = Some(amount_out);
+        self.gas = Some(gas);
         self
     }
 }
@@ -467,7 +467,9 @@ struct SplitSwap {
 /// Merge shared hops across paths, summing their flow fractions, and return
 /// them grouped by `token_in` (sorted by fraction descending within each
 /// group).
-fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>> {
+fn merge_shared_hops(
+    paths: &[PathAllocation],
+) -> Result<HashMap<Bytes, Vec<SplitSwap>>, AlgorithmError> {
     type HopKey = (ComponentId, Bytes, Bytes);
     let mut hops: HashMap<HopKey, SplitSwap> = HashMap::new();
 
@@ -478,10 +480,24 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                 hop.token_in.address.clone(),
                 hop.token_out.address.clone(),
             );
+            let hop_amount_out =
+                hop.amount_out
+                    .clone()
+                    .ok_or_else(|| AlgorithmError::DataNotFound {
+                        kind: "hop amount_out",
+                        id: Some(hop.component_id.clone()),
+                    })?;
+            let hop_gas = hop
+                .gas
+                .clone()
+                .ok_or_else(|| AlgorithmError::DataNotFound {
+                    kind: "hop gas",
+                    id: Some(hop.component_id.clone()),
+                })?;
             hops.entry(key)
                 .and_modify(|h| {
                     h.split += path.flow_fraction;
-                    h.amount_out += &hop.amount_out;
+                    h.amount_out += &hop_amount_out;
                     // Gas is not summed: swapping more on the same pool does not
                     // increase gas compared to swapping less.
                 })
@@ -494,8 +510,8 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                     split: path.flow_fraction,
                     // Set later by assign_splits_and_amounts.
                     amount_in: BigUint::ZERO,
-                    amount_out: hop.amount_out.clone(),
-                    gas: hop.gas.clone(),
+                    amount_out: hop_amount_out,
+                    gas: hop_gas,
                 });
         }
     }
@@ -514,7 +530,7 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    hops_by_token
+    Ok(hops_by_token)
 }
 
 /// Normalize fractions within a group, convert them to input amounts, and
@@ -555,7 +571,7 @@ pub(crate) fn build_split_route(
     market: &MarketState,
     order: &Order,
 ) -> Result<Route, AlgorithmError> {
-    let mut hops_by_token = merge_shared_hops(paths);
+    let mut hops_by_token = merge_shared_hops(paths)?;
 
     let mut pending_tokens = VecDeque::new();
     pending_tokens.push_back(order.token_in().clone());
@@ -1066,11 +1082,14 @@ mod tests {
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
 
+        let gas = BigUint::from(50_000u64);
         let paths = vec![
             PathAllocation {
                 hops: vec![
-                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
-                    HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone()),
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                        .with_amounts(BigUint::from(1200u64), gas.clone()),
+                    HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone())
+                        .with_amounts(BigUint::from(3600u64), gas.clone()),
                 ],
                 flow_fraction: 0.6,
                 amount_in: BigUint::from(600u64),
@@ -1079,8 +1098,10 @@ mod tests {
             },
             PathAllocation {
                 hops: vec![
-                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
-                    HopDescriptor::new("P3".to_string(), token_b.clone(), token_c.clone()),
+                    HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                        .with_amounts(BigUint::from(800u64), gas.clone()),
+                    HopDescriptor::new("P3".to_string(), token_b.clone(), token_c.clone())
+                        .with_amounts(BigUint::from(1600u64), gas),
                 ],
                 flow_fraction: 0.4,
                 amount_in: BigUint::from(400u64),
@@ -1089,7 +1110,7 @@ mod tests {
             },
         ];
 
-        let hops_by_token = merge_shared_hops(&paths);
+        let hops_by_token = merge_shared_hops(&paths).unwrap();
 
         // Group at A: one merged hop (P1, fraction = 0.6 + 0.4 = 1.0).
         let group_a = &hops_by_token[&token_a.address];
