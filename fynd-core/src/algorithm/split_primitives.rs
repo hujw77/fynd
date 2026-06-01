@@ -492,6 +492,7 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                         hop.token_out.clone(),
                     ),
                     split: path.flow_fraction,
+                    // Set later by assign_splits_and_amounts.
                     amount_in: BigUint::ZERO,
                     amount_out: hop.amount_out.clone(),
                     gas: hop.gas.clone(),
@@ -516,10 +517,10 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
     hops_by_token
 }
 
-/// Assign each hop in a group its input amount and final split value using the
-/// tycho-execution remainder convention: last hop (smallest fraction) gets
-/// `split = 0.0`.
-fn apply_remainder_convention(
+/// Normalize fractions within a group, convert them to input amounts, and
+/// assign final split values using the tycho-execution remainder convention
+/// (last hop gets `split = 0.0`).
+fn assign_splits_and_amounts(
     mut hops: Vec<SplitSwap>,
     total_available: &BigUint,
 ) -> Vec<SplitSwap> {
@@ -582,7 +583,7 @@ pub(crate) fn build_split_route(
             .cloned()
             .unwrap_or_default();
 
-        for split_swap in apply_remainder_convention(group, &total) {
+        for split_swap in assign_splits_and_amounts(group, &total) {
             let sim = market
                 .get_simulation_state(&split_swap.hop.component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
@@ -1106,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_remainder_convention_splits_and_amounts() {
+    fn test_assign_splits_and_amounts_splits_and_amounts() {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
 
@@ -1127,7 +1128,7 @@ mod tests {
             },
         ];
 
-        let result = apply_remainder_convention(group, &BigUint::from(1000u64));
+        let result = assign_splits_and_amounts(group, &BigUint::from(1000u64));
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].split, 0.7);
@@ -1137,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_remainder_convention_single_hop() {
+    fn test_assign_splits_and_amounts_single_hop() {
         // A single hop receives the entire amount with split = 0.0.
         //
         //  1000 -- pool1 (split=0.0) --> B
@@ -1153,7 +1154,7 @@ mod tests {
         }];
 
         let total = BigUint::from(1000u64);
-        let result = apply_remainder_convention(group, &total);
+        let result = assign_splits_and_amounts(group, &total);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].split, 0.0);
