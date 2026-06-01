@@ -60,13 +60,10 @@ type Subgraph =
 /// Built once by `build_context`, which acquires the market and derived locks and snapshots all
 /// relevant state. `find_single_route` uses this snapshot directly — no lock re-acquisition — so
 /// all route evaluations within one order see a consistent view of the same block's pool states.
-#[allow(dead_code)]
 pub(crate) struct BellmanFordContext {
     pub(crate) token_in_node: NodeIndex,
     pub(crate) token_out_node: NodeIndex,
     pub(crate) adj: HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>>,
-    pub(crate) token_nodes: HashSet<NodeIndex>,
-    pub(crate) component_ids: HashSet<ComponentId>,
     pub(crate) token_map: HashMap<NodeIndex, Token>,
     pub(crate) market_data: MarketState,
     pub(crate) gas_price_wei: Option<BigUint>,
@@ -74,8 +71,6 @@ pub(crate) struct BellmanFordContext {
     pub(crate) spot_prices: Option<SpotPrices>,
     pub(crate) node_address: HashMap<NodeIndex, Address>,
     pub(crate) max_idx: usize,
-    pub(crate) max_hops: usize,
-    pub(crate) timeout: Duration,
     pub(crate) scoring: RouteScoringMode,
 }
 
@@ -216,8 +211,6 @@ impl BellmanFordAlgorithm {
             token_in_node,
             token_out_node,
             adj,
-            token_nodes,
-            component_ids,
             token_map,
             market_data,
             gas_price_wei,
@@ -225,8 +218,6 @@ impl BellmanFordAlgorithm {
             spot_prices,
             node_address,
             max_idx,
-            max_hops: self.max_hops,
-            timeout: self.timeout,
             scoring,
         })
     }
@@ -532,8 +523,8 @@ impl Algorithm for BellmanFordAlgorithm {
 
         let mut active_nodes: Vec<NodeIndex> = vec![ctx.token_in_node];
 
-        for round in 0..ctx.max_hops {
-            if start.elapsed() >= ctx.timeout {
+        for round in 0..self.max_hops {
+            if start.elapsed() >= self.timeout {
                 debug!(round, "timeout during relaxation");
                 break;
             }
