@@ -1278,11 +1278,9 @@ impl Route {
         }
         for (token_in, _) in &groups {
             if !reachable.contains(token_in) {
-                return Err(RouteValidationError::InvalidSplit {
-                    reason: format!(
-                        "group input {token_in} is not reachable from \
-                         the start token {first_token} (reachable: {reachable:?})",
-                    ),
+                return Err(RouteValidationError::DisconnectedGroup {
+                    token_in: token_in.clone(),
+                    start_token: first_token.clone(),
                 });
             }
         }
@@ -1383,11 +1381,23 @@ pub enum RouteValidationError {
         /// Last token in the route.
         last: Address,
     },
-    /// A split route has invalid split fractions or disconnected groups.
+    /// A split route has invalid split fractions.
     #[error("invalid split route: {reason}")]
     InvalidSplit {
         /// Human-readable description of the violation.
         reason: String,
+    },
+    /// A group's input token is not reachable from the route's start token.
+    #[non_exhaustive]
+    #[error(
+        "disconnected group: input {token_in} is not reachable from \
+         start token {start_token}"
+    )]
+    DisconnectedGroup {
+        /// Input token of the unreachable group.
+        token_in: Address,
+        /// The route's start token.
+        start_token: Address,
     },
 }
 
