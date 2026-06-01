@@ -482,6 +482,8 @@ fn merge_shared_hops(paths: &[PathAllocation]) -> HashMap<Bytes, Vec<SplitSwap>>
                 .and_modify(|h| {
                     h.split += path.flow_fraction;
                     h.amount_out += &hop.amount_out;
+                    // Gas is not summed: swapping more on the same pool does not
+                    // increase gas compared to swapping less.
                 })
                 .or_insert(SplitSwap {
                     hop: HopDescriptor::new(
@@ -1053,6 +1055,12 @@ mod tests {
     #[test]
     fn test_merge_shared_hops_combines_fractions() {
         // Two paths share the first hop A→B via P1; second hops diverge.
+        //
+        //                P2
+        //               /    \
+        //  A -- P1 --> B      C
+        //               \    /
+        //                P3
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
@@ -1252,7 +1260,7 @@ mod tests {
         //
         //                  P2 (price=3) --> C
         //                 /
-        //  A -- P1 (2) --+
+        //  A -- P1 (2) --B
         //                 \
         //                  P3 (price=4) --> C
         let token_a = token(0x0A, "A");
@@ -1312,7 +1320,11 @@ mod tests {
             BigUint::from(2000u64),
             "A→B amount_out should be sum of per-path outputs (1400+600)"
         );
-        assert_eq!(*ab_swap.split(), 0.0, "only swap at A→B should be remainder");
+        assert_eq!(
+            *ab_swap.split(),
+            0.0,
+            "A→B is the sole swap in its group, so it gets the remainder convention (split = 0.0)"
+        );
 
         // B→C swaps: P2 (0.7) first, P3 (0.3) last.
         assert_eq!(swaps[1].component_id(), "P2");
@@ -1326,11 +1338,11 @@ mod tests {
         // Paths A→B→Z and A→C→Z: source-level split with different
         // intermediate tokens.
         //
-        //       pool_ab --> B -- pool_bz --> Z
-        //      /
-        //  A --
-        //      \
-        //       pool_ac --> C -- pool_cz --> Z
+        //       pool_ab --> B -- pool_bz
+        //      /                         \
+        //  A --                           Z
+        //      \                         /
+        //       pool_ac --> C -- pool_cz
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
         let token_c = token(0x0C, "C");
