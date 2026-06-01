@@ -1198,6 +1198,8 @@ impl Route {
     ///   `split == 0.0` (remainder), and the sum must be strictly less than `1.0`
     /// - BFS connectivity: outputs of each group connect to inputs of the next
     fn validate_split_route(&self) -> Result<(), RouteValidationError> {
+        // Group swaps by their input token. Each group represents a split
+        // (parallel swaps sharing the same token_in), not a sequential path.
         let mut group_index: HashMap<Address, usize> = HashMap::new();
         let mut groups: Vec<(Address, Vec<&Swap>)> = Vec::new();
         for swap in &self.swaps {
