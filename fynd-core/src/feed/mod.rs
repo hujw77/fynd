@@ -46,6 +46,10 @@ pub(crate) struct TychoFeedConfig {
     pub(crate) traded_n_days_ago: Option<u64>,
     /// Component IDs to exclude from the Tycho stream.
     pub(crate) blocklisted_components: HashSet<String>,
+    /// Enable partial block (flashblock) updates from the Tycho stream.
+    /// When enabled, pool state updates are delivered mid-block rather than only at finalization,
+    /// reducing effective latency at the cost of processing more frequent, smaller updates.
+    pub(crate) partial_blocks: bool,
 }
 
 impl TychoFeedConfig {
@@ -70,6 +74,7 @@ impl TychoFeedConfig {
             gas_refresh_interval: Duration::from_secs(30),
             reconnect_delay: Duration::from_secs(5),
             blocklisted_components: HashSet::new(),
+            partial_blocks: false,
         }
     }
 
@@ -100,6 +105,11 @@ impl TychoFeedConfig {
 
     pub(crate) fn blocklisted_components(mut self, components: HashSet<String>) -> Self {
         self.blocklisted_components = components;
+        self
+    }
+
+    pub(crate) fn partial_blocks(mut self, enabled: bool) -> Self {
+        self.partial_blocks = enabled;
         self
     }
 }

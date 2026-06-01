@@ -122,30 +122,33 @@ impl TychoFeed {
             .iter()
             .all(|p| p.starts_with("rfq:"))
         {
-            // Spawn protocol stream
+            let tvl_filter = ComponentFilter::with_tvl_range(
+                self.config.min_tvl / self.config.tvl_buffer_ratio,
+                self.config.min_tvl,
+            )
+            .blocklist(self.config.blocklisted_components.clone());
+
+            let mut stream_builder = register_exchanges(
+                ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
+                    .skip_state_decode_failures(true),
+                tvl_filter,
+                &self.config.protocols,
+            )?
+            .auth_key(self.config.tycho_api_key.clone())
+            .skip_state_decode_failures(true)
+            .min_token_quality(self.config.min_token_quality as u32);
+
+            if self.config.partial_blocks {
+                stream_builder = stream_builder.enable_partial_blocks();
+            }
+
             Some(
-                register_exchanges(
-                    ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
-                        .skip_state_decode_failures(true),
-                    ComponentFilter::with_tvl_range(
-                        self.config.min_tvl / self.config.tvl_buffer_ratio,
-                        self.config.min_tvl,
-                    )
-                    .blocklist(
-                        self.config
-                            .blocklisted_components
-                            .clone(),
-                    ),
-                    &self.config.protocols,
-                )?
-                .auth_key(self.config.tycho_api_key.clone())
-                .skip_state_decode_failures(true)
-                .min_token_quality(self.config.min_token_quality as u32)
-                .set_tokens(all_tokens.clone())
-                .await
-                .build()
-                .await
-                .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
+                stream_builder
+                    .set_tokens(all_tokens.clone())
+                    .await
+                    .build()
+                    .await
+                    .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
             )
         } else {
             None

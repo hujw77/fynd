@@ -157,6 +157,16 @@ impl FyndRPCBuilder {
         self
     }
 
+    /// Enables partial block (flashblock) updates from the Tycho stream (default: `false`).
+    ///
+    /// When enabled, the stream delivers pool state updates mid-block rather than only at
+    /// finalization, reducing latency. Only supported for on-chain protocols; RFQ streams are
+    /// unaffected.
+    pub fn partial_blocks(mut self, enabled: bool) -> Self {
+        self.fynd_builder = self.fynd_builder.partial_blocks(enabled);
+        self
+    }
+
     /// Overrides the default encoder with a custom one.
     pub fn encoder(mut self, encoder: Encoder) -> Self {
         self.fynd_builder = self.fynd_builder.encoder(encoder);
