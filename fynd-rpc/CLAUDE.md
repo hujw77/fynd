@@ -52,6 +52,6 @@ The builder calls `FyndBuilder::build()` → `Solver::into_parts()` → wraps th
 The `config::defaults` module re-exports `fynd-core::solver::defaults::*` and adds HTTP-specific
 constants:
 - `HTTP_HOST = "0.0.0.0"`, `HTTP_PORT = 3000`
-- `DEFAULT_RPC_URL = "https://eth.llamarpc.com"`
 - `WORKER_ROUTER_TIMEOUT_MS = 100` (tighter than fynd-core's 10s standalone default)
 - `default_tycho_url(chain)` maps chain names to hosted endpoints
+- `default_rpc_url(chain)` maps chain names to public JSON-RPC endpoints
