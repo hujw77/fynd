@@ -1356,6 +1356,13 @@ fn validate_cycles(
     terminal_token: &Address,
 ) -> Result<(), RouteValidationError> {
     let is_round_trip = first_token == terminal_token;
+    if is_round_trip && swaps_by_token_in.len() <= 1 {
+        return Err(RouteValidationError::UnsupportedCycle {
+            token: first_token.clone(),
+            first: first_token.clone(),
+            last: terminal_token.clone(),
+        });
+    }
     let mut seen_back_edge_group = false;
     let mut earlier_inputs: HashSet<&Address> = HashSet::new();
     for (token_in, group) in swaps_by_token_in {
@@ -1978,6 +1985,20 @@ mod tests {
             make_split_swap(0x01, 0x06, 0.0),                // A→F (remainder)
             make_swap(0x05, 0x06, 270, 260),                 // E→F
             make_swap(0x06, 0x01, 810, 800),                 // F→A
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_single_group_round_trip() {
+        //   ┌──[50%]──┐
+        // A │         │ A   ERROR: single group cycling back to start
+        //   └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x01, 0.5), // A→A
+            make_split_swap(0x01, 0x01, 0.0), // A→A (remainder)
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
