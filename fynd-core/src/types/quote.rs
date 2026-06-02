@@ -1830,7 +1830,9 @@ mod tests {
 
     #[test]
     fn test_validate_interior_split_valid() {
-        // A→B sequential, then B→C parallel with remainder convention
+        //     ┌──[50%]──┐
+        // A → B         C
+        //     └──[rem]──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.0),
             make_split_swap(0x02, 0x03, 0.5),
@@ -1842,7 +1844,9 @@ mod tests {
 
     #[test]
     fn test_validate_interior_split_no_remainder() {
-        // A→B, then B→C parallel but last swap has nonzero split (no remainder)
+        //     ┌──[50%]──┐
+        // A → B         C   ERROR: last swap has split=0.3, not 0.0
+        //     └──[30%]──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.0),
             make_split_swap(0x02, 0x03, 0.5),
@@ -1855,7 +1859,9 @@ mod tests {
 
     #[test]
     fn test_validate_interior_split_sum_exceeds_one() {
-        // A→B, then B→C parallel with explicit splits summing >= 1.0
+        //     ┌──[60%]──┐
+        // A → B──[50%]──C   ERROR: 0.6 + 0.5 ≥ 1.0
+        //     └──[rem]──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.0),
             make_split_swap(0x02, 0x03, 0.6),
@@ -1869,7 +1875,9 @@ mod tests {
 
     #[test]
     fn test_validate_source_split_valid() {
-        // Two parallel legs from A through different intermediates, converging on D
+        //   ┌──[50%]── B ──┐
+        // A │               D
+        //   └──[rem]── C ──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.5),
             make_split_swap(0x01, 0x03, 0.0),
@@ -1882,8 +1890,9 @@ mod tests {
 
     #[test]
     fn test_validate_diamond_split_valid() {
-        // Diamond: A splits to B and D via different intermediates, both converge on C.
-        // A→B (60%), B→C, A→D (remainder), D→C
+        //   ┌──[60%]── B ──┐
+        // A │               C
+        //   └──[rem]── D ──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.6), // A→B, 60%
             make_swap(0x02, 0x03, 590, 580),  // B→C
@@ -1896,7 +1905,7 @@ mod tests {
 
     #[test]
     fn test_validate_split_single_swap_nonzero_split() {
-        // A single swap for a given token_in must have split == 0.0
+        // A ──[50%]── B   ERROR: single swap must have split=0.0
         let swaps = vec![make_split_swap(0x01, 0x02, 0.5)];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
@@ -1905,7 +1914,9 @@ mod tests {
 
     #[test]
     fn test_validate_split_dead_end() {
-        // A splits to B and C, but the paths don't converge — B→D diverges
+        //   ┌──[50%]── B → D   ERROR: dead end, D not consumed
+        // A │
+        //   └──[rem]── C → E   (terminal)
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.5), // A→B
             make_split_swap(0x01, 0x03, 0.0), // A→C
@@ -1919,7 +1930,9 @@ mod tests {
 
     #[test]
     fn test_validate_split_cycle() {
-        // Both split paths converge back to B, creating a cycle
+        //     ┌──[50%]── C ──┐
+        // A → B               → B   ERROR: C→B and D→B cycle back
+        //     └──[rem]── D ──┘
         let swaps = vec![
             make_swap(0x01, 0x02, 1000, 990),                // A→B
             make_swap(0x02, 0x03, 990, 980).with_split(0.5), // B→C
@@ -1934,7 +1947,9 @@ mod tests {
 
     #[test]
     fn test_validate_split_round_trip_valid() {
-        // A splits to B and C, both converge on D, then D→A (round-trip).
+        //   ┌──[50%]── B ──┐
+        // A │               D → A   (round-trip back to start)
+        //   └──[rem]── C ──┘
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.5), // A→B
             make_split_swap(0x01, 0x03, 0.0), // A→C
@@ -1948,9 +1963,12 @@ mod tests {
 
     #[test]
     fn test_validate_split_multi_back_edge_groups() {
-        // A→B→D→A→F→A and A→C→D→E→F→A — two groups (D and F) produce
-        // back-edges to A, which means A is visited more than twice.
-        // A→F merges into group A so splits must account for all three.
+        //   ┌──[30%]── B ──┐       ┌──[rem]──┐
+        // A ┤               D──→A──┤          F──→A
+        //   └──[30%]── C ──┘       └──── E ──┘
+        //                    ↑                  ↑
+        //              back-edge 1        back-edge 2
+        //         ERROR: two groups cycle back to A
         let swaps = vec![
             make_split_swap(0x01, 0x02, 0.3),                // A→B
             make_split_swap(0x01, 0x03, 0.3),                // A→C
@@ -1969,8 +1987,9 @@ mod tests {
 
     #[test]
     fn test_validate_split_terminal_is_group_input() {
-        // A→C→B→C: terminal C is also a group input, creating a cycle.
-        // Not a round-trip (first=A ≠ terminal=C).
+        //     ┌──[50%]── B ──┐
+        // A → C               → C   ERROR: B→C and D→C cycle back
+        //     └──[rem]── D ──┘       (not a round-trip: first=A ≠ terminal=C)
         let swaps = vec![
             make_swap(0x01, 0x03, 1000, 990),                // A→C
             make_swap(0x03, 0x02, 990, 980).with_split(0.5), // C→B
@@ -2200,15 +2219,17 @@ mod tests {
 
     #[test]
     fn test_is_split_detection() {
-        // Single hop, no split
+        // A → B                     (no split)
         let route_single = make_route(vec![(0x01, 0x02)]);
         assert!(!route_single.is_split());
 
-        // Multi-hop, no split
+        // A → B → C                 (no split)
         let route_multi = make_route(vec![(0x01, 0x02), (0x02, 0x03)]);
         assert!(!route_multi.is_split());
 
-        // Interior split: A→B single, B→C through two parallel pools
+        //     ┌──[60%]──┐
+        // A → B         C           (interior split)
+        //     └──[rem]──┘
         let swaps_interior = vec![
             make_swap(0x01, 0x02, 1000, 990),                // A→B, no split
             make_swap(0x02, 0x03, 594, 580).with_split(0.6), // B→C via P2, 60%
@@ -2217,7 +2238,9 @@ mod tests {
         let route_interior = Route::new(swaps_interior, HashMap::new());
         assert!(route_interior.is_split());
 
-        // Source-level split: two routes with different intermediates
+        //   ┌──[60%]── B ──┐
+        // A │               C       (source-level split)
+        //   └──[rem]── D ──┘
         let swaps_source = vec![
             make_swap(0x01, 0x02, 600, 590).with_split(0.6), // A→B, 60%
             make_swap(0x02, 0x03, 590, 580),                 // B→C
