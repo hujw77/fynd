@@ -1,14 +1,18 @@
 //! Test helpers for split-routing algorithm split_scenarios.
 
+use std::{collections::HashMap, sync::Arc};
+
 use num_bigint::{BigInt, BigUint};
 use num_traits::Zero;
+use tokio::sync::RwLock;
 use tycho_simulation::tycho_core::{
     models::{token::Token, Address},
-    simulation::protocol_sim::ProtocolSim,
+    simulation::protocol_sim::{Price, ProtocolSim},
 };
 
 use crate::{
     algorithm::{test_utils::setup_market_unweighted, Algorithm},
+    derived::{DerivedData, SharedDerivedDataRef},
     feed::market_data::MarketData,
     graph::{petgraph::PetgraphStableDiGraphManager, GraphManager},
     types::quote::{Order, OrderSide},
@@ -79,6 +83,29 @@ impl TestScenario {
             .collect();
         setup_market_unweighted(pools)
     }
+
+    /// Builds a `SharedDerivedDataRef` with unit token-gas-prices for every token in this
+    /// scenario, matching the `TestScenario` gas assumption (1 output-token = 1 ETH). This lets
+    /// BF's `compute_net_amount_out` deduct gas costs.
+    pub(crate) fn build_derived_data(&self) -> SharedDerivedDataRef {
+        let unit_price = Price::new(BigUint::from(1u64), BigUint::from(1u64));
+        let mut token_prices = HashMap::new();
+
+        token_prices.insert(self.token_in.address.clone(), unit_price.clone());
+        token_prices.insert(self.token_out.address.clone(), unit_price.clone());
+        for pool in &self.pools {
+            token_prices
+                .entry(pool.token_1.address.clone())
+                .or_insert_with(|| unit_price.clone());
+            token_prices
+                .entry(pool.token_2.address.clone())
+                .or_insert_with(|| unit_price.clone());
+        }
+
+        let mut derived = DerivedData::new();
+        derived.set_token_prices(token_prices, vec![], 1, true);
+        Arc::new(RwLock::new(derived))
+    }
 }
 
 // ==================== Evaluation harness ====================
@@ -102,6 +129,7 @@ pub(crate) struct ScenarioResult {
 }
 
 impl ScenarioResult {
+    #[allow(dead_code)]
     pub fn assert_meets_lower_bound(&self) {
         self.assert_bound(self.net_output >= self.lower_bound, ">=");
     }
@@ -130,9 +158,8 @@ impl ScenarioResult {
 
 /// Run an algorithm against a single scenario and return structured results.
 ///
-/// The caller supplies `market` and `graph_manager` (e.g. from [`TestScenario::build_market`]),
-/// so any graph weight type is supported. Calls `find_best_route` and returns a
-/// [`ScenarioResult`].
+/// Builds derived data with unit token-gas-prices so the algorithm deducts gas costs from output,
+/// matching the scenario's net bounds. Calls `find_best_route` and returns a [`ScenarioResult`].
 ///
 /// ```rust,ignore
 /// let scenario = split_scenarios::symmetric_split();
@@ -157,11 +184,12 @@ where
         Address::default(),
     );
 
+    let derived = scenario.build_derived_data();
     let lower_bound = scenario.lower_bound.clone();
     let analytical_optimum = scenario.analytical_optimum.clone();
 
     let Ok(route_result) = algo
-        .find_best_route(graph_manager.graph(), market, None, None, &order)
+        .find_best_route(graph_manager.graph(), market, None, Some(derived), &order)
         .await
     else {
         return ScenarioResult {
@@ -533,6 +561,8 @@ pub(crate) mod split_scenarios {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::algorithm::{bellman_ford::BellmanFordAlgorithm, AlgorithmConfig};
 
@@ -545,17 +575,6 @@ mod tests {
     }
 
     // ==================== evaluate_scenario tests ====================
-
-    #[tokio::test]
-    async fn evaluate_bellman_ford_passes_lower_bound_on_all_scenarios() {
-        let algo = bf_default();
-        for scenario in split_scenarios::all() {
-            let (market, gm) = scenario.build_market();
-            evaluate_scenario(&algo, &scenario, market, gm)
-                .await
-                .assert_meets_lower_bound();
-        }
-    }
 
     #[tokio::test]
     async fn evaluate_returns_path_count_1_for_single_route_algorithm() {
@@ -628,5 +647,42 @@ mod tests {
             assert!(scenario.analytical_optimum >= scenario.lower_bound);
             let _ = scenario.build_market();
         }
+    }
+
+    #[tokio::test]
+    async fn test_bf_lower_bounds() {
+        let bf = BellmanFordAlgorithm::with_config(
+            AlgorithmConfig::new(1, 4, Duration::from_millis(100), None).unwrap(),
+        )
+        .unwrap();
+        for scenario in split_scenarios::all() {
+            let name = scenario.name;
+            let (market, gm) = scenario.build_market();
+            let result = evaluate_scenario(&bf, &scenario, market, gm).await;
+            assert_eq!(
+                result.net_output, result.lower_bound,
+                "BF output doesn't match claimed lower bound for scenario '{name}'",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shared_hop_split_lower_bound() {
+        // BF on double_split finds the best single 2-hop route via the largest pool at each hop
+        // (pool_ab_1 → pool_bc_2). Confirms the lower bound is set correctly before any
+        // split-routing algorithm is evaluated against it.
+        let scenario = split_scenarios::double_split();
+        let bf = BellmanFordAlgorithm::with_config(
+            AlgorithmConfig::new(1, 4, Duration::from_millis(100), None).unwrap(),
+        )
+        .unwrap();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&bf, &scenario, market, gm).await;
+
+        assert_eq!(result.path_count, 1, "BF should return a single route");
+        assert_eq!(
+            result.net_output, scenario.lower_bound,
+            "BF on double_split should match the precomputed lower bound",
+        );
     }
 }
