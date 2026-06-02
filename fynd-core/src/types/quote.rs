@@ -992,10 +992,12 @@ impl BlockInfo {
 // ROUTE & SWAP TYPES
 // ============================================================================
 
-/// A route consisting of one or more sequential swaps.
+/// A route consisting of one or more swaps, either sequential or split.
 ///
 /// A route describes the path through liquidity pools to execute a swap.
-/// For multi-hop swaps, the output of each swap becomes the input of the next.
+/// For sequential (multi-hop) swaps, the output of each swap becomes the input
+/// of the next. For split swaps, the input is divided across multiple parallel
+/// paths (each swap carries a `split` fraction).
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
