@@ -129,8 +129,8 @@ pub(crate) struct ScenarioResult {
 }
 
 impl ScenarioResult {
-    pub fn assert_meets_lower_bound(&self) {
-        self.assert_bound(self.net_output >= self.lower_bound, ">=");
+    pub fn assert_equals_lower_bound(&self) {
+        self.assert_bound(self.net_output == self.lower_bound, "==");
     }
 
     #[allow(dead_code)]
@@ -576,17 +576,6 @@ mod tests {
     // ==================== evaluate_scenario tests ====================
 
     #[tokio::test]
-    async fn evaluate_bellman_ford_passes_lower_bound_on_all_scenarios() {
-        let algo = bf_default();
-        for scenario in split_scenarios::all() {
-            let (market, gm) = scenario.build_market();
-            evaluate_scenario(&algo, &scenario, market, gm)
-                .await
-                .assert_meets_lower_bound();
-        }
-    }
-
-    #[tokio::test]
     async fn evaluate_returns_path_count_1_for_single_route_algorithm() {
         let algo = bf_default();
         // BellmanFord finds a single best route, so path_count is always 1.
@@ -666,13 +655,10 @@ mod tests {
         )
         .unwrap();
         for scenario in split_scenarios::all() {
-            let name = scenario.name;
             let (market, gm) = scenario.build_market();
-            let result = evaluate_scenario(&bf, &scenario, market, gm).await;
-            assert_eq!(
-                result.net_output, result.lower_bound,
-                "BF output doesn't match claimed lower bound for scenario '{name}'",
-            );
+            evaluate_scenario(&bf, &scenario, market, gm)
+                .await
+                .assert_equals_lower_bound();
         }
     }
 
