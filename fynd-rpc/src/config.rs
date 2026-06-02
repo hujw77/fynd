@@ -169,18 +169,18 @@ pub mod defaults {
 
     /// Returns the default public JSON-RPC URL for the given chain, used when none is provided.
     ///
-    /// These are free, rate-limited public endpoints intended for local development. Provide a
-    /// dedicated `--rpc-url` for production.
+    /// Free, keyless, rate-limited endpoints for local development. Provide a dedicated
+    /// `--rpc-url` for production.
     ///
     /// Returns an error if the chain is not recognized.
     pub fn default_rpc_url(chain: &str) -> Result<&str, String> {
         match chain.to_lowercase().as_str() {
-            "ethereum" => Ok("https://eth.llamarpc.com"),
-            "base" => Ok("https://mainnet.base.org"),
-            "unichain" => Ok("https://mainnet.unichain.org"),
+            "ethereum" => Ok("https://eth.drpc.org"),
+            "base" => Ok("https://base.drpc.org"),
+            "unichain" => Ok("https://unichain.drpc.org"),
             "bsc" => Ok("https://bsc-dataseed.bnbchain.org"),
-            "arbitrum" => Ok("https://arb1.arbitrum.io/rpc"),
-            "polygon" => Ok("https://polygon-rpc.com"),
+            "arbitrum" => Ok("https://arbitrum.drpc.org"),
+            "polygon" => Ok("https://polygon.drpc.org"),
             other => Err(format!(
                 "no default RPC URL for chain '{}'. Please provide --rpc-url explicitly.",
                 other
