@@ -20,7 +20,10 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::{
-    algorithm::{AlgorithmConfig, BellmanFordAlgorithm, MostLiquidAlgorithm},
+    algorithm::{
+        path_frank_wolfe::PathFrankWolfeConfig, AlgorithmConfig, BellmanFordAlgorithm,
+        MostLiquidAlgorithm, PathFrankWolfeAlgorithm,
+    },
     derived::{events::DerivedDataEvent, SharedDerivedDataRef},
     feed::{events::MarketEvent, market_data::MarketData},
     types::internal::SolveTask,
@@ -28,7 +31,8 @@ use crate::{
 };
 
 /// List of available built-in algorithm names (for registry-based dispatch).
-pub(crate) const AVAILABLE_ALGORITHMS: &[&str] = &["most_liquid", "bellman_ford"];
+pub(crate) const AVAILABLE_ALGORITHMS: &[&str] =
+    &["most_liquid", "bellman_ford", "path_frank_wolfe"];
 
 /// Default algorithm to use if none specified.
 pub(crate) const DEFAULT_ALGORITHM: &str = "most_liquid";
@@ -109,6 +113,7 @@ impl AlgorithmSpawner {
             Self::Registry { algorithm } => match algorithm.as_str() {
                 "most_liquid" => Ok(spawn_most_liquid_workers(params)),
                 "bellman_ford" => Ok(spawn_bellman_ford_workers(params)),
+                "path_frank_wolfe" => Ok(spawn_path_frank_wolfe_workers(params)),
                 _ => Err(UnknownAlgorithmError { name: algorithm }),
             },
             Self::Custom { spawner, .. } => Ok(spawner(params)),
@@ -204,6 +209,15 @@ fn spawn_bellman_ford_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>>
     let factory = |config: AlgorithmConfig| {
         BellmanFordAlgorithm::with_config(config)
             .expect("invalid worker configuration for BellmanFordAlgorithm")
+    };
+    spawn_workers_generic(params, &factory)
+}
+
+/// Spawns workers for the PathFrankWolfe split-routing algorithm.
+fn spawn_path_frank_wolfe_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> {
+    let factory = |config: AlgorithmConfig| {
+        PathFrankWolfeAlgorithm::new(config, PathFrankWolfeConfig::default())
+            .expect("invalid worker configuration for PathFrankWolfeAlgorithm")
     };
     spawn_workers_generic(params, &factory)
 }
