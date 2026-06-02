@@ -126,7 +126,11 @@ impl TychoFeed {
                 self.config.min_tvl / self.config.tvl_buffer_ratio,
                 self.config.min_tvl,
             )
-            .blocklist(self.config.blocklisted_components.clone());
+            .blocklist(
+                self.config
+                    .blocklisted_components
+                    .clone(),
+            );
 
             let mut stream_builder = register_exchanges(
                 ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)

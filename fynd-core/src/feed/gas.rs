@@ -14,10 +14,7 @@ pub(crate) struct GasPriceFetcher<C: FeePriceGetter<FeePrice = BlockGasPrice>> {
 }
 
 impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
-    pub(crate) fn new(
-        client: C,
-        shared_market_data: MarketData,
-    ) -> (Self, mpsc::Sender<()>) {
+    pub(crate) fn new(client: C, shared_market_data: MarketData) -> (Self, mpsc::Sender<()>) {
         let (signal_tx, signal_rx) = mpsc::channel(5);
         (Self { client, signal_rx, shared_market_data }, signal_tx)
     }
@@ -158,12 +155,9 @@ mod tests {
         );
 
         // Second signal → mock succeeds → gas price updated.
-        trigger_and_wait(
-            &signal_tx,
-            &market_data,
-            Duration::from_secs(2),
-            |m| m.gas_price().is_some(),
-        )
+        trigger_and_wait(&signal_tx, &market_data, Duration::from_secs(2), |m| {
+            m.gas_price().is_some()
+        })
         .await;
 
         drop(signal_tx);
@@ -199,12 +193,9 @@ mod tests {
         }
 
         // 4th signal → mock succeeds → fetcher recovers.
-        trigger_and_wait(
-            &signal_tx,
-            &market_data,
-            Duration::from_secs(2),
-            |m| m.gas_price().is_some(),
-        )
+        trigger_and_wait(&signal_tx, &market_data, Duration::from_secs(2), |m| {
+            m.gas_price().is_some()
+        })
         .await;
 
         drop(signal_tx);

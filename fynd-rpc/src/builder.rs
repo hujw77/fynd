@@ -163,7 +163,9 @@ impl FyndRPCBuilder {
     /// finalization, reducing latency. Only supported for on-chain protocols; RFQ streams are
     /// unaffected.
     pub fn partial_blocks(mut self, enabled: bool) -> Self {
-        self.fynd_builder = self.fynd_builder.partial_blocks(enabled);
+        self.fynd_builder = self
+            .fynd_builder
+            .partial_blocks(enabled);
         self
     }
 
