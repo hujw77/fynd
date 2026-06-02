@@ -58,7 +58,7 @@ type Subgraph =
 /// Everything needed to call `find_single_route` repeatedly without redoing setup.
 ///
 /// Built once by `build_context`, which acquires the market and derived locks and snapshots all
-/// relevant state. `find_single_route` uses this snapshot directly — no lock re-acquisition — so
+/// relevant states. `find_single_route` uses this snapshot directly — no lock re-acquisition — so
 /// all route evaluations within one order see a consistent view of the same block's pool states.
 pub(crate) struct BellmanFordContext {
     pub(crate) token_in_node: NodeIndex,
@@ -87,6 +87,18 @@ pub(crate) enum RouteScoringMode {
 pub(crate) struct FindRouteOptions {
     /// Pool state overrides: degrade or zero-gas specific pools without modifying market data.
     pub(crate) overrides: MarketOverrides,
+}
+
+/// Output of the SPFA relaxation pass: per-node best-path arrays.
+struct SpfaResult {
+    /// Best gross output amount reachable at each node index.
+    amount: Vec<BigUint>,
+    /// The (predecessor node, pool) that last improved each node's amount.
+    predecessor: Vec<Option<(NodeIndex, ComponentId)>>,
+    /// Gas consumed by the edge that last improved each node's amount.
+    edge_gas: Vec<BigUint>,
+    /// Cumulative spot-price product from token_in to each node (for gas fallback).
+    spot_product: Vec<f64>,
 }
 
 /// Bellman-Ford algorithm with SPFA optimisation for simulation-driven DEX routing.
@@ -152,6 +164,14 @@ impl BellmanFordAlgorithm {
                 to: order.token_out().clone(),
                 reason: NoPathReason::DestinationTokenNotInGraph,
             })?;
+
+        if token_in_node == token_out_node {
+            return Err(AlgorithmError::NoPath {
+                from: order.token_in().clone(),
+                to: order.token_out().clone(),
+                reason: NoPathReason::NoGraphPath,
+            });
+        }
 
         // BFS from token_in up to max_hops, building adjacency list and component set.
         let (adj, token_nodes, component_ids) =
@@ -235,7 +255,69 @@ impl BellmanFordAlgorithm {
     ) -> Result<RouteResult, AlgorithmError> {
         let start = Instant::now();
 
-        // SPFA relaxation with forbid-revisits.
+        let spfa = self.run_spfa(ctx, order, &opts.overrides, start);
+
+        let out_idx = ctx.token_out_node.index();
+        if spfa.amount[out_idx].is_zero() {
+            return Err(AlgorithmError::NoPath {
+                from: order.token_in().clone(),
+                to: order.token_out().clone(),
+                reason: NoPathReason::NoGraphPath,
+            });
+        }
+
+        // Reconstruct path and build route directly from stored distances/gas
+        // (no re-simulation needed since forbid-revisits guarantees relaxation
+        // amounts match sequential execution).
+        let path_edges =
+            Self::reconstruct_path(ctx.token_out_node, ctx.token_in_node, &spfa.predecessor)?;
+
+        let route =
+            Self::build_route(ctx, &path_edges, &spfa.amount, &spfa.edge_gas, &opts.overrides)?;
+
+        let final_amount_out = spfa.amount[out_idx].clone();
+        let gas_price = ctx
+            .gas_price_wei
+            .clone()
+            .unwrap_or_default();
+
+        let net_amount_out = Self::compute_net_amount_out(
+            &final_amount_out,
+            &route,
+            &gas_price,
+            ctx.token_prices.as_ref(),
+            &spfa.spot_product,
+            &ctx.node_address,
+            ctx.token_in_node,
+        )?;
+
+        let result = RouteResult::new(route, net_amount_out, gas_price);
+
+        let solve_time_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            solve_time_ms,
+            hops = result.route().swaps().len(),
+            amount_in = %order.amount(),
+            amount_out = %final_amount_out,
+            net_amount_out = %result.net_amount_out(),
+            "bellman_ford route found"
+        );
+
+        Ok(result)
+    }
+
+    /// Runs SPFA (Shortest Path Faster Algorithm) relaxation over the subgraph and returns per-node
+    /// best-path arrays.
+    ///
+    /// Simulation failures are silently skipped (the edge is dropped). Returns the arrays
+    /// even if the destination was not reached — callers check `amount[out_idx].is_zero()`.
+    fn run_spfa(
+        &self,
+        ctx: &BellmanFordContext,
+        order: &Order,
+        overrides: &MarketOverrides,
+        start: Instant,
+    ) -> SpfaResult {
         // amount[node] = best gross output reachable at that node.
         // edge_gas[node] = gas for the edge that last improved amount[node].
         // cumul_gas[node] = total gas along the best path to this node.
@@ -308,7 +390,7 @@ impl BellmanFordAlgorithm {
 
                     // Overrides market data if passed in options
                     let sim: &dyn tycho_simulation::tycho_common::simulation::protocol_sim::ProtocolSim =
-                        if let Some(s) = opts.overrides.get(component_id) {
+                        if let Some(s) = overrides.get(component_id) {
                             s
                         } else if let Some(s) = ctx.market_data.get_simulation_state(component_id) {
                             s
@@ -384,25 +466,21 @@ impl BellmanFordAlgorithm {
             active_nodes.sort_unstable();
         }
 
-        // Check if destination was reached.
-        let out_idx = ctx.token_out_node.index();
-        if amount[out_idx].is_zero() {
-            return Err(AlgorithmError::NoPath {
-                from: order.token_in().clone(),
-                to: order.token_out().clone(),
-                reason: NoPathReason::NoGraphPath,
-            });
-        }
+        SpfaResult { amount, predecessor, edge_gas, spot_product }
+    }
 
-        // Reconstruct path and build route directly from stored distances/gas
-        // (no re-simulation needed since forbid-revisits guarantees relaxation
-        // amounts match sequential execution).
-        let path_edges =
-            Self::reconstruct_path(ctx.token_out_node, ctx.token_in_node, &predecessor)?;
-
+    /// Constructs a [`Route`] from a reconstructed path and SPFA output arrays.
+    fn build_route(
+        ctx: &BellmanFordContext,
+        path_edges: &[(NodeIndex, NodeIndex, ComponentId)],
+        amount: &[BigUint],
+        edge_gas: &[BigUint],
+        overrides: &MarketOverrides,
+    ) -> Result<Route, AlgorithmError> {
         let mut swaps = Vec::with_capacity(path_edges.len());
         let mut tokens: HashMap<Address, Token> = HashMap::new();
-        for (from_node, to_node, component_id) in &path_edges {
+
+        for (from_node, to_node, component_id) in path_edges {
             let token_in = ctx
                 .token_map
                 .get(from_node)
@@ -425,8 +503,7 @@ impl BellmanFordAlgorithm {
                     id: Some(component_id.clone()),
                 })?;
             // Use the override's sim state if available so the route reflects overridden pools.
-            let sim_state = opts
-                .overrides
+            let sim_state = overrides
                 .get(component_id)
                 .or_else(|| {
                     ctx.market_data
@@ -456,36 +533,7 @@ impl BellmanFordAlgorithm {
                 .or_insert_with(|| token_out.clone());
         }
 
-        let route = Route::new(swaps, tokens);
-        let final_amount_out = amount[out_idx].clone();
-        let gas_price = ctx
-            .gas_price_wei
-            .clone()
-            .unwrap_or_default();
-
-        let net_amount_out = Self::compute_net_amount_out(
-            &final_amount_out,
-            &route,
-            &gas_price,
-            ctx.token_prices.as_ref(),
-            &spot_product,
-            &ctx.node_address,
-            ctx.token_in_node,
-        );
-
-        let result = RouteResult::new(route, net_amount_out, gas_price);
-
-        let solve_time_ms = start.elapsed().as_millis() as u64;
-        debug!(
-            solve_time_ms,
-            hops = result.route().swaps().len(),
-            amount_in = %order.amount(),
-            amount_out = %final_amount_out,
-            net_amount_out = %result.net_amount_out(),
-            "bellman_ford route found"
-        );
-
-        Ok(result)
+        Ok(Route::new(swaps, tokens))
     }
 
     /// Computes gas-adjusted net amount: gross_amount - gas_cost_in_token.
@@ -645,14 +693,14 @@ impl BellmanFordAlgorithm {
         let mut adj: HashMap<NodeIndex, Vec<(NodeIndex, ComponentId)>> = HashMap::new();
         let mut token_nodes: HashSet<NodeIndex> = HashSet::new();
         let mut component_ids: HashSet<ComponentId> = HashSet::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
+        let mut visited_nodes = HashSet::new();
+        let mut queued_nodes = VecDeque::new();
 
-        visited.insert(token_in_node);
+        visited_nodes.insert(token_in_node);
         token_nodes.insert(token_in_node);
-        queue.push_back((token_in_node, 0usize));
+        queued_nodes.push_back((token_in_node, 0usize));
 
-        while let Some((node, depth)) = queue.pop_front() {
+        while let Some((node, depth)) = queued_nodes.pop_front() {
             if depth >= max_hops {
                 continue;
             }
@@ -666,8 +714,8 @@ impl BellmanFordAlgorithm {
                 component_ids.insert(cid);
                 token_nodes.insert(target);
 
-                if visited.insert(target) {
-                    queue.push_back((target, depth + 1));
+                if visited_nodes.insert(target) {
+                    queued_nodes.push_back((target, depth + 1));
                 }
             }
         }
@@ -697,16 +745,16 @@ impl BellmanFordAlgorithm {
         spot_product: &[f64],
         node_address: &HashMap<NodeIndex, Address>,
         token_in_node: NodeIndex,
-    ) -> BigInt {
-        let Some(last_swap) = route.swaps().last() else {
-            return BigInt::from(amount_out.clone());
-        };
+    ) -> Result<BigInt, AlgorithmError> {
+        let last_swap = route.swaps().last().ok_or_else(|| {
+            AlgorithmError::Other("compute_net_amount_out called with empty route".to_string())
+        })?;
 
         let total_gas = route.total_gas();
 
         if gas_price.is_zero() {
             warn!("missing gas price, returning gross amount_out");
-            return BigInt::from(amount_out.clone());
+            return Ok(BigInt::from(amount_out.clone()));
         }
 
         let gas_cost_wei = &total_gas * gas_price;
@@ -726,7 +774,7 @@ impl BellmanFordAlgorithm {
             node_address.get(&token_in_node),
         );
 
-        match output_price {
+        Ok(match output_price {
             Some(price) if !price.denominator.is_zero() => {
                 let gas_cost = &gas_cost_wei * &price.numerator / &price.denominator;
                 BigInt::from(amount_out.clone()) - BigInt::from(gas_cost)
@@ -735,7 +783,7 @@ impl BellmanFordAlgorithm {
                 warn!("no gas price for output token, returning gross amount_out");
                 BigInt::from(amount_out.clone())
             }
-        }
+        })
     }
 }
 
@@ -1614,7 +1662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_route_options_default_is_no_overrides() {
+    async fn test_single_find_route_options_default() {
         use super::super::split_primitives::MarketOverrides;
 
         let token_a = token(0x01, "A");
