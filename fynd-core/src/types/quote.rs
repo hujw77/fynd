@@ -2217,6 +2217,24 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_split_topology_with_all_zero_splits() {
+        // Diamond topology but all split fractions are 0.0.
+        // is_split() returns false, so validate_sequential_route() runs
+        // and rejects the route (connectivity breaks at the second A→ swap).
+        //   ┌──[0.0]── B ──┐
+        // A │               D
+        //   └──[0.0]── C ──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D
+            make_swap(0x03, 0x04, 490, 480),  // C→D
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_err());
+    }
+
+    #[test]
     fn test_is_split_detection() {
         // A → B                     (no split)
         let route_single = make_route(vec![(0x01, 0x02)]);
