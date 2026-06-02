@@ -1330,19 +1330,18 @@ fn validate_dead_ends(
     non_first_input_tokens: &HashSet<&Address>,
     terminal_token: &Address,
 ) -> Result<(), RouteValidationError> {
-    for (_, group) in swaps_by_token_in {
-        for swap in group {
-            if !non_first_input_tokens.contains(&swap.token_out) &&
-                &swap.token_out != terminal_token
-            {
-                return Err(RouteValidationError::InvalidSplit {
-                    reason: format!(
-                        "swap output {} is a dead end — not consumed by any \
-                         later group and not the terminal token {terminal_token}",
-                        swap.token_out
-                    ),
-                });
-            }
+    for swap in swaps_by_token_in
+        .iter()
+        .flat_map(|(_, swaps)| swaps)
+    {
+        if !non_first_input_tokens.contains(&swap.token_out) && &swap.token_out != terminal_token {
+            return Err(RouteValidationError::InvalidSplit {
+                reason: format!(
+                    "swap output {} is a dead end — not consumed by any \
+                     later group and not the terminal token {terminal_token}",
+                    swap.token_out
+                ),
+            });
         }
     }
     Ok(())
