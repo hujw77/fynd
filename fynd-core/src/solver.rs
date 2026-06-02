@@ -308,9 +308,10 @@ struct CustomPoolEntry {
 }
 
 /// Builder for assembling the full solver pipeline.
-#[must_use = "a builder does nothing until .build() is called"]
+///
 /// Configures the Tycho market-data feed, gas price fetcher, derived-data
 /// computation manager, one or more worker pools, encoder, and router.
+#[must_use = "a builder does nothing until .build() is called"]
 pub struct FyndBuilder {
     chain: Chain,
     tycho_url: String,
@@ -325,6 +326,7 @@ pub struct FyndBuilder {
     gas_refresh_interval: Duration,
     reconnect_delay: Duration,
     blocklisted_components: HashSet<String>,
+    partial_blocks: bool,
     router_timeout: Duration,
     router_min_responses: usize,
     encoder: Option<Encoder>,
@@ -356,6 +358,7 @@ impl FyndBuilder {
             gas_refresh_interval: defaults::GAS_REFRESH_INTERVAL,
             reconnect_delay: defaults::RECONNECT_DELAY,
             blocklisted_components: HashSet::new(),
+            partial_blocks: false,
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
             router_min_responses: defaults::ROUTER_MIN_RESPONSES,
             encoder: None,
@@ -422,6 +425,16 @@ impl FyndBuilder {
     /// Sets component IDs to exclude from the Tycho stream.
     pub fn blocklisted_components(mut self, components: HashSet<String>) -> Self {
         self.blocklisted_components = components;
+        self
+    }
+
+    /// Enables partial block (flashblock) updates from the Tycho stream (default: `false`).
+    ///
+    /// When enabled, the stream delivers pool state updates mid-block rather than only at
+    /// finalization, reducing latency. Only supported for on-chain protocols; RFQ streams are
+    /// unaffected.
+    pub fn partial_blocks(mut self, enabled: bool) -> Self {
+        self.partial_blocks = enabled;
         self
     }
 
@@ -573,20 +586,19 @@ impl FyndBuilder {
             self.min_tvl,
         )
         .tvl_buffer_ratio(self.tvl_buffer_ratio)
-        .gas_refresh_interval(self.gas_refresh_interval)
         .reconnect_delay(self.reconnect_delay)
         .min_token_quality(self.min_token_quality)
         .traded_n_days_ago(self.traded_n_days_ago)
-        .blocklisted_components(self.blocklisted_components);
+        .blocklisted_components(self.blocklisted_components)
+        .partial_blocks(self.partial_blocks);
 
         let ethereum_client = EthereumRpcClient::new(self.rpc_url.as_str())
             .map_err(|e| SolverBuildError::RpcClient(e.to_string()))?;
 
-        let (mut gas_price_fetcher, gas_price_worker_signal_tx) =
-            GasPriceFetcher::new(ethereum_client, market_data.clone());
+        let mut gas_price_fetcher =
+            GasPriceFetcher::new(ethereum_client, market_data.clone(), self.gas_refresh_interval);
 
-        let mut tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
-        tycho_feed = tycho_feed.with_gas_price_worker_signal_tx(gas_price_worker_signal_tx);
+        let tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
 
         let gas_token = native_token(&self.chain).map_err(|_| SolverBuildError::GasToken)?;
         let computation_config = ComputationManagerConfig::new()
@@ -711,9 +723,7 @@ impl FyndBuilder {
         });
 
         let gas_price_handle = tokio::spawn(async move {
-            if let Err(e) = gas_price_fetcher.run().await {
-                tracing::error!(error = %e, "gas price fetcher error");
-            }
+            gas_price_fetcher.run().await;
         });
 
         let computation_handle = tokio::spawn(async move {

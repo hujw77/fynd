@@ -14,7 +14,8 @@
 * [Encoding Options](guides/encoding-options.md)
 * [Swap CLI](guides/swap-cli.md)
 * [Price Guard](guides/price-guard.md)
-* [Client Fees](guides/client-fees.md)
+* [Fynd Fees](guides/router-fees.md)
+* [Charge Fees on your Swaps](guides/client-fees.md)
 * [Benchmarking](guides/benchmarking.md)
 * [Custom Algorithm](guides/custom-algorithm.md)
 

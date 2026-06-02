@@ -7,10 +7,7 @@
 
 use std::collections::HashSet;
 
-use tokio::{
-    sync::{broadcast, mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::{sync::broadcast, task::JoinHandle};
 use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, span, trace, Instrument, Level};
 use tycho_simulation::{
@@ -48,8 +45,6 @@ pub(crate) struct TychoFeed {
     market_data: MarketData,
     /// Event broadcaster.
     event_tx: broadcast::Sender<MarketEvent>,
-    /// Signal channel to notify the gas price worker to refresh gas price.
-    gas_price_worker_signal_tx: Option<mpsc::Sender<oneshot::Sender<()>>>,
 }
 
 impl TychoFeed {
@@ -62,21 +57,12 @@ impl TychoFeed {
     pub(crate) fn new(config: TychoFeedConfig, market_data: MarketData) -> Self {
         let (event_tx, _event_rx) = broadcast::channel(1024);
 
-        Self { config, market_data, event_tx, gas_price_worker_signal_tx: None }
+        Self { config, market_data, event_tx }
     }
 
     /// Returns a new subscriber for market events.
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<MarketEvent> {
         self.event_tx.subscribe()
-    }
-
-    /// Sets the signal channel to notify the gas price worker to refresh gas price.
-    /// If not set, gas price refresh will not be triggered by the TychoFeed.
-    pub(crate) fn with_gas_price_worker_signal_tx(
-        self,
-        gas_price_worker_signal_tx: mpsc::Sender<oneshot::Sender<()>>,
-    ) -> Self {
-        Self { gas_price_worker_signal_tx: Some(gas_price_worker_signal_tx), ..self }
     }
 
     /// Returns an additional event sender. Currently only used for testing.
@@ -122,30 +108,37 @@ impl TychoFeed {
             .iter()
             .all(|p| p.starts_with("rfq:"))
         {
-            // Spawn protocol stream
+            let tvl_filter = ComponentFilter::with_tvl_range(
+                self.config.min_tvl / self.config.tvl_buffer_ratio,
+                self.config.min_tvl,
+            )
+            .blocklist(
+                self.config
+                    .blocklisted_components
+                    .clone(),
+            );
+
+            let mut stream_builder = register_exchanges(
+                ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
+                    .skip_state_decode_failures(true),
+                tvl_filter,
+                &self.config.protocols,
+            )?
+            .auth_key(self.config.tycho_api_key.clone())
+            .skip_state_decode_failures(true)
+            .min_token_quality(self.config.min_token_quality as u32);
+
+            if self.config.partial_blocks {
+                stream_builder = stream_builder.enable_partial_blocks();
+            }
+
             Some(
-                register_exchanges(
-                    ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
-                        .skip_state_decode_failures(true),
-                    ComponentFilter::with_tvl_range(
-                        self.config.min_tvl / self.config.tvl_buffer_ratio,
-                        self.config.min_tvl,
-                    )
-                    .blocklist(
-                        self.config
-                            .blocklisted_components
-                            .clone(),
-                    ),
-                    &self.config.protocols,
-                )?
-                .auth_key(self.config.tycho_api_key.clone())
-                .skip_state_decode_failures(true)
-                .min_token_quality(self.config.min_token_quality as u32)
-                .set_tokens(all_tokens.clone())
-                .await
-                .build()
-                .await
-                .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
+                stream_builder
+                    .set_tokens(all_tokens.clone())
+                    .await
+                    .build()
+                    .await
+                    .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
             )
         } else {
             None
@@ -199,9 +192,6 @@ impl TychoFeed {
                         Some(msg) => {
                             trace!("Received message from protocol stream: {:?}", msg);
                             let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                            // Refresh gas price before broadcasting the event so that
-                            // ComputationManager has gas price available when it starts computing.
-                            self.refresh_gas_price().await?;
                             self.handle_tycho_message(msg).await?;
                         }
                         None => {
@@ -370,31 +360,6 @@ impl TychoFeed {
                 .map_err(|e| DataFeedError::EventChannelError(e.to_string()))?;
         }
 
-        Ok(())
-    }
-
-    /// Updates gas price from RPC.
-    async fn refresh_gas_price(&self) -> Result<(), DataFeedError> {
-        if let Some(gas_price_worker_signal_tx) = &self.gas_price_worker_signal_tx {
-            let (signal_tx, signal_rx) = oneshot::channel();
-
-            gas_price_worker_signal_tx
-                .send(signal_tx)
-                .await
-                .map_err(|e| {
-                    DataFeedError::GasPriceFetcherError(format!(
-                        "Failed to send gas price refresh signal: {}",
-                        e
-                    ))
-                })?;
-
-            signal_rx.await.map_err(|e| {
-                DataFeedError::GasPriceFetcherError(format!(
-                    "Failed to receive gas price refresh confirmation: {}",
-                    e
-                ))
-            })?;
-        }
         Ok(())
     }
 }

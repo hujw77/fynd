@@ -29,7 +29,8 @@ pub struct Quoter {
 
 impl Quoter {
     pub async fn connect(fynd_url: &str, rpc_url: &str, sender: Address) -> anyhow::Result<Self> {
-        let client = FyndClientBuilder::new(fynd_url, rpc_url)
+        let client = FyndClientBuilder::new(fynd_url)
+            .with_rpc_url(rpc_url)
             .with_sender(sender)
             .build()
             .await?;

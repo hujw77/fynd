@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use alloy::{
     primitives::{aliases::U48, keccak256, Address, Keccak256, U160, U256},
@@ -25,8 +25,27 @@ use crate::{EncodingOptions, FeeBreakdown, OrderQuote, QuoteStatus, SolveError, 
 /// Canonical Permit2 contract address — identical on all EVM chains.
 pub const PERMIT2_ADDRESS: &str = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
-/// Router fee on swap output amount: 10 basis points (0.1%).
-const ROUTER_FEE_ON_OUTPUT_BPS: u64 = 10;
+static ROUTER_FEE_ON_OUTPUT_BPS: OnceLock<u64> = OnceLock::new();
+
+fn router_fee_on_output_bps() -> u64 {
+    *ROUTER_FEE_ON_OUTPUT_BPS.get_or_init(|| {
+        std::env::var("ROUTER_FEE_BPS")
+            .ok()
+            .and_then(|v| {
+                v.parse()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            value = %v,
+                            error = %e,
+                            "ROUTER_FEE_BPS is not a valid u64; using default (10)"
+                        );
+                    })
+                    .ok()
+            })
+            .unwrap_or(10)
+    })
+}
+
 /// Router's share of the client fee: 2000 basis points (20%).
 const ROUTER_FEE_ON_CLIENT_FEE_BPS: u64 = 2000;
 
@@ -404,7 +423,7 @@ impl Encoder {
             client_portion = total_client_fee - &router_fee_on_client;
         }
 
-        let router_fee_on_output = swap_output * ROUTER_FEE_ON_OUTPUT_BPS / 10_000u64;
+        let router_fee_on_output = swap_output * router_fee_on_output_bps() / 10_000u64;
         let total_router_fee = router_fee_on_client + router_fee_on_output;
 
         let amount_after_fees = swap_output - &client_portion - &total_router_fee;
