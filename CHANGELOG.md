@@ -1,3 +1,10 @@
+## [0.65.0](https://github.com/propeller-heads/fynd/compare/0.64.0...0.65.0) (2026-06-02)
+
+
+### Features
+
+* add router fee env var ([33db956](https://github.com/propeller-heads/fynd/commit/33db9560e2be0935d87c013aeb2d3d2ee5ce0951))
+
 ## [0.64.0](https://github.com/propeller-heads/fynd/compare/0.63.0...0.64.0) (2026-06-01)
 
 
