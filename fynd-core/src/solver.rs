@@ -586,7 +586,6 @@ impl FyndBuilder {
             self.min_tvl,
         )
         .tvl_buffer_ratio(self.tvl_buffer_ratio)
-        .gas_refresh_interval(self.gas_refresh_interval)
         .reconnect_delay(self.reconnect_delay)
         .min_token_quality(self.min_token_quality)
         .traded_n_days_ago(self.traded_n_days_ago)
@@ -596,11 +595,10 @@ impl FyndBuilder {
         let ethereum_client = EthereumRpcClient::new(self.rpc_url.as_str())
             .map_err(|e| SolverBuildError::RpcClient(e.to_string()))?;
 
-        let (mut gas_price_fetcher, gas_price_worker_signal_tx) =
-            GasPriceFetcher::new(ethereum_client, market_data.clone());
+        let mut gas_price_fetcher =
+            GasPriceFetcher::new(ethereum_client, market_data.clone(), self.gas_refresh_interval);
 
-        let mut tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
-        tycho_feed = tycho_feed.with_gas_price_worker_signal_tx(gas_price_worker_signal_tx);
+        let tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
 
         let gas_token = native_token(&self.chain).map_err(|_| SolverBuildError::GasToken)?;
         let computation_config = ComputationManagerConfig::new()
@@ -725,9 +723,7 @@ impl FyndBuilder {
         });
 
         let gas_price_handle = tokio::spawn(async move {
-            if let Err(e) = gas_price_fetcher.run().await {
-                tracing::error!(error = %e, "gas price fetcher error");
-            }
+            gas_price_fetcher.run().await;
         });
 
         let computation_handle = tokio::spawn(async move {

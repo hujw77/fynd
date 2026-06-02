@@ -1,30 +1,36 @@
+use std::time::Duration;
+
 use chrono::Utc;
 use metrics::{counter, gauge};
-use tokio::sync::mpsc;
+use tokio::time::{interval, MissedTickBehavior};
 use tracing::warn;
 use tycho_simulation::{tycho_core::traits::FeePriceGetter, tycho_ethereum::gas::BlockGasPrice};
 
-use crate::feed::{market_data::MarketData, DataFeedError};
+use crate::feed::market_data::MarketData;
 
 // TODO: Refactor gas price fetching into a `DerivedComputation`.
 pub(crate) struct GasPriceFetcher<C: FeePriceGetter<FeePrice = BlockGasPrice>> {
     client: C,
-    signal_rx: mpsc::Receiver<()>,
+    refresh_interval: Duration,
     shared_market_data: MarketData,
 }
 
 impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
-    pub(crate) fn new(client: C, shared_market_data: MarketData) -> (Self, mpsc::Sender<()>) {
-        let (signal_tx, signal_rx) = mpsc::channel(5);
-        (Self { client, signal_rx, shared_market_data }, signal_tx)
+    pub(crate) fn new(
+        client: C,
+        shared_market_data: MarketData,
+        refresh_interval: Duration,
+    ) -> Self {
+        Self { client, refresh_interval, shared_market_data }
     }
 
-    pub(crate) async fn run(&mut self) -> Result<(), DataFeedError> {
+    pub(crate) async fn run(&mut self) {
+        let mut ticker = interval(self.refresh_interval);
+        // Skip missed ticks rather than catching up — fetches are best-effort.
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
-            self.signal_rx
-                .recv()
-                .await
-                .ok_or(DataFeedError::GasPriceFetcherError("Trigger channel closed".to_string()))?;
+            ticker.tick().await;
 
             let fee_price = match self.client.get_latest_fee_price().await {
                 Ok(price) => price,
@@ -36,25 +42,16 @@ impl<C: FeePriceGetter<FeePrice = BlockGasPrice>> GasPriceFetcher<C> {
             };
 
             let mut lock = self.shared_market_data.write().await;
-            let update_block_number = fee_price.block_number;
-            lock.update_gas_price(fee_price);
-            if let Some(last_block_info) = lock.last_updated() {
-                let update_lag_ms =
-                    Utc::now().timestamp_millis() - (last_block_info.timestamp() as i64 * 1000);
-                gauge!("gas_price_update_lag_ms").set(update_lag_ms as f64);
-
-                if last_block_info
-                    .number()
-                    .abs_diff(update_block_number) >
-                    3
-                {
-                    warn!(
-                        gas_price_block = update_block_number,
-                        last_tycho_block = last_block_info.number(),
-                        "gas price is more than 3 blocks ahead of the last Tycho update"
-                    );
-                }
+            let update_lag_ms =
+                Utc::now().timestamp_millis() - (fee_price.block_timestamp as i64 * 1000);
+            gauge!("gas_price_update_lag_ms").set(update_lag_ms as f64);
+            if update_lag_ms > 60_000 {
+                warn!(
+                    lag_ms = update_lag_ms,
+                    "gas price is more than 60s stale; RPC node may be behind"
+                );
             }
+            lock.update_gas_price(fee_price);
         }
     }
 }
@@ -71,9 +68,9 @@ mod tests {
     use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
 
     use super::*;
+    use crate::feed::market_data::{MarketData, MarketDataView};
 
-    /// Mock client that returns errors for the first `fail_count` calls,
-    /// then succeeds with a fixed gas price.
+    /// Mock client that fails on the first `fail_count` calls then succeeds.
     struct MockFeePriceGetter {
         call_count: AtomicUsize,
         fail_count: usize,
@@ -106,26 +103,18 @@ mod tests {
         }
     }
 
-    /// Sends a signal and waits up to `timeout` for `predicate` to hold.
-    async fn trigger_and_wait(
-        signal_tx: &mpsc::Sender<()>,
+    /// Polls `predicate` against market data until it returns true or `timeout` elapses.
+    async fn wait_for(
         market_data: &MarketData,
         timeout: Duration,
-        predicate: impl Fn(&crate::feed::market_data::MarketDataView<'_>) -> bool,
+        predicate: impl Fn(&MarketDataView<'_>) -> bool,
     ) {
-        signal_tx
-            .send(())
-            .await
-            .expect("signal send failed");
-
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if predicate(&market_data.read().await) {
                 return;
             }
-            if tokio::time::Instant::now() >= deadline {
-                panic!("timed out waiting for gas price update");
-            }
+            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for gas price");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
@@ -133,74 +122,36 @@ mod tests {
     #[tokio::test]
     async fn fetch_error_does_not_crash() {
         let market_data = MarketData::new_shared();
-        let (mut fetcher, signal_tx) =
-            GasPriceFetcher::new(MockFeePriceGetter::new(1), market_data.clone());
+        let mut fetcher = GasPriceFetcher::new(
+            MockFeePriceGetter::new(1),
+            market_data.clone(),
+            Duration::from_millis(5),
+        );
 
         let handle = tokio::spawn(async move { fetcher.run().await });
 
-        // First signal → mock errors → gas price stays None, fetcher keeps running.
-        // We send and yield; no ack to wait for.
-        signal_tx
-            .send(())
-            .await
-            .expect("signal send failed");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            market_data
-                .read()
-                .await
-                .gas_price()
-                .is_none(),
-            "gas price should remain None after failed fetch"
-        );
+        // First tick fails; second succeeds. Gas price is eventually set.
+        wait_for(&market_data, Duration::from_secs(2), |m| m.gas_price().is_some()).await;
 
-        // Second signal → mock succeeds → gas price updated.
-        trigger_and_wait(&signal_tx, &market_data, Duration::from_secs(2), |m| {
-            m.gas_price().is_some()
-        })
-        .await;
-
-        drop(signal_tx);
-        let result = handle
-            .await
-            .expect("task should not panic");
-        assert!(result.is_err(), "run() should return Err when signal channel closes");
+        handle.abort();
+        let _ = handle.await;
     }
 
     #[tokio::test]
     async fn persistent_failure_keeps_loop_alive() {
         let market_data = MarketData::new_shared();
-        let (mut fetcher, signal_tx) =
-            GasPriceFetcher::new(MockFeePriceGetter::new(3), market_data.clone());
+        let mut fetcher = GasPriceFetcher::new(
+            MockFeePriceGetter::new(3),
+            market_data.clone(),
+            Duration::from_millis(5),
+        );
 
         let handle = tokio::spawn(async move { fetcher.run().await });
 
-        // 3 failures — gas price remains None throughout.
-        for _ in 0..3 {
-            signal_tx
-                .send(())
-                .await
-                .expect("signal send failed");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            assert!(
-                market_data
-                    .read()
-                    .await
-                    .gas_price()
-                    .is_none(),
-                "gas price should remain None during persistent failure"
-            );
-        }
+        // First 3 ticks fail; 4th succeeds. Gas price is eventually set despite failures.
+        wait_for(&market_data, Duration::from_secs(2), |m| m.gas_price().is_some()).await;
 
-        // 4th signal → mock succeeds → fetcher recovers.
-        trigger_and_wait(&signal_tx, &market_data, Duration::from_secs(2), |m| {
-            m.gas_price().is_some()
-        })
-        .await;
-
-        drop(signal_tx);
-        let _ = handle
-            .await
-            .expect("task should not panic");
+        handle.abort();
+        let _ = handle.await;
     }
 }

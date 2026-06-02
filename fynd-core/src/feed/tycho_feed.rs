@@ -7,10 +7,7 @@
 
 use std::collections::HashSet;
 
-use tokio::{
-    sync::{broadcast, mpsc},
-    task::JoinHandle,
-};
+use tokio::{sync::broadcast, task::JoinHandle};
 use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, span, trace, Instrument, Level};
 use tycho_simulation::{
@@ -48,8 +45,6 @@ pub(crate) struct TychoFeed {
     market_data: MarketData,
     /// Event broadcaster.
     event_tx: broadcast::Sender<MarketEvent>,
-    /// Signal channel to notify the gas price worker to refresh gas price.
-    gas_price_worker_signal_tx: Option<mpsc::Sender<()>>,
 }
 
 impl TychoFeed {
@@ -62,21 +57,12 @@ impl TychoFeed {
     pub(crate) fn new(config: TychoFeedConfig, market_data: MarketData) -> Self {
         let (event_tx, _event_rx) = broadcast::channel(1024);
 
-        Self { config, market_data, event_tx, gas_price_worker_signal_tx: None }
+        Self { config, market_data, event_tx }
     }
 
     /// Returns a new subscriber for market events.
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<MarketEvent> {
         self.event_tx.subscribe()
-    }
-
-    /// Sets the signal channel to notify the gas price worker to refresh gas price.
-    /// If not set, gas price refresh will not be triggered by the TychoFeed.
-    pub(crate) fn with_gas_price_worker_signal_tx(
-        self,
-        gas_price_worker_signal_tx: mpsc::Sender<()>,
-    ) -> Self {
-        Self { gas_price_worker_signal_tx: Some(gas_price_worker_signal_tx), ..self }
     }
 
     /// Returns an additional event sender. Currently only used for testing.
@@ -206,9 +192,6 @@ impl TychoFeed {
                         Some(msg) => {
                             trace!("Received message from protocol stream: {:?}", msg);
                             let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                            // Signal the gas price worker to refresh concurrently. Best-effort:
-                            // skipped if the worker is already busy with a previous fetch.
-                            self.signal_gas_price_refresh();
                             self.handle_tycho_message(msg).await?;
                         }
                         None => {
@@ -378,14 +361,6 @@ impl TychoFeed {
         }
 
         Ok(())
-    }
-
-    /// Signals the gas price worker to refresh. Non-blocking: skipped if the worker is
-    /// already processing a previous signal (channel capacity 5).
-    fn signal_gas_price_refresh(&self) {
-        if let Some(tx) = &self.gas_price_worker_signal_tx {
-            let _ = tx.try_send(());
-        }
     }
 }
 
