@@ -1,3 +1,10 @@
+## [0.67.0](https://github.com/propeller-heads/fynd/compare/0.66.0...0.67.0) (2026-06-02)
+
+
+### Features
+
+* **protocols:** add support for Quickswap V2 and new chain addresses for Arbitrum, Polygon, and BSC ([3c3ecbc](https://github.com/propeller-heads/fynd/commit/3c3ecbc0b93e10e2001bb74b452dc8c7fcaeb245))
+
 ## [0.66.0](https://github.com/propeller-heads/fynd/compare/0.65.0...0.66.0) (2026-06-02)
 
 
