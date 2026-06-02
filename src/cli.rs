@@ -117,6 +117,12 @@ pub struct ServeArgs {
     #[arg(long)]
     pub gas_price_stale_threshold_secs: Option<u64>,
 
+    /// Enable partial block (flashblock) updates from the Tycho stream.
+    /// When enabled, pool state updates arrive mid-block rather than only at finalization,
+    /// reducing latency. Only applies to on-chain protocols.
+    #[arg(long)]
+    pub partial_blocks: bool,
+
     /// Enable price guard validation against external price sources.
     /// Disabled by default.
     #[arg(long)]
@@ -200,6 +206,7 @@ mod cli_tests {
         assert_eq!(args.worker_router_timeout_ms, 100);
         assert_eq!(args.worker_router_min_responses, 0);
         assert_eq!(args.blocklist_config, None);
+        assert!(!args.partial_blocks);
         #[cfg(feature = "metrics")]
         assert_eq!(args.metrics_port, METRICS_PORT);
     }

@@ -36,9 +36,6 @@ pub(crate) struct TychoFeedConfig {
     /// `min_tvl / tvl_buffer_ratio`.
     /// Default is 1.1 (10% buffer).
     pub(crate) tvl_buffer_ratio: f64,
-    /// Gas price refresh interval.
-    /// Default is 30 seconds.
-    pub(crate) gas_refresh_interval: Duration,
     /// Reconnect delay on connection failure.
     /// Default is 5 seconds.
     pub(crate) reconnect_delay: Duration,
@@ -46,6 +43,10 @@ pub(crate) struct TychoFeedConfig {
     pub(crate) traded_n_days_ago: Option<u64>,
     /// Component IDs to exclude from the Tycho stream.
     pub(crate) blocklisted_components: HashSet<String>,
+    /// Enable partial block (flashblock) updates from the Tycho stream.
+    /// When enabled, pool state updates are delivered mid-block rather than only at finalization,
+    /// reducing effective latency at the cost of processing more frequent, smaller updates.
+    pub(crate) partial_blocks: bool,
 }
 
 impl TychoFeedConfig {
@@ -67,19 +68,14 @@ impl TychoFeedConfig {
             min_token_quality: 100,
             traded_n_days_ago: None,
             tvl_buffer_ratio: 1.1,
-            gas_refresh_interval: Duration::from_secs(30),
             reconnect_delay: Duration::from_secs(5),
             blocklisted_components: HashSet::new(),
+            partial_blocks: false,
         }
     }
 
     pub(crate) fn tvl_buffer_ratio(mut self, tvl_buffer_ratio: f64) -> Self {
         self.tvl_buffer_ratio = tvl_buffer_ratio;
-        self
-    }
-
-    pub(crate) fn gas_refresh_interval(mut self, gas_refresh_interval: Duration) -> Self {
-        self.gas_refresh_interval = gas_refresh_interval;
         self
     }
 
@@ -102,14 +98,16 @@ impl TychoFeedConfig {
         self.blocklisted_components = components;
         self
     }
+
+    pub(crate) fn partial_blocks(mut self, enabled: bool) -> Self {
+        self.partial_blocks = enabled;
+        self
+    }
 }
 
 /// Errors that can occur in the indexer.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DataFeedError {
-    #[error("gas price fetcher error: {0}")]
-    GasPriceFetcherError(String),
-
     /// Configuration error.
     #[error("configuration error: {0}")]
     Config(String),
