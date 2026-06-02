@@ -1,3 +1,15 @@
+## [0.66.0](https://github.com/propeller-heads/fynd/compare/0.65.0...0.66.0) (2026-06-02)
+
+
+### Features
+
+* add --partial-blocks flag for flashblock support ([573f49d](https://github.com/propeller-heads/fynd/commit/573f49d670b9ff843f91f350181e1125f95389f6))
+
+
+### Bug Fixes
+
+* decouple gas price refresh from Tycho message loop ([f644cb1](https://github.com/propeller-heads/fynd/commit/f644cb19fa1f0c1455b2976b84acf640711c7d35))
+
 ## [0.65.0](https://github.com/propeller-heads/fynd/compare/0.64.0...0.65.0) (2026-06-02)
 
 
