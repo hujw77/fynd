@@ -129,8 +129,9 @@ pub(crate) struct ScenarioResult {
 }
 
 impl ScenarioResult {
-    pub fn assert_equals_lower_bound(&self) {
-        self.assert_bound(self.net_output == self.lower_bound, "==");
+    #[allow(dead_code)]
+    pub fn assert_meets_lower_bound(&self) {
+        self.assert_bound(self.net_output >= self.lower_bound, ">=");
     }
 
     #[allow(dead_code)]
@@ -157,8 +158,8 @@ impl ScenarioResult {
 
 /// Run an algorithm against a single scenario and return structured results.
 ///
-/// Builds derived data with unit token-gas-prices so BF deducts gas costs from output, matching
-/// the scenario's net bounds. Calls `find_best_route` and returns a [`ScenarioResult`].
+/// Builds derived data with unit token-gas-prices so the algorithm deducts gas costs from output,
+/// matching the scenario's net bounds. Calls `find_best_route` and returns a [`ScenarioResult`].
 ///
 /// ```rust,ignore
 /// let scenario = split_scenarios::symmetric_split();
@@ -655,10 +656,13 @@ mod tests {
         )
         .unwrap();
         for scenario in split_scenarios::all() {
+            let name = scenario.name;
             let (market, gm) = scenario.build_market();
-            evaluate_scenario(&bf, &scenario, market, gm)
-                .await
-                .assert_equals_lower_bound();
+            let result = evaluate_scenario(&bf, &scenario, market, gm).await;
+            assert_eq!(
+                result.net_output, result.lower_bound,
+                "BF output doesn't match claimed lower bound for scenario '{name}'",
+            );
         }
     }
 
