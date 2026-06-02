@@ -188,6 +188,9 @@ pub mod defaults {
             "ethereum" => Ok("tycho-fynd-ethereum.propellerheads.xyz"),
             "base" => Ok("tycho-fynd-base.propellerheads.xyz"),
             "unichain" => Ok("tycho-fynd-unichain.propellerheads.xyz"),
+            "bsc" => Ok("tycho-bsc-beta.propellerheads.xyz"),
+            "arbitrum" => Ok("tycho-arbitrum-beta.propellerheads.xyz"),
+            "polygon" => Ok("tycho-polygon-beta.propellerheads.xyz"),
             other => Err(format!(
                 "no default Tycho URL for chain '{}'. Please provide --tycho-url explicitly.",
                 other
