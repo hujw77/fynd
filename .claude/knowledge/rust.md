@@ -29,6 +29,7 @@ After a task is done, run `./check.sh` (the same script runs as a precommit hook
 - Enums for state machines, not boolean flags
 - Write efficient code by default — correct algorithm, appropriate data structures, no unnecessary allocations. Profile
   before micro-optimizing.
+- **Name variables for their purpose, not their type.** `order_queue` not `queue`; `user_id` not `id`.
 
 ### Comments
 
@@ -49,6 +50,8 @@ refactor the code instead. Comments explain WHY, not WHAT. Wrap comment lines at
 - **Mock boundaries, not logic.** Only mock slow (network, filesystem), non-deterministic (time), or external things you
   don't control.
 - **Verify tests catch failures.** Break the code, confirm the test fails, then fix.
+- **Concise test names.** Name tests after what is being tested, not the expected outcome. `test_find_route_options_default`
+  not `test_find_route_options_default_is_no_overrides`.
 
 After every task is done, run the `run-ci` skill. If that is done, check whether docs need updating with the sync-docs
 skill.
