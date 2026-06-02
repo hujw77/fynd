@@ -92,8 +92,8 @@ pub(crate) struct ScenarioResult {
     pub net_output: BigInt,
     /// Best single-route net output. `net_output` must be >= this.
     pub lower_bound: BigInt,
-    /// Net analytical optimum for the scenario's simplified pool model. A quality target, not a
-    /// hard ceiling.
+    /// Net analytical optimum for the scenario's simplified pool model. A reference value for
+    /// measuring quality — the algorithm is not required to reach it.
     pub analytical_optimum: BigInt,
     /// Number of swaps consuming `token_in`. 1 for single-route, N for a split.
     pub path_count: usize,
@@ -112,10 +112,11 @@ impl ScenarioResult {
     }
 
     /// Returns true if `net_output >= (100 - threshold_pct)% of analytical_optimum`.
+    /// `threshold_pct` is a whole-number percentage (e.g. `5` means within 5% of optimum).
     #[allow(dead_code)]
     pub fn within_pct_of_optimum(&self, threshold_pct: u32) -> bool {
-        self.net_output.clone() * BigInt::from(100u32) >=
-            self.analytical_optimum.clone() * BigInt::from(100 - threshold_pct)
+        &self.net_output * BigInt::from(100u32) >=
+            &self.analytical_optimum * BigInt::from(100 - threshold_pct)
     }
 
     fn assert_bound(&self, passes: bool, op: &str) {
