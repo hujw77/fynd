@@ -1,3 +1,10 @@
+## [0.68.0](https://github.com/propeller-heads/fynd/compare/0.67.1...0.68.0) (2026-06-02)
+
+
+### Features
+
+* build_split_route with shared-hop deduplication ([0c160b4](https://github.com/propeller-heads/fynd/commit/0c160b4f6e3bc516859252353d30ed43f4e22d7a))
+
 ## [0.67.1](https://github.com/propeller-heads/fynd/compare/0.67.0...0.67.1) (2026-06-02)
 
 
