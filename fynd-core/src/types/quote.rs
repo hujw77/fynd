@@ -1209,18 +1209,18 @@ impl Route {
     fn validate_split_route(&self) -> Result<(), RouteValidationError> {
         // Group swaps by their input token. Each group represents a split
         // (parallel swaps sharing the same token_in), not a sequential path.
-        let mut group_index: HashMap<Address, usize> = HashMap::new();
-        let mut groups: Vec<(Address, Vec<&Swap>)> = Vec::new();
+        let mut token_in_to_index: HashMap<Address, usize> = HashMap::new();
+        let mut swaps_by_token_in: Vec<(Address, Vec<&Swap>)> = Vec::new();
         for swap in &self.swaps {
-            if let Some(&idx) = group_index.get(&swap.token_in) {
-                groups[idx].1.push(swap);
+            if let Some(&idx) = token_in_to_index.get(&swap.token_in) {
+                swaps_by_token_in[idx].1.push(swap);
             } else {
-                group_index.insert(swap.token_in.clone(), groups.len());
-                groups.push((swap.token_in.clone(), vec![swap]));
+                token_in_to_index.insert(swap.token_in.clone(), swaps_by_token_in.len());
+                swaps_by_token_in.push((swap.token_in.clone(), vec![swap]));
             }
         }
 
-        for (token_in, group) in &groups {
+        for (token_in, group) in &swaps_by_token_in {
             if group.len() == 1 {
                 if group[0].split != 0.0 {
                     return Err(RouteValidationError::InvalidSplit {
@@ -1271,21 +1271,21 @@ impl Route {
 
         // BFS connectivity: starting from the first group's token_in,
         // expand through swap outputs to verify all group inputs are reachable.
-        let first_token = &groups[0].0;
+        let first_token = &swaps_by_token_in[0].0;
         let mut reachable: HashSet<&Address> = HashSet::new();
         reachable.insert(first_token);
-        let mut queue: VecDeque<&Address> = VecDeque::new();
-        queue.push_back(first_token);
-        while let Some(token) = queue.pop_front() {
-            if let Some(&idx) = group_index.get(token) {
-                for swap in &groups[idx].1 {
+        let mut tokens_to_visit: VecDeque<&Address> = VecDeque::new();
+        tokens_to_visit.push_back(first_token);
+        while let Some(token) = tokens_to_visit.pop_front() {
+            if let Some(&idx) = token_in_to_index.get(token) {
+                for swap in &swaps_by_token_in[idx].1 {
                     if reachable.insert(&swap.token_out) {
-                        queue.push_back(&swap.token_out);
+                        tokens_to_visit.push_back(&swap.token_out);
                     }
                 }
             }
         }
-        for (token_in, _) in &groups {
+        for (token_in, _) in &swaps_by_token_in {
             if !reachable.contains(token_in) {
                 return Err(RouteValidationError::DisconnectedGroup {
                     token_in: token_in.clone(),
@@ -1296,7 +1296,7 @@ impl Route {
 
         let terminal_token = &self.swaps[self.swaps.len() - 1].token_out;
 
-        let non_first_input_tokens: HashSet<&Address> = groups
+        let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
             .iter()
             .skip(1)
             .map(|(token_in, _)| token_in)
@@ -1304,7 +1304,7 @@ impl Route {
 
         // Dead-end detection: every swap output must either feed a later group
         // or be the terminal output token.
-        for (_, group) in &groups {
+        for (_, group) in &swaps_by_token_in {
             for swap in group {
                 if !non_first_input_tokens.contains(&swap.token_out) &&
                     &swap.token_out != terminal_token
@@ -1327,7 +1327,7 @@ impl Route {
         let is_round_trip = first_token == terminal_token;
         let mut seen_back_edge_group = false;
         let mut earlier_inputs: HashSet<&Address> = HashSet::new();
-        for (token_in, group) in &groups {
+        for (token_in, group) in &swaps_by_token_in {
             earlier_inputs.insert(token_in);
             let mut group_has_back_edge = false;
             for swap in group {
