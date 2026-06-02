@@ -1,11 +1,17 @@
 //! Test helpers for split-routing algorithm split_scenarios.
 
 use num_bigint::{BigInt, BigUint};
-use tycho_simulation::tycho_core::{models::token::Token, simulation::protocol_sim::ProtocolSim};
+use num_traits::Zero;
+use tycho_simulation::tycho_core::{
+    models::{token::Token, Address},
+    simulation::protocol_sim::ProtocolSim,
+};
 
 use crate::{
-    algorithm::test_utils::setup_market_unweighted, feed::market_data::MarketData,
-    graph::petgraph::PetgraphStableDiGraphManager,
+    algorithm::{test_utils::setup_market_unweighted, Algorithm},
+    feed::market_data::MarketData,
+    graph::{petgraph::PetgraphStableDiGraphManager, GraphManager},
+    types::quote::{Order, OrderSide},
 };
 
 /// Returns `(fraction_for_pool_1, total_output)` — the theoretically optimal output when
@@ -64,40 +70,136 @@ pub(crate) struct TestScenario {
 }
 
 impl TestScenario {
-    /// Builds a `MarketData` + graph manager from this scenario's pool definitions.
-    ///
-    /// Consumes `self` because pool simulators are moved into the market. Clone any fields you
-    /// need before calling this.
-    pub(crate) fn build_market(self) -> (MarketData, PetgraphStableDiGraphManager<()>) {
-        // Clone ids and tokens first so they can be borrowed while `pools` is consumed for sims.
-        let ids: Vec<&'static str> = self
+    /// Builds an unweighted `MarketData` + graph manager from this scenario's pool definitions.
+    pub(crate) fn build_market(&self) -> (MarketData, PetgraphStableDiGraphManager<()>) {
+        let pools = self
             .pools
             .iter()
-            .map(|p| p.id)
+            .map(|p| (p.id, &p.token_1, &p.token_2, p.sim.clone_box()))
             .collect();
-        let tokens_a: Vec<Token> = self
-            .pools
-            .iter()
-            .map(|p| p.token_1.clone())
-            .collect();
-        let tokens_b: Vec<Token> = self
-            .pools
-            .iter()
-            .map(|p| p.token_2.clone())
-            .collect();
-        let sims: Vec<Box<dyn ProtocolSim>> = self
-            .pools
-            .into_iter()
-            .map(|p| p.sim)
-            .collect();
-        setup_market_unweighted(
-            ids.into_iter()
-                .zip(tokens_a.iter())
-                .zip(tokens_b.iter())
-                .zip(sims)
-                .map(|(((id, ta), tb), sim)| (id, ta, tb, sim))
-                .collect(),
-        )
+        setup_market_unweighted(pools)
+    }
+}
+
+// ==================== Evaluation harness ====================
+
+/// Results from running one algorithm against one scenario.
+#[allow(dead_code)]
+pub(crate) struct ScenarioResult {
+    pub scenario_name: &'static str,
+    pub algorithm_name: String,
+    /// Gross output minus gas costs. Can be negative when gas exceeds proceeds.
+    pub net_output: BigInt,
+    /// Best single-route net output. `net_output` must be >= this.
+    pub lower_bound: BigInt,
+    /// Net analytical optimum for the scenario's simplified pool model. A reference value for
+    /// measuring quality — the algorithm is not required to reach it.
+    pub analytical_optimum: BigInt,
+    /// Number of swaps consuming `token_in`. 1 for single-route, N for a split.
+    pub path_count: usize,
+    /// Split fraction per `token_in` swap. All-zero if the algorithm does not set `with_split`.
+    pub split_fractions: Vec<f64>,
+}
+
+impl ScenarioResult {
+    pub fn assert_meets_lower_bound(&self) {
+        self.assert_bound(self.net_output >= self.lower_bound, ">=");
+    }
+
+    #[allow(dead_code)]
+    pub fn assert_beats_lower_bound(&self) {
+        self.assert_bound(self.net_output > self.lower_bound, ">");
+    }
+
+    /// Returns true if `net_output >= (100 - threshold_pct)% of analytical_optimum`.
+    /// `threshold_pct` is a whole-number percentage (e.g. `5` means within 5% of optimum).
+    #[allow(dead_code)]
+    pub fn within_pct_of_optimum(&self, threshold_pct: u32) -> bool {
+        &self.net_output * BigInt::from(100u32) >=
+            &self.analytical_optimum * BigInt::from(100 - threshold_pct)
+    }
+
+    fn assert_bound(&self, passes: bool, op: &str) {
+        assert!(
+            passes,
+            "scenario '{}' algorithm '{}': net_output {} {op} lower_bound {} failed",
+            self.scenario_name, self.algorithm_name, self.net_output, self.lower_bound,
+        );
+    }
+}
+
+/// Run an algorithm against a single scenario and return structured results.
+///
+/// The caller supplies `market` and `graph_manager` (e.g. from [`TestScenario::build_market`]),
+/// so any graph weight type is supported. Calls `find_best_route` and returns a
+/// [`ScenarioResult`].
+///
+/// ```rust,ignore
+/// let scenario = split_scenarios::symmetric_split();
+/// let (market, gm) = scenario.build_market();
+/// let result = evaluate_scenario(&algo, &scenario, market, gm).await;
+/// result.assert_beats_lower_bound();
+/// ```
+pub(crate) async fn evaluate_scenario<A>(
+    algo: &A,
+    scenario: &TestScenario,
+    market: MarketData,
+    graph_manager: A::GraphManager,
+) -> ScenarioResult
+where
+    A: Algorithm,
+{
+    let order = Order::new(
+        scenario.token_in.address.clone(),
+        scenario.token_out.address.clone(),
+        scenario.trade_amount.clone(),
+        OrderSide::Sell,
+        Address::default(),
+    );
+
+    let lower_bound = scenario.lower_bound.clone();
+    let analytical_optimum = scenario.analytical_optimum.clone();
+
+    let Ok(route_result) = algo
+        .find_best_route(graph_manager.graph(), market, None, None, &order)
+        .await
+    else {
+        return ScenarioResult {
+            scenario_name: scenario.name,
+            algorithm_name: algo.name().to_string(),
+            net_output: BigInt::zero(),
+            lower_bound,
+            analytical_optimum,
+            path_count: 0,
+            split_fractions: vec![],
+        };
+    };
+
+    let token_in_addr = &scenario.token_in.address;
+
+    // Split fractions are set on swaps sharing the same token_in.
+    let input_swaps: Vec<_> = route_result
+        .route()
+        .swaps()
+        .iter()
+        .filter(|s| s.token_in() == token_in_addr)
+        .collect();
+
+    let net_output = route_result.net_amount_out().clone();
+    let path_count = input_swaps.len();
+    let split_fractions = input_swaps
+        .iter()
+        .map(|s| *s.split())
+        .collect();
+
+    ScenarioResult {
+        scenario_name: scenario.name,
+        algorithm_name: algo.name().to_string(),
+        net_output,
+        lower_bound,
+        analytical_optimum,
+        path_count,
+        split_fractions,
     }
 }
 
@@ -432,9 +534,60 @@ pub(crate) mod split_scenarios {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithm::{bellman_ford::BellmanFordAlgorithm, AlgorithmConfig};
 
     fn f64_eq(x: f64, y: f64) -> bool {
         (x - y).abs() < 1e-9
+    }
+
+    fn bf_default() -> BellmanFordAlgorithm {
+        BellmanFordAlgorithm::with_config(AlgorithmConfig::default()).unwrap()
+    }
+
+    // ==================== evaluate_scenario tests ====================
+
+    #[tokio::test]
+    async fn evaluate_bellman_ford_passes_lower_bound_on_all_scenarios() {
+        let algo = bf_default();
+        for scenario in split_scenarios::all() {
+            let (market, gm) = scenario.build_market();
+            evaluate_scenario(&algo, &scenario, market, gm)
+                .await
+                .assert_meets_lower_bound();
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_returns_path_count_1_for_single_route_algorithm() {
+        let algo = bf_default();
+        // BellmanFord finds a single best route, so path_count is always 1.
+        for scenario in split_scenarios::all() {
+            let name = scenario.name;
+            let (market, gm) = scenario.build_market();
+            let result = evaluate_scenario(&algo, &scenario, market, gm).await;
+            assert_eq!(result.path_count, 1, "scenario '{name}': expected path_count 1");
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_output_is_within_5pct_of_analytical_optimum() {
+        // symmetric_split: lower_bound ~90.9k ETH, optimum ~95.2k ETH — gap ~4.55%, within 5%.
+        let scenario = split_scenarios::symmetric_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&bf_default(), &scenario, market, gm).await;
+        assert!(
+            result.within_pct_of_optimum(5),
+            "symmetric_split: single-route is within 5% of optimum"
+        );
+
+        // asymmetric_split: lower_bound ~166.7k ETH, optimum ~176.5k ETH — gap ~5.56%, outside 5%.
+        let scenario = split_scenarios::asymmetric_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&bf_default(), &scenario, market, gm).await;
+        assert!(
+            !result.within_pct_of_optimum(5),
+            "asymmetric_split: single-route is >5% below optimum"
+        );
     }
 
     #[test]
