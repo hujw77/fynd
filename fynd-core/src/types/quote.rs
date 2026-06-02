@@ -1220,144 +1220,174 @@ impl Route {
             }
         }
 
-        for (token_in, group) in &swaps_by_token_in {
-            if group.len() == 1 {
-                if group[0].split != 0.0 {
-                    return Err(RouteValidationError::InvalidSplit {
-                        reason: format!(
-                            "single swap for token_in {token_in} \
-                             must have split == 0.0, got {}",
-                            group[0].split
-                        ),
-                    });
-                }
-                continue;
-            }
+        validate_split_amounts(&swaps_by_token_in)?;
+        validate_bfs_connectivity(&swaps_by_token_in, &token_in_to_index)?;
 
-            let mut sum = 0.0_f64;
-            let last_idx = group.len() - 1;
-            for (i, swap) in group.iter().enumerate() {
-                if i < last_idx {
-                    if swap.split <= 0.0 || swap.split >= 1.0 {
-                        return Err(RouteValidationError::InvalidSplit {
-                            reason: format!(
-                                "swap {} for token_in {token_in} \
-                                 must have 0.0 < split < 1.0, got {}",
-                                i, swap.split
-                            ),
-                        });
-                    }
-                    sum += swap.split;
-                } else if swap.split != 0.0 {
-                    return Err(RouteValidationError::InvalidSplit {
-                        reason: format!(
-                            "last swap in group for token_in {token_in} \
-                             must have split == 0.0 (remainder), got {}",
-                            swap.split
-                        ),
-                    });
-                }
-            }
-
-            if sum >= 1.0 {
-                return Err(RouteValidationError::InvalidSplit {
-                    reason: format!(
-                        "split sum for token_in {token_in} must be \
-                         < 1.0, got {sum}"
-                    ),
-                });
-            }
-        }
-
-        // BFS connectivity: starting from the first group's token_in,
-        // expand through swap outputs to verify all group inputs are reachable.
         let first_token = &swaps_by_token_in[0].0;
-        let mut reachable: HashSet<&Address> = HashSet::new();
-        reachable.insert(first_token);
-        let mut tokens_to_visit: VecDeque<&Address> = VecDeque::new();
-        tokens_to_visit.push_back(first_token);
-        while let Some(token) = tokens_to_visit.pop_front() {
-            if let Some(&idx) = token_in_to_index.get(token) {
-                for swap in &swaps_by_token_in[idx].1 {
-                    if reachable.insert(&swap.token_out) {
-                        tokens_to_visit.push_back(&swap.token_out);
-                    }
-                }
-            }
-        }
-        for (token_in, _) in &swaps_by_token_in {
-            if !reachable.contains(token_in) {
-                return Err(RouteValidationError::DisconnectedGroup {
-                    token_in: token_in.clone(),
-                    start_token: first_token.clone(),
-                });
-            }
-        }
-
         let terminal_token = &self.swaps[self.swaps.len() - 1].token_out;
-
         let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
             .iter()
             .skip(1)
             .map(|(token_in, _)| token_in)
             .collect();
 
-        // Dead-end detection: every swap output must either feed a later group
-        // or be the terminal output token.
-        for (_, group) in &swaps_by_token_in {
-            for swap in group {
-                if !non_first_input_tokens.contains(&swap.token_out) &&
-                    &swap.token_out != terminal_token
-                {
-                    return Err(RouteValidationError::InvalidSplit {
-                        reason: format!(
-                            "swap output {} is a dead end — not consumed by any \
-                             later group and not the terminal token {terminal_token}",
-                            swap.token_out
-                        ),
-                    });
-                }
-            }
-        }
-
-        // Cycle detection: no swap output may match an earlier group's input.
-        // Exception: in a round-trip (first == terminal) exactly one group may
-        // produce back-edges to first_token. Multiple groups doing so means token
-        // is visited more than twice (e.g. A→…→A→…→A).
-        let is_round_trip = first_token == terminal_token;
-        let mut seen_back_edge_group = false;
-        let mut earlier_inputs: HashSet<&Address> = HashSet::new();
-        for (token_in, group) in &swaps_by_token_in {
-            earlier_inputs.insert(token_in);
-            let mut group_has_back_edge = false;
-            for swap in group {
-                if !earlier_inputs.contains(&swap.token_out) {
-                    continue;
-                }
-                if is_round_trip && &swap.token_out == first_token {
-                    group_has_back_edge = true;
-                } else {
-                    return Err(RouteValidationError::UnsupportedCycle {
-                        token: swap.token_out.clone(),
-                        first: first_token.clone(),
-                        last: terminal_token.clone(),
-                    });
-                }
-            }
-            if group_has_back_edge {
-                if seen_back_edge_group {
-                    return Err(RouteValidationError::UnsupportedCycle {
-                        token: first_token.clone(),
-                        first: first_token.clone(),
-                        last: terminal_token.clone(),
-                    });
-                }
-                seen_back_edge_group = true;
-            }
-        }
+        validate_dead_ends(&swaps_by_token_in, &non_first_input_tokens, terminal_token)?;
+        validate_cycles(&swaps_by_token_in, first_token, terminal_token)?;
 
         Ok(())
     }
+}
+
+fn validate_split_amounts(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+) -> Result<(), RouteValidationError> {
+    for (token_in, group) in swaps_by_token_in {
+        if group.len() == 1 {
+            if group[0].split != 0.0 {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "single swap for token_in {token_in} \
+                         must have split == 0.0, got {}",
+                        group[0].split
+                    ),
+                });
+            }
+            continue;
+        }
+
+        let mut sum = 0.0_f64;
+        let last_idx = group.len() - 1;
+        for (i, swap) in group.iter().enumerate() {
+            if i < last_idx {
+                if swap.split <= 0.0 || swap.split >= 1.0 {
+                    return Err(RouteValidationError::InvalidSplit {
+                        reason: format!(
+                            "swap {} for token_in {token_in} \
+                             must have 0.0 < split < 1.0, got {}",
+                            i, swap.split
+                        ),
+                    });
+                }
+                sum += swap.split;
+            } else if swap.split != 0.0 {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "last swap in group for token_in {token_in} \
+                         must have split == 0.0 (remainder), got {}",
+                        swap.split
+                    ),
+                });
+            }
+        }
+
+        if sum >= 1.0 {
+            return Err(RouteValidationError::InvalidSplit {
+                reason: format!(
+                    "split sum for token_in {token_in} must be \
+                     < 1.0, got {sum}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// BFS connectivity: starting from the first group's token_in, expand through
+/// swap outputs to verify all group inputs are reachable.
+fn validate_bfs_connectivity(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    token_in_to_index: &HashMap<Address, usize>,
+) -> Result<(), RouteValidationError> {
+    let first_token = &swaps_by_token_in[0].0;
+    let mut reachable: HashSet<&Address> = HashSet::new();
+    reachable.insert(first_token);
+    let mut tokens_to_visit: VecDeque<&Address> = VecDeque::new();
+    tokens_to_visit.push_back(first_token);
+    while let Some(token) = tokens_to_visit.pop_front() {
+        if let Some(&idx) = token_in_to_index.get(token) {
+            for swap in &swaps_by_token_in[idx].1 {
+                if reachable.insert(&swap.token_out) {
+                    tokens_to_visit.push_back(&swap.token_out);
+                }
+            }
+        }
+    }
+    for (token_in, _) in swaps_by_token_in {
+        if !reachable.contains(token_in) {
+            return Err(RouteValidationError::DisconnectedGroup {
+                token_in: token_in.clone(),
+                start_token: first_token.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Dead-end detection: every swap output must either feed a later group
+/// or be the terminal output token.
+fn validate_dead_ends(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    non_first_input_tokens: &HashSet<&Address>,
+    terminal_token: &Address,
+) -> Result<(), RouteValidationError> {
+    for (_, group) in swaps_by_token_in {
+        for swap in group {
+            if !non_first_input_tokens.contains(&swap.token_out) &&
+                &swap.token_out != terminal_token
+            {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "swap output {} is a dead end — not consumed by any \
+                         later group and not the terminal token {terminal_token}",
+                        swap.token_out
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cycle detection: no swap output may match an earlier group's input.
+/// Exception: in a round-trip (first == terminal) exactly one group may
+/// produce back-edges to first_token.
+fn validate_cycles(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    first_token: &Address,
+    terminal_token: &Address,
+) -> Result<(), RouteValidationError> {
+    let is_round_trip = first_token == terminal_token;
+    let mut seen_back_edge_group = false;
+    let mut earlier_inputs: HashSet<&Address> = HashSet::new();
+    for (token_in, group) in swaps_by_token_in {
+        earlier_inputs.insert(token_in);
+        let mut group_has_back_edge = false;
+        for swap in group {
+            if !earlier_inputs.contains(&swap.token_out) {
+                continue;
+            }
+            if is_round_trip && &swap.token_out == first_token {
+                group_has_back_edge = true;
+            } else {
+                return Err(RouteValidationError::UnsupportedCycle {
+                    token: swap.token_out.clone(),
+                    first: first_token.clone(),
+                    last: terminal_token.clone(),
+                });
+            }
+        }
+        if group_has_back_edge {
+            if seen_back_edge_group {
+                return Err(RouteValidationError::UnsupportedCycle {
+                    token: first_token.clone(),
+                    first: first_token.clone(),
+                    last: terminal_token.clone(),
+                });
+            }
+            seen_back_edge_group = true;
+        }
+    }
+    Ok(())
 }
 
 /// Errors that can occur when validating a [`Route`].
