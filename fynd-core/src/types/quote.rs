@@ -1149,7 +1149,16 @@ impl Route {
         if self.is_split() {
             return self.validate_split_route();
         }
+        self.validate_sequential_route()
+    }
 
+    /// Validates a sequential (non-split) route.
+    ///
+    /// Checks:
+    /// - Consecutive swaps are connected (output token == next input token)
+    /// - No token appears more than once unless it is both the first and last
+    ///   token (simple round-trip cycle)
+    fn validate_sequential_route(&self) -> Result<(), RouteValidationError> {
         for window in self.swaps.windows(2) {
             if window[0].token_out != window[1].token_in {
                 return Err(RouteValidationError::DisconnectedSwaps {
