@@ -1,3 +1,10 @@
+## [0.67.1](https://github.com/propeller-heads/fynd/compare/0.67.0...0.67.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* Put back assert_meets_lower_bound ([a6fa66a](https://github.com/propeller-heads/fynd/commit/a6fa66abb40df75c1c7b22786a88623dfa867308))
+
 ## [0.67.0](https://github.com/propeller-heads/fynd/compare/0.66.0...0.67.0) (2026-06-02)
 
 
