@@ -111,13 +111,13 @@ impl Algorithm for PathFrankWolfeAlgorithm {
         }
         let gas_floor = gas_cost_output_tokens / price_impact;
 
-        let probe = BigUint::from(gas_floor.ceil() as u128);
+        let probe_amount = BigUint::from(gas_floor.ceil() as u128);
         let (max_probe_amount, _remainder) = split_amount(total_amount, self.config.max_probe);
-        if probe > max_probe_amount {
+        if probe_amount > max_probe_amount {
             return None;
         }
 
-        Some(probe)
+        Some(probe_amount)
     }
 
     /// Flow-fraction-weighted average price impact across all active paths.
@@ -271,10 +271,10 @@ mod tests {
         let total = BigUint::from(1_000_000u64);
         let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
 
-        let probe = algo
+        let probe_amount = algo
             .compute_probe_amount(&total, 0.10, 1000.0)
             .unwrap();
-        assert_eq!(probe, BigUint::from(10_000u64));
+        assert_eq!(probe_amount, BigUint::from(10_000u64));
     }
 
     #[test]
