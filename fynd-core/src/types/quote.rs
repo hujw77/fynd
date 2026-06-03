@@ -2216,7 +2216,10 @@ mod tests {
             make_swap(0x03, 0x04, 490, 480),  // C→D
         ];
         let route = Route::new(swaps, HashMap::new());
-        assert!(route.validate().is_err());
+        assert!(matches!(
+            route.validate(),
+            Err(RouteValidationError::DisconnectedSwaps { .. })
+        ));
     }
 
     #[test]
