@@ -1203,14 +1203,15 @@ impl Route {
 
     /// Validates a split route.
     ///
-    /// Groups swaps by `token_in`, then checks:
-    /// - Single-swap groups: `split` must be `0.0`
-    /// - Multi-swap groups: all but the last must have `0.0 < split < 1.0`, the last must have
-    ///   `split == 0.0` (remainder), and the sum must be strictly less than `1.0`
-    /// - BFS connectivity: outputs of each group connect to inputs of the next
+    /// Collects swaps into branch collections by `token_in`, then checks:
+    /// - Single-swap branch collections: `split` must be `0.0`
+    /// - Multi-swap branch collections: all but the last must have `0.0 < split < 1.0`, the last
+    ///   must have `split == 0.0` (remainder), and the sum must be strictly less than `1.0`
+    /// - BFS connectivity: outputs of each branch collection connect to inputs of the next
     fn validate_split_route(&self) -> Result<(), RouteValidationError> {
-        // Group swaps by their input token. Each group represents a split
-        // (parallel swaps sharing the same token_in), not a sequential path.
+        // Collect swaps into branch collections by their input token. Each
+        // branch collection represents a split (parallel branches sharing the
+        // same token_in), not a sequential path.
         let mut token_in_to_index: HashMap<Address, usize> = HashMap::new();
         let mut swaps_by_token_in: Vec<(Address, Vec<&Swap>)> = Vec::new();
         for swap in &self.swaps {
@@ -1243,14 +1244,14 @@ impl Route {
 fn validate_split_amounts(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
 ) -> Result<(), RouteValidationError> {
-    for (token_in, group) in swaps_by_token_in {
-        if group.len() == 1 {
-            if group[0].split != 0.0 {
+    for (token_in, branch_collection) in swaps_by_token_in {
+        if branch_collection.len() == 1 {
+            if branch_collection[0].split != 0.0 {
                 return Err(RouteValidationError::InvalidSplit {
                     reason: format!(
                         "single swap for token_in {token_in} \
                          must have split == 0.0, got {}",
-                        group[0].split
+                        branch_collection[0].split
                     ),
                 });
             }
@@ -1258,8 +1259,8 @@ fn validate_split_amounts(
         }
 
         let mut sum = 0.0_f64;
-        let last_idx = group.len() - 1;
-        for (i, swap) in group.iter().enumerate() {
+        let last_idx = branch_collection.len() - 1;
+        for (i, swap) in branch_collection.iter().enumerate() {
             if i < last_idx {
                 if swap.split <= 0.0 || swap.split >= 1.0 {
                     return Err(RouteValidationError::InvalidSplit {
@@ -1274,7 +1275,7 @@ fn validate_split_amounts(
             } else if swap.split != 0.0 {
                 return Err(RouteValidationError::InvalidSplit {
                     reason: format!(
-                        "last swap in group for token_in {token_in} \
+                        "last branch in collection for token_in {token_in} \
                          must have split == 0.0 (remainder), got {}",
                         swap.split
                     ),
@@ -1294,8 +1295,9 @@ fn validate_split_amounts(
     Ok(())
 }
 
-/// BFS connectivity: starting from the first group's token_in, expand through
-/// swap outputs to verify all group inputs are reachable.
+/// BFS connectivity: starting from the first branch collection's token_in,
+/// expand through swap outputs to verify all branch collection inputs are
+/// reachable.
 fn validate_bfs_connectivity(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     token_in_to_index: &HashMap<Address, usize>,
@@ -1316,7 +1318,7 @@ fn validate_bfs_connectivity(
     }
     for (token_in, _) in swaps_by_token_in {
         if !reachable.contains(token_in) {
-            return Err(RouteValidationError::DisconnectedGroup {
+            return Err(RouteValidationError::DisconnectedBranchCollection {
                 token_in: token_in.clone(),
                 start_token: first_token.clone(),
             });
@@ -1325,8 +1327,8 @@ fn validate_bfs_connectivity(
     Ok(())
 }
 
-/// Dead-end detection: every swap output must either feed a later group
-/// or be the terminal output token.
+/// Dead-end detection: every swap output must either feed a later branch
+/// collection or be the terminal output token.
 fn validate_dead_ends(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     non_first_input_tokens: &HashSet<&Address>,
@@ -1340,7 +1342,8 @@ fn validate_dead_ends(
             return Err(RouteValidationError::InvalidSplit {
                 reason: format!(
                     "swap output {} is a dead end — not consumed by any \
-                     later group and not the terminal token {terminal_token}",
+                     later branch collection and not the terminal token \
+                     {terminal_token}",
                     swap.token_out
                 ),
             });
@@ -1349,10 +1352,10 @@ fn validate_dead_ends(
     Ok(())
 }
 
-/// Cycle detection: no swap output may match an earlier group's input.
-/// Exception: in a round-trip (first == terminal) outputs equal to
-/// `first_token` are allowed, provided the route has more than one
-/// group — a single-group round-trip is always rejected.
+/// Cycle detection: no swap output may match an earlier branch collection's
+/// input. Exception: in a round-trip (first == terminal) outputs equal to
+/// `first_token` are allowed, provided the route has more than one branch
+/// collection — a single-collection round-trip is always rejected.
 fn validate_cycles(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     first_token: &Address,
@@ -1367,9 +1370,9 @@ fn validate_cycles(
         });
     }
     let mut earlier_inputs: HashSet<&Address> = HashSet::new();
-    for (token_in, group) in swaps_by_token_in {
+    for (token_in, branch_collection) in swaps_by_token_in {
         earlier_inputs.insert(token_in);
-        for swap in group {
+        for swap in branch_collection {
             if !earlier_inputs.contains(&swap.token_out) {
                 continue;
             }
@@ -1421,14 +1424,15 @@ pub enum RouteValidationError {
         /// Human-readable description of the violation.
         reason: String,
     },
-    /// A group's input token is not reachable from the route's start token.
+    /// A branch collection's input token is not reachable from the route's
+    /// start token.
     #[non_exhaustive]
     #[error(
-        "disconnected group: input {token_in} is not reachable from \
-         start token {start_token}"
+        "disconnected branch collection: input {token_in} is not reachable \
+         from start token {start_token}"
     )]
-    DisconnectedGroup {
-        /// Input token of the unreachable group.
+    DisconnectedBranchCollection {
+        /// Input token of the unreachable branch collection.
         token_in: Address,
         /// The route's start token.
         start_token: Address,
@@ -1893,7 +1897,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_split_unreachable_group() {
+    fn test_validate_split_unreachable_branch_collection() {
         //   ┌──[50%]──┐
         // A │          B    C → D   ERROR: C unreachable from A
         //   └──[rem]──┘
@@ -1904,7 +1908,7 @@ mod tests {
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::DisconnectedGroup { .. }));
+        assert!(matches!(err, RouteValidationError::DisconnectedBranchCollection { .. }));
     }
 
     #[test]
@@ -1957,7 +1961,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_split_round_trip_valid_from_multiple_groups() {
+    fn test_validate_split_round_trip_valid_from_multiple_branch_collections() {
         //       ┌──[40%]── C ──┐
         // A → B │               → A   (round-trip back to start)
         //       └──[rem]── D ──┘
@@ -1973,9 +1977,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_split_single_group_round_trip() {
+    fn test_validate_split_single_branch_collection_round_trip() {
         //   ┌──[50%]──┐
-        // A │         │ A   ERROR: single group cycling back to start
+        // A │         │ A   ERROR: single branch collection cycling back to start
         //   └──[rem]──┘
         let swaps = vec![
             make_split_swap(0x01, 0x01, 0.5), // A→A
@@ -2216,10 +2220,7 @@ mod tests {
             make_swap(0x03, 0x04, 490, 480),  // C→D
         ];
         let route = Route::new(swaps, HashMap::new());
-        assert!(matches!(
-            route.validate(),
-            Err(RouteValidationError::DisconnectedSwaps { .. })
-        ));
+        assert!(matches!(route.validate(), Err(RouteValidationError::DisconnectedSwaps { .. })));
     }
 
     #[test]
