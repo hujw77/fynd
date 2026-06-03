@@ -95,63 +95,103 @@ impl Algorithm for PathFrankWolfeAlgorithm {
     }
 }
 
-/// Computes the minimum probe amount from the initial route's price impact.
-///
-/// Returns `None` when the probe exceeds `config.max_probe × total_amount`,
-/// signalling that splitting is not worthwhile.
-#[allow(dead_code)]
-fn compute_probe_amount(
-    total_amount: &BigUint,
-    price_impact: f64,
-    gas_cost_output_tokens: f64,
-    config: &PathFrankWolfeConfig,
-) -> Option<BigUint> {
-    if price_impact <= 0.0 {
-        return None;
-    }
-    let gas_floor = gas_cost_output_tokens / price_impact;
+    /// Computes the minimum probe amount from the initial route's price impact.
+    ///
+    /// Returns `None` when the probe exceeds `config.max_probe × total_amount`,
+    /// signalling that splitting is not worthwhile.
+    #[allow(dead_code)]
+    fn compute_probe_amount(
+        &self,
+        total_amount: &BigUint,
+        price_impact: f64,
+        gas_cost_output_tokens: f64,
+    ) -> Option<BigUint> {
+        if price_impact <= 0.0 {
+            return None;
+        }
+        let gas_floor = gas_cost_output_tokens / price_impact;
 
-    let probe = BigUint::from(gas_floor.ceil() as u128);
-    let (max_probe_amount, _remainder) = split_amount(total_amount, config.max_probe);
-    if probe > max_probe_amount {
-        return None;
-    }
-
-    Some(probe)
-}
-
-/// Flow-fraction-weighted average price impact across all active paths.
-///
-/// Per-path price impact measures how much the realized output falls short
-/// of the ideal (marginal-price) output. Paths are weighted by their share of
-/// total flow, not averaged equally — in a 95/5 split, the result is 95%
-/// determined by the big path's price impact.
-#[allow(dead_code)]
-fn compute_average_price_impact(paths: &[PathAllocation]) -> Result<f64, AlgorithmError> {
-    let mut weighted_price_impact = 0.0;
-    for path in paths {
-        let amount_in = path.amount_in.to_f64().ok_or_else(|| {
-            AlgorithmError::Other(format!("amount_in too large for f64: {}", path.amount_in))
-        })?;
-        let amount_out = path
-            .amount_out
-            .to_f64()
-            .ok_or_else(|| {
-                AlgorithmError::Other(format!("amount_out too large for f64: {}", path.amount_out))
-            })?;
-        let ideal_out = amount_in * path.marginal_price_product;
-        if ideal_out <= 0.0 {
-            return Err(AlgorithmError::Other(format!(
-                "non-positive ideal output ({ideal_out}) from amount_in={amount_in}, \
-                 marginal_price_product={}",
-                path.marginal_price_product
-            )));
+        let probe = BigUint::from(gas_floor.ceil() as u128);
+        let (max_probe_amount, _remainder) = split_amount(total_amount, self.config.max_probe);
+        if probe > max_probe_amount {
+            return None;
         }
 
-        let price_impact = 1.0 - amount_out / ideal_out;
-        weighted_price_impact += path.flow_fraction * price_impact;
+        Some(probe)
     }
-    Ok(weighted_price_impact)
+
+    /// Flow-fraction-weighted average price impact across all active paths.
+    ///
+    /// Per-path price impact measures how much the realized output falls short
+    /// of the ideal (marginal-price) output. Paths are weighted by their share of
+    /// total flow, not averaged equally — a 95/5 split means the big path
+    /// dominates the result and the small path barely matters.
+    #[allow(dead_code)]
+    fn compute_average_price_impact(paths: &[PathAllocation]) -> Result<f64, AlgorithmError> {
+        let mut weighted_price_impact = 0.0;
+        for path in paths {
+            let amount_in = path.amount_in.to_f64().ok_or_else(|| {
+                AlgorithmError::Other(format!("amount_in too large for f64: {}", path.amount_in))
+            })?;
+            let amount_out = path
+                .amount_out
+                .to_f64()
+                .ok_or_else(|| {
+                    AlgorithmError::Other(format!(
+                        "amount_out too large for f64: {}",
+                        path.amount_out
+                    ))
+                })?;
+            let ideal_out = amount_in * path.marginal_price_product;
+            if ideal_out <= 0.0 {
+                return Err(AlgorithmError::Other(format!(
+                    "non-positive ideal output ({ideal_out}) from \
+                     amount_in={amount_in}, \
+                     marginal_price_product={}",
+                    path.marginal_price_product
+                )));
+            }
+
+            let price_impact = 1.0 - amount_out / ideal_out;
+            weighted_price_impact += path.flow_fraction * price_impact;
+        }
+        Ok(weighted_price_impact)
+    }
+}
+
+impl Algorithm for PathFrankWolfeAlgorithm {
+    type GraphType = StableDiGraph<()>;
+    type GraphManager = PetgraphStableDiGraphManager<()>;
+
+    fn name(&self) -> &str {
+        "path_frank_wolfe"
+    }
+
+    async fn find_best_route(
+        &self,
+        graph: &Self::GraphType,
+        market: MarketData,
+        label: Option<StateLabel>,
+        derived: Option<SharedDerivedDataRef>,
+        order: &Order,
+    ) -> Result<RouteResult, AlgorithmError> {
+        // Delegate to inner BF until the split-routing loop is implemented.
+        self.inner
+            .find_best_route(graph, market, label, derived, order)
+            .await
+    }
+
+    fn computation_requirements(&self) -> ComputationRequirements {
+        ComputationRequirements::none()
+            .allow_stale("token_prices")
+            .expect("token_prices requirement conflicts (bug)")
+            .allow_stale("spot_prices")
+            .expect("spot_prices requirement conflicts (bug)")
+    }
+
+    fn timeout(&self) -> Duration {
+        self.inner.timeout()
+    }
 }
 
 #[cfg(test)]
@@ -190,9 +230,9 @@ mod tests {
         //   gas_floor = 100_000 / 0.001 = 100_000_000
         //   max_probe = 1_000_000 * 0.25 = 250_000
         let total = BigUint::from(1_000_000u64);
-        let config = PathFrankWolfeConfig::default();
+        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
 
-        let result = compute_probe_amount(&total, 0.001, 100_000.0, &config);
+        let result = algo.compute_probe_amount(&total, 0.001, 100_000.0);
         assert!(result.is_none());
     }
 
@@ -202,11 +242,15 @@ mod tests {
         //   probe = gas_cost / price_impact, so doubling price impact halves
         //   the probe.
         let total = BigUint::from(10_000_000u64);
-        let config = PathFrankWolfeConfig::default();
+        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
         let gas_cost = 1000.0;
 
-        let probe_high_pi = compute_probe_amount(&total, 0.10, gas_cost, &config).unwrap();
-        let probe_low_pi = compute_probe_amount(&total, 0.05, gas_cost, &config).unwrap();
+        let probe_high_pi = algo
+            .compute_probe_amount(&total, 0.10, gas_cost)
+            .unwrap();
+        let probe_low_pi = algo
+            .compute_probe_amount(&total, 0.05, gas_cost)
+            .unwrap();
 
         assert!(probe_high_pi < probe_low_pi);
 
@@ -225,18 +269,22 @@ mod tests {
         //   gas_floor = 1000 / 0.10 = 10_000
         //   max_probe = 1_000_000 * 0.25 = 250_000
         let total = BigUint::from(1_000_000u64);
-        let config = PathFrankWolfeConfig::default();
+        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
 
-        let probe = compute_probe_amount(&total, 0.10, 1000.0, &config).unwrap();
+        let probe = algo
+            .compute_probe_amount(&total, 0.10, 1000.0)
+            .unwrap();
         assert_eq!(probe, BigUint::from(10_000u64));
     }
 
     #[test]
     fn test_probe_amount_zero_price_impact() {
         let total = BigUint::from(1_000_000u64);
-        let config = PathFrankWolfeConfig::default();
+        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
 
-        assert!(compute_probe_amount(&total, 0.0, 1000.0, &config).is_none());
+        assert!(algo
+            .compute_probe_amount(&total, 0.0, 1000.0)
+            .is_none());
     }
 
     // ==================== compute_average_price_impact ====================
@@ -296,9 +344,9 @@ mod tests {
             },
         ];
 
-        let pi_0 = compute_average_price_impact(&iter_0).unwrap();
-        let pi_1 = compute_average_price_impact(&iter_1).unwrap();
-        let pi_2 = compute_average_price_impact(&iter_2).unwrap();
+        let pi_0 = PathFrankWolfeAlgorithm::compute_average_price_impact(&iter_0).unwrap();
+        let pi_1 = PathFrankWolfeAlgorithm::compute_average_price_impact(&iter_1).unwrap();
+        let pi_2 = PathFrankWolfeAlgorithm::compute_average_price_impact(&iter_2).unwrap();
 
         assert!(pi_1 < pi_0, "price impact should decrease after first split: {pi_1} >= {pi_0}");
         assert!(pi_2 < pi_1, "price impact should decrease after second split: {pi_2} >= {pi_1}");
@@ -332,7 +380,7 @@ mod tests {
             },
         ];
 
-        let pi = compute_average_price_impact(&allocations).unwrap();
+        let pi = PathFrankWolfeAlgorithm::compute_average_price_impact(&allocations).unwrap();
         assert!((pi - 0.14).abs() < 1e-10, "expected 0.14, got {pi}");
     }
 
