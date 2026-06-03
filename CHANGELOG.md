@@ -1,3 +1,17 @@
+## [0.70.0](https://github.com/propeller-heads/fynd/compare/0.69.0...0.70.0) (2026-06-03)
+
+
+### Features
+
+* add per-chain default RPC URLs ([835fc74](https://github.com/propeller-heads/fynd/commit/835fc744d23260ccacaf4a47bd4d0e52c2e30f3a))
+* use chain-aware TVL default from tycho-common ([9965a4c](https://github.com/propeller-heads/fynd/commit/9965a4c92ca7e5657e74518b187e744671068a3f))
+
+
+### Bug Fixes
+
+* use keyless dRPC endpoints for default RPC URLs ([36e477b](https://github.com/propeller-heads/fynd/commit/36e477b4888cb2dac0fcaa15e17f1e16132c4fab))
+* use wrapped WPOL as Polygon gas token ([88adf8f](https://github.com/propeller-heads/fynd/commit/88adf8f0d622d17b744cb888dcab6ec89efe8459))
+
 ## [0.69.0](https://github.com/propeller-heads/fynd/compare/0.68.0...0.69.0) (2026-06-03)
 
 
