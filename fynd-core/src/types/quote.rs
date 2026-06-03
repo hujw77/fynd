@@ -1158,8 +1158,8 @@ impl Route {
     ///
     /// Checks:
     /// - Consecutive swaps are connected (output token == next input token)
-    /// - No token appears more than once unless it is both the first and last
-    ///   token (simple round-trip cycle)
+    /// - No token appears more than once unless it is both the first and last token (simple
+    ///   round-trip cycle)
     fn validate_sequential_route(&self) -> Result<(), RouteValidationError> {
         for window in self.swaps.windows(2) {
             if window[0].token_out != window[1].token_in {
