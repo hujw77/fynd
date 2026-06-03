@@ -68,9 +68,9 @@ pub struct ServeArgs {
     pub protocols: Vec<String>,
 
     /// Minimum TVL threshold in native token (e.g. ETH). Components below this threshold will be
-    /// removed from the market data.
-    #[arg(long, default_value_t = defaults::MIN_TVL)]
-    pub min_tvl: f64,
+    /// removed from the market data. Defaults to a chain-specific value if not set.
+    #[arg(long)]
+    pub min_tvl: Option<f64>,
 
     /// TVL buffer ratio.
     /// Used to avoid fluctuations caused by components hovering around a single threshold.
@@ -174,7 +174,7 @@ mod cli_tests {
         assert_eq!(args.rpc_url, Some("https://rpc.example.com".to_string()));
         assert_eq!(args.tycho_url, Some("wss://custom.tycho.url".to_string()));
         assert_eq!(args.protocols, vec!["uniswap_v2", "uniswap_v3"]);
-        assert_eq!(args.min_tvl, 20.0);
+        assert_eq!(args.min_tvl, Some(20.0));
         assert_eq!(args.worker_pools_config, PathBuf::from("new_worker_pools.toml"));
         assert_eq!(args.blocklist_config, None);
     }
@@ -199,7 +199,7 @@ mod cli_tests {
         assert_eq!(args.rpc_url, None);
         assert_eq!(args.tycho_url, None);
         assert!(args.protocols.is_empty());
-        assert_eq!(args.min_tvl, 10.0);
+        assert_eq!(args.min_tvl, None);
         assert_eq!(args.tvl_buffer_ratio, 1.1);
         assert_eq!(args.gas_refresh_interval_secs, 30);
         assert_eq!(args.reconnect_delay_secs, 5);

@@ -8,7 +8,7 @@ use fynd_core::{
 };
 use fynd_rpc::builder::parse_chain;
 use tracing::info;
-use tycho_simulation::tycho_common::models::Address;
+use tycho_simulation::tycho_common::models::{Address, TvlThresholdTier};
 
 /// Derives recommended connector tokens from live Tycho market data.
 ///
@@ -44,8 +44,9 @@ pub struct DeriveConnectorTokensArgs {
     pub protocols: Vec<String>,
 
     /// Minimum TVL threshold in native token. Pools below this threshold are excluded.
-    #[arg(long, default_value_t = 10.0)]
-    pub min_tvl: f64,
+    /// Defaults to a chain-specific value if not set.
+    #[arg(long)]
+    pub min_tvl: Option<f64>,
 
     /// Number of top connector tokens to suggest.
     #[arg(long, default_value_t = 10)]
@@ -68,7 +69,8 @@ pub async fn run(args: DeriveConnectorTokensArgs) -> Result<()> {
     let chain = parse_chain(&args.chain).context("invalid chain")?;
     let tycho_url = crate::resolve_tycho_url(&args.chain, args.tycho_url.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let rpc_url = crate::resolve_rpc_url(args.rpc_url.as_deref());
+    let rpc_url = crate::resolve_rpc_url(&args.chain, args.rpc_url.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let protocols = crate::resolve_protocols(
         &tycho_url,
@@ -82,8 +84,11 @@ pub async fn run(args: DeriveConnectorTokensArgs) -> Result<()> {
 
     info!(?protocols, "starting market data feed with {} protocol(s)", protocols.len());
 
-    let mut builder = FyndBuilder::new(chain, tycho_url, rpc_url, protocols, args.min_tvl)
-        .algorithm("most_liquid");
+    let min_tvl = args
+        .min_tvl
+        .unwrap_or_else(|| chain.default_tvl_threshold(TvlThresholdTier::Low));
+    let mut builder =
+        FyndBuilder::new(chain, tycho_url, rpc_url, protocols, min_tvl).algorithm("most_liquid");
     if let Some(key) = &args.tycho_api_key {
         builder = builder.tycho_api_key(key.clone());
     }

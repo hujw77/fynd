@@ -173,10 +173,12 @@ fn build_solver(
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
-    let rpc_url = args
-        .rpc_url
-        .clone()
-        .unwrap_or_else(|| fynd_rpc::config::defaults::DEFAULT_RPC_URL.to_string());
+    let rpc_url = match args.rpc_url.clone() {
+        Some(url) => url,
+        None => fynd_rpc::config::defaults::default_rpc_url(&args.chain)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .to_string(),
+    };
 
     let pool = pool_config
         .clone()
