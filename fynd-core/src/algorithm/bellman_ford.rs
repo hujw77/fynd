@@ -113,14 +113,20 @@ pub struct BellmanFordAlgorithm {
     connector_tokens: Option<HashSet<Address>>,
 }
 
+impl Default for BellmanFordAlgorithm {
+    fn default() -> Self {
+        Self::with_config(AlgorithmConfig::default())
+    }
+}
+
 impl BellmanFordAlgorithm {
-    pub(crate) fn with_config(config: AlgorithmConfig) -> Result<Self, AlgorithmError> {
-        Ok(Self {
+    pub(crate) fn with_config(config: AlgorithmConfig) -> Self {
+        Self {
             max_hops: config.max_hops(),
             timeout: config.timeout(),
             gas_aware: config.gas_aware(),
             connector_tokens: config.connector_tokens().cloned(),
-        })
+        }
     }
 
     /// One-time async setup for repeated `find_single_route` calls.
@@ -898,7 +904,6 @@ mod tests {
         BellmanFordAlgorithm::with_config(
             AlgorithmConfig::new(1, max_hops, Duration::from_millis(timeout_ms), None).unwrap(),
         )
-        .unwrap()
     }
 
     // ==================== Unit Tests ====================
@@ -1486,7 +1491,6 @@ mod tests {
                 .unwrap()
                 .with_connector_tokens(connector_tokens),
         )
-        .unwrap()
     }
 
     #[tokio::test]

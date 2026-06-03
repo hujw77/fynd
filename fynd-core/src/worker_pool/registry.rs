@@ -31,8 +31,7 @@ use crate::{
 };
 
 /// List of available built-in algorithm names (for registry-based dispatch).
-pub(crate) const AVAILABLE_ALGORITHMS: &[&str] =
-    &["most_liquid", "bellman_ford", "path_frank_wolfe"];
+pub(crate) const AVAILABLE_ALGORITHMS: &[&str] = &["most_liquid", "bellman_ford"];
 
 /// Default algorithm to use if none specified.
 pub(crate) const DEFAULT_ALGORITHM: &str = "most_liquid";
@@ -206,10 +205,7 @@ fn spawn_most_liquid_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> 
 
 /// Spawns workers for the BellmanFord algorithm.
 fn spawn_bellman_ford_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> {
-    let factory = |config: AlgorithmConfig| {
-        BellmanFordAlgorithm::with_config(config)
-            .expect("invalid worker configuration for BellmanFordAlgorithm")
-    };
+    let factory = |config: AlgorithmConfig| BellmanFordAlgorithm::with_config(config);
     spawn_workers_generic(params, &factory)
 }
 
@@ -217,7 +213,6 @@ fn spawn_bellman_ford_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>>
 fn spawn_path_frank_wolfe_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> {
     let factory = |config: AlgorithmConfig| {
         PathFrankWolfeAlgorithm::new(config, PathFrankWolfeConfig::default())
-            .expect("invalid worker configuration for PathFrankWolfeAlgorithm")
     };
     spawn_workers_generic(params, &factory)
 }

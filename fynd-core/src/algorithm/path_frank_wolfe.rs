@@ -38,35 +38,22 @@ impl Default for PathFrankWolfeConfig {
 /// and optimises the input split across them using a Frank-Wolfe loop.
 pub struct PathFrankWolfeAlgorithm {
     inner: BellmanFordAlgorithm,
+    // Used by the split-routing loop (not yet implemented).
+    #[allow(dead_code)]
     config: PathFrankWolfeConfig,
 }
 
 impl PathFrankWolfeAlgorithm {
     /// Creates a new `PathFrankWolfeAlgorithm`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AlgorithmError::InvalidConfiguration` if the underlying
-    /// `BellmanFordAlgorithm` rejects the algorithm config.
-    pub(crate) fn new(
-        algorithm_config: AlgorithmConfig,
-        config: PathFrankWolfeConfig,
-    ) -> Result<Self, AlgorithmError> {
-        let inner = BellmanFordAlgorithm::with_config(algorithm_config)?;
-        Ok(Self { inner, config })
+    pub(crate) fn new(algorithm_config: AlgorithmConfig, config: PathFrankWolfeConfig) -> Self {
+        let inner = BellmanFordAlgorithm::with_config(algorithm_config);
+        Self { inner, config }
     }
+}
 
-    /// Creates a new `PathFrankWolfeAlgorithm` with default configs for both
-    /// algorithm and PFW tuning parameters.
-    #[allow(dead_code)]
-    pub(crate) fn new_with_defaults() -> Result<Self, AlgorithmError> {
+impl Default for PathFrankWolfeAlgorithm {
+    fn default() -> Self {
         Self::new(AlgorithmConfig::default(), PathFrankWolfeConfig::default())
-    }
-
-    /// Returns a reference to the PFW-specific tuning config.
-    #[allow(dead_code)]
-    pub(crate) fn pfw_config(&self) -> &PathFrankWolfeConfig {
-        &self.config
     }
 }
 
@@ -80,16 +67,13 @@ impl Algorithm for PathFrankWolfeAlgorithm {
 
     async fn find_best_route(
         &self,
-        graph: &Self::GraphType,
-        market: MarketData,
-        label: Option<StateLabel>,
-        derived: Option<SharedDerivedDataRef>,
-        order: &Order,
+        _graph: &Self::GraphType,
+        _market: MarketData,
+        _label: Option<StateLabel>,
+        _derived: Option<SharedDerivedDataRef>,
+        _order: &Order,
     ) -> Result<RouteResult, AlgorithmError> {
-        // Delegate to inner BF until the split-routing loop is implemented.
-        self.inner
-            .find_best_route(graph, market, label, derived, order)
-            .await
+        unimplemented!("PathFrankWolfe split-routing loop not yet implemented")
     }
 
     fn computation_requirements(&self) -> ComputationRequirements {
@@ -110,6 +94,13 @@ mod tests {
     use super::*;
     use crate::algorithm::AlgorithmConfig;
 
+    impl PathFrankWolfeAlgorithm {
+        /// Returns a reference to the PFW-specific tuning config.
+        fn pfw_config(&self) -> &PathFrankWolfeConfig {
+            &self.config
+        }
+    }
+
     #[test]
     fn test_with_pfw_config_override() {
         let pfw_config = PathFrankWolfeConfig {
@@ -118,7 +109,7 @@ mod tests {
             min_split: 0.1,
             line_search_evals: 24,
         };
-        let algo = PathFrankWolfeAlgorithm::new(AlgorithmConfig::default(), pfw_config).unwrap();
+        let algo = PathFrankWolfeAlgorithm::new(AlgorithmConfig::default(), pfw_config);
 
         assert_eq!(algo.pfw_config().max_paths, 8);
         assert!((algo.pfw_config().max_probe - 0.5).abs() < f64::EPSILON);
