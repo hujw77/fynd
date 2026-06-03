@@ -188,10 +188,6 @@ pub mod defaults {
         }
     }
 
-    /// Minimum TVL a pool must have to be included in routing, denominated in the chain's native
-    /// token.
-    pub const MIN_TVL: f64 = 10.0;
-
     /// Worker-router timeout in milliseconds.
     ///
     /// Intentionally tighter than `FyndBuilder`'s generous 10 s standalone default; an HTTP

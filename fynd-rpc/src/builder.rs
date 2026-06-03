@@ -11,7 +11,7 @@ use fynd_core::{
 };
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
-use tycho_simulation::tycho_common::models::Chain;
+use tycho_simulation::tycho_common::models::{Chain, TvlThresholdTier};
 
 use crate::{
     api::{configure_app, AppState, HealthTracker},
@@ -52,7 +52,13 @@ impl FyndRPCBuilder {
         let fynd_builder = pools
             .iter()
             .try_fold(
-                FyndBuilder::new(chain, tycho_url, rpc_url, protocols, defaults::MIN_TVL),
+                FyndBuilder::new(
+                    chain,
+                    tycho_url,
+                    rpc_url,
+                    protocols,
+                    chain.default_tvl_threshold(TvlThresholdTier::Low),
+                ),
                 |sb, (name, cfg)| sb.add_pool(name, cfg),
             )?
             .worker_router_timeout(Duration::from_millis(defaults::WORKER_ROUTER_TIMEOUT_MS));
@@ -76,7 +82,7 @@ impl FyndRPCBuilder {
         self
     }
 
-    /// Sets the minimum TVL filter (default: 10.0).
+    /// Sets the minimum TVL filter (default: chain-specific `TvlThresholdTier::Low`).
     pub fn min_tvl(mut self, min_tvl: f64) -> Self {
         self.fynd_builder = self.fynd_builder.min_tvl(min_tvl);
         self

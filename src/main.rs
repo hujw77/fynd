@@ -55,7 +55,10 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tycho_simulation::{tycho_common::models::Chain, utils::default_blocklist};
+use tycho_simulation::{
+    tycho_common::models::{Chain, TvlThresholdTier},
+    utils::default_blocklist,
+};
 
 fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -283,6 +286,9 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
 
     let tycho_url = resolve_tycho_url(&args.chain, args.tycho_url.as_deref())?;
     let rpc_url = resolve_rpc_url(&args.chain, args.rpc_url.as_deref())?;
+    let min_tvl = args
+        .min_tvl
+        .unwrap_or_else(|| chain.default_tvl_threshold(TvlThresholdTier::Low));
 
     let protocols = resolve_protocols(
         &tycho_url,
@@ -301,7 +307,7 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
             .map_err(|e| SolverError::SetupError(format!("invalid pool configuration: {e}")))?
             .http_host(args.http_host.clone())
             .http_port(args.http_port)
-            .min_tvl(args.min_tvl)
+            .min_tvl(min_tvl)
             .min_token_quality(args.min_token_quality)
             .traded_n_days_ago(args.traded_n_days_ago)
             .tvl_buffer_ratio(args.tvl_buffer_ratio)
