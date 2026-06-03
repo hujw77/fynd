@@ -1350,8 +1350,9 @@ fn validate_dead_ends(
 }
 
 /// Cycle detection: no swap output may match an earlier group's input.
-/// Exception: in a round-trip (first == terminal) exactly one group may
-/// produce back-edges to first_token.
+/// Exception: in a round-trip (first == terminal) outputs equal to
+/// `first_token` are allowed, provided the route has more than one
+/// group — a single-group round-trip is always rejected.
 fn validate_cycles(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     first_token: &Address,
@@ -1365,34 +1366,20 @@ fn validate_cycles(
             last: terminal_token.clone(),
         });
     }
-    let mut seen_back_edge_group = false;
     let mut earlier_inputs: HashSet<&Address> = HashSet::new();
     for (token_in, group) in swaps_by_token_in {
         earlier_inputs.insert(token_in);
-        let mut group_has_back_edge = false;
         for swap in group {
             if !earlier_inputs.contains(&swap.token_out) {
                 continue;
             }
-            if is_round_trip && &swap.token_out == first_token {
-                group_has_back_edge = true;
-            } else {
+            if !(is_round_trip && &swap.token_out == first_token) {
                 return Err(RouteValidationError::UnsupportedCycle {
                     token: swap.token_out.clone(),
                     first: first_token.clone(),
                     last: terminal_token.clone(),
                 });
             }
-        }
-        if group_has_back_edge {
-            if seen_back_edge_group {
-                return Err(RouteValidationError::UnsupportedCycle {
-                    token: first_token.clone(),
-                    first: first_token.clone(),
-                    last: terminal_token.clone(),
-                });
-            }
-            seen_back_edge_group = true;
         }
     }
     Ok(())
