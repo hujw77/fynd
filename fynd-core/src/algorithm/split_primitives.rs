@@ -115,13 +115,16 @@ impl MarketOverrides {
         self
     }
 
-    /// Insert a zero-gas wrapper around an existing sim. The underlying pool still
-    /// produces correct amounts; only `get_amount_out().gas` is zeroed. Use for pools
-    /// already present in `current_allocations` — their gas is paid once in the
-    /// combined transaction.
-    pub(crate) fn with_zero_gas(mut self, id: ComponentId, sim: Box<dyn ProtocolSim>) -> Self {
-        self.0
-            .insert(id, Box::new(ZeroGasSim(sim)));
+    /// Wraps an existing override entry so that `get_amount_out().gas` is always zero.
+    ///
+    /// The underlying pool still produces correct amounts; only the gas is zeroed. Use for
+    /// pools already present in `current_allocations` — their gas is paid once in the combined
+    /// transaction and must not be counted again as a marginal cost. If the ID has no override
+    /// entry (e.g., simulation failed during degradation), this is a no-op.
+    pub(crate) fn with_zero_gas(mut self, id: ComponentId) -> Self {
+        if let Some(sim) = self.0.remove(&id) {
+            self.0.insert(id, wrap_zero_gas(sim));
+        }
         self
     }
 
@@ -1073,7 +1076,8 @@ mod tests {
 
         // Zero gas on pool_ab, leave pool_bc as a normal override.
         let overrides = MarketOverrides::empty()
-            .with_zero_gas("pool_ab".to_string(), Box::new(sim_ab))
+            .with_override("pool_ab".to_string(), Box::new(sim_ab))
+            .with_zero_gas("pool_ab".to_string())
             .with_override("pool_bc".to_string(), Box::new(sim_bc));
 
         let hops_ab = [HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())];
