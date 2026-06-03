@@ -1,3 +1,15 @@
+## [0.69.0](https://github.com/propeller-heads/fynd/compare/0.68.0...0.69.0) (2026-06-03)
+
+
+### Features
+
+* **BF:** Extract find_single_route sync method with MarketOverrides support ([0b6221f](https://github.com/propeller-heads/fynd/commit/0b6221f26d36f952b2e02d524bcf61c7803b9de9))
+
+
+### Bug Fixes
+
+* **BF:** Update helper visibility ([c12a80a](https://github.com/propeller-heads/fynd/commit/c12a80aa83556df4a9e34ba8763db04bae589761))
+
 ## [0.68.0](https://github.com/propeller-heads/fynd/compare/0.67.1...0.68.0) (2026-06-02)
 
 
