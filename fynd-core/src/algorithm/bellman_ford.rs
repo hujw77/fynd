@@ -90,7 +90,7 @@ pub(crate) struct FindRouteOptions {
 }
 
 /// Output of the SPFA relaxation pass: per-node best-path arrays.
-struct SpfaResult {
+struct SPFAResult {
     /// Best gross output amount reachable at each node index.
     amount: Vec<BigUint>,
     /// The (predecessor node, pool) that last improved each node's amount.
@@ -317,7 +317,7 @@ impl BellmanFordAlgorithm {
         order: &Order,
         overrides: &MarketOverrides,
         start: Instant,
-    ) -> SpfaResult {
+    ) -> SPFAResult {
         // amount[node] = best gross output reachable at that node.
         // edge_gas[node] = gas for the edge that last improved amount[node].
         // cumul_gas[node] = total gas along the best path to this node.
@@ -466,7 +466,7 @@ impl BellmanFordAlgorithm {
             active_nodes.sort_unstable();
         }
 
-        SpfaResult { amount, predecessor, edge_gas, spot_product }
+        SPFAResult { amount, predecessor, edge_gas, spot_product }
     }
 
     /// Constructs a [`Route`] from a reconstructed path and SPFA output arrays.
