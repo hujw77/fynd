@@ -1884,27 +1884,27 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_diamond_split_valid() {
-        //   ┌──[60%]── B ──┐
-        // A │               C
-        //   └──[rem]── D ──┘
-        let swaps = vec![
-            make_split_swap(0x01, 0x02, 0.6), // A→B, 60%
-            make_swap(0x02, 0x03, 590, 580),  // B→C
-            make_split_swap(0x01, 0x04, 0.0), // A→D, remainder
-            make_swap(0x04, 0x03, 390, 380),  // D→C
-        ];
-        let route = Route::new(swaps, HashMap::new());
-        assert!(route.validate().is_ok());
-    }
-
-    #[test]
     fn test_validate_split_single_swap_nonzero_split() {
         // A ──[50%]── B   ERROR: single swap must have split=0.0
         let swaps = vec![make_split_swap(0x01, 0x02, 0.5)];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
         assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_unreachable_group() {
+        //   ┌──[50%]──┐
+        // A │          B    C → D   ERROR: C unreachable from A
+        //   └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x02, 0.0), // A→B (remainder)
+            make_swap(0x03, 0x04, 490, 480),  // C→D (unreachable)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::DisconnectedGroup { .. }));
     }
 
     #[test]
@@ -1957,27 +1957,19 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_split_multi_back_edge_groups() {
-        //   ┌──[30%]── B ──┐       ┌──[rem]──┐
-        // A ┤               D──→A──┤          F──→A
-        //   └──[30%]── C ──┘       └──── E ──┘
-        //                    ↑                  ↑
-        //              back-edge 1        back-edge 2
-        //         ERROR: two groups cycle back to A
+    fn test_validate_split_round_trip_valid_from_multiple_groups() {
+        //       ┌──[40%]── C ──┐
+        // A → B │               → A   (round-trip back to start)
+        //       └──[rem]── D ──┘
         let swaps = vec![
-            make_split_swap(0x01, 0x02, 0.3),                // A→B
-            make_split_swap(0x01, 0x03, 0.3),                // A→C
-            make_swap(0x02, 0x04, 290, 280),                 // B→D
-            make_swap(0x03, 0x04, 290, 280),                 // C→D
-            make_swap(0x04, 0x01, 560, 550).with_split(0.5), // D→A
-            make_swap(0x04, 0x05, 280, 270).with_split(0.0), // D→E
-            make_split_swap(0x01, 0x06, 0.0),                // A→F (remainder)
-            make_swap(0x05, 0x06, 270, 260),                 // E→F
-            make_swap(0x06, 0x01, 810, 800),                 // F→A
+            make_swap(0x01, 0x02, 960, 950),  // A→B
+            make_split_swap(0x02, 0x03, 0.4), // B→C
+            make_split_swap(0x02, 0x04, 0.0), // B→D
+            make_swap(0x03, 0x01, 960, 950),  // C→A (round-trip)
+            make_swap(0x04, 0x01, 960, 950),  // D→A (round-trip)
         ];
         let route = Route::new(swaps, HashMap::new());
-        let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+        assert!(route.validate().is_ok());
     }
 
     #[test]
@@ -1988,23 +1980,6 @@ mod tests {
         let swaps = vec![
             make_split_swap(0x01, 0x01, 0.5), // A→A
             make_split_swap(0x01, 0x01, 0.0), // A→A (remainder)
-        ];
-        let route = Route::new(swaps, HashMap::new());
-        let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
-    }
-
-    #[test]
-    fn test_validate_split_terminal_is_group_input() {
-        //     ┌──[50%]── B ──┐
-        // A → C               → C   ERROR: B→C and D→C cycle back
-        //     └──[rem]── D ──┘       (not a round-trip: first=A ≠ terminal=C)
-        let swaps = vec![
-            make_swap(0x01, 0x03, 1000, 990),                // A→C
-            make_swap(0x03, 0x02, 990, 980).with_split(0.5), // C→B
-            make_swap(0x03, 0x04, 490, 480).with_split(0.0), // C→D
-            make_swap(0x02, 0x03, 980, 970),                 // B→C (cycle)
-            make_swap(0x04, 0x03, 480, 470),                 // D→C (cycle)
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
