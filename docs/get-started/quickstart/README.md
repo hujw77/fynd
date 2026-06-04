@@ -87,9 +87,9 @@ docker run \
   ghcr.io/propeller-heads/fynd serve --chain Base
 ```
 
-These chains ship with built-in Tycho and RPC endpoints: `Ethereum`, `Base`, `Unichain`, `BSC`, `Arbitrum`, `Polygon`. For any other chain, also pass `--tycho-url` and `--rpc-url` explicitly.
+These chains ship with built-in Tycho and RPC endpoints (names are case-insensitive): `Ethereum`, `Base`, `Unichain`, `BSC`, `Arbitrum`, `Polygon`. For any other chain, also pass `--tycho-url` and `--rpc-url` explicitly.
 
-Your client must target the same chain. In the TypeScript example, set `chainId` (and the viem chain) to match the server:
+Your client must target the same chain. If you use the TypeScript client (Step 1), set `chainId` and the viem chain to match the server:
 
 ```typescript
 import { base } from 'viem/chains';
