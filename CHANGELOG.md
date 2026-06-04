@@ -1,3 +1,10 @@
+## [0.72.0](https://github.com/propeller-heads/fynd/compare/0.71.1...0.72.0) (2026-06-04)
+
+
+### Features
+
+* bump tycho-simulation and tycho-execution to 0.304 ([70c2e61](https://github.com/propeller-heads/fynd/commit/70c2e616baa61717d4709a300baefcfd4f3df631))
+
 ## [0.71.1](https://github.com/propeller-heads/fynd/compare/0.71.0...0.71.1) (2026-06-04)
 
 
