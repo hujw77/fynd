@@ -1,3 +1,10 @@
+## [0.72.1](https://github.com/propeller-heads/fynd/compare/0.72.0...0.72.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* clear stale edge weights when spot price is unavailable ([bb63ba4](https://github.com/propeller-heads/fynd/commit/bb63ba47abb2266eac3dbcd7520fe419fcb435ed))
+
 ## [0.72.0](https://github.com/propeller-heads/fynd/compare/0.71.1...0.72.0) (2026-06-04)
 
 
