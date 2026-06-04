@@ -18,6 +18,7 @@ use crate::{
     types::{ComponentId, Order, Route, Swap},
 };
 
+#[derive(Clone)]
 pub(crate) struct HopDescriptor {
     pub(crate) component_id: ComponentId,
     pub(crate) token_in: Token,
@@ -44,6 +45,7 @@ impl HopDescriptor {
 ///
 /// One path in the current split solution, with the fraction of total `amount_in`
 /// currently allocated to it. All fractions across allocations sum to 1.0.
+#[derive(Clone)]
 pub(crate) struct PathAllocation {
     pub(crate) hops: Vec<HopDescriptor>,
     /// Fraction of total input on this path (0 < f <= 1).
@@ -732,6 +734,26 @@ pub(crate) fn build_split_route(
                 }
             }
         }
+    }
+
+    // If any hops were never reached, the token graph has a cycle and the
+    // topological sort deadlocked. This happens when two paths use the same
+    // pools in opposite order, e.g.:
+    //
+    //   WETH ─┬─ USDC ─ (Pool A) ─ DAI ─ PEPE ─ (Pool B) ─ UNI ─ WBTC
+    //         └─ PEPE ─ (Pool B) ─ UNI ─ USDC ─ (Pool A) ─ DAI ─ WBTC
+    //
+    // merge_shared_hops collapses Pool A (USDC→DAI) and Pool B (PEPE→UNI)
+    // into single swaps, creating the cycle USDC → DAI → PEPE → UNI → USDC.
+    if !hops_by_token.is_empty() {
+        let stuck: Vec<_> = hops_by_token
+            .keys()
+            .map(|k| format!("{k}"))
+            .collect();
+        return Err(AlgorithmError::Other(format!(
+            "dependency cycle — unprocessed tokens: [{}]",
+            stuck.join(", "),
+        )));
     }
 
     Ok(Route::new(swaps, route_tokens))
@@ -1923,6 +1945,101 @@ mod tests {
             route.total_gas(),
             BigUint::from(300_000u64),
             "gas must be counted once per pool, not once per path"
+        );
+    }
+
+    #[test]
+    fn test_build_split_route_rejects_reverse_order_shared_pools() {
+        // Two paths use Pool A and Pool B in opposite order:
+        //
+        //         ┌── USDC ── pool_a ──▶ DAI ── PEPE ── pool_b ──▶ UNI ── WBTC
+        //  WETH ──┤
+        //         └── PEPE ── pool_b ──▶ UNI ── USDC ── pool_a ──▶ DAI ── WBTC
+        //
+        // merge_shared_hops collapses Pool A and Pool B into single swaps,
+        // creating the cycle: USDC → DAI → PEPE → UNI → USDC.
+        let weth = token(0x01, "WETH");
+        let usdc = token(0x02, "USDC");
+        let dai = token(0x03, "DAI");
+        let pepe = token(0x04, "PEPE");
+        let uni = token(0x05, "UNI");
+        let wbtc = token(0x06, "WBTC");
+        let market = make_market(vec![
+            ("pool_wu", vec![weth.clone(), usdc.clone()], Box::new(MockProtocolSim::new(2.0))),
+            ("pool_a", vec![usdc.clone(), dai.clone()], Box::new(MockProtocolSim::new(1.0))),
+            ("pool_dp", vec![dai.clone(), pepe.clone()], Box::new(MockProtocolSim::new(5.0))),
+            ("pool_b", vec![pepe.clone(), uni.clone()], Box::new(MockProtocolSim::new(1.0))),
+            ("pool_uw", vec![uni.clone(), wbtc.clone()], Box::new(MockProtocolSim::new(3.0))),
+            ("pool_wp", vec![weth.clone(), pepe.clone()], Box::new(MockProtocolSim::new(4.0))),
+            ("pool_us", vec![uni.clone(), usdc.clone()], Box::new(MockProtocolSim::new(1.0))),
+            ("pool_dw", vec![dai.clone(), wbtc.clone()], Box::new(MockProtocolSim::new(2.0))),
+        ]);
+        let ord = order(&weth, &wbtc, 1000, OrderSide::Sell);
+        let gas = BigUint::from(50_000u64);
+
+        let path1 = PathAllocation {
+            hops: vec![
+                HopDescriptor::new("pool_wu".to_string(), weth.clone(), usdc.clone())
+                    .with_amounts(BigUint::from(1200u64), gas.clone()),
+                HopDescriptor::new("pool_a".to_string(), usdc.clone(), dai.clone())
+                    .with_amounts(BigUint::from(1200u64), gas.clone()),
+                HopDescriptor::new("pool_dp".to_string(), dai.clone(), pepe.clone())
+                    .with_amounts(BigUint::from(6000u64), gas.clone()),
+                HopDescriptor::new("pool_b".to_string(), pepe.clone(), uni.clone())
+                    .with_amounts(BigUint::from(6000u64), gas.clone()),
+                HopDescriptor::new("pool_uw".to_string(), uni.clone(), wbtc.clone())
+                    .with_amounts(BigUint::from(18000u64), gas.clone()),
+            ],
+            flow_fraction: 0.6,
+            amount_in: BigUint::from(600u64),
+            amount_out: BigUint::from(18000u64),
+            marginal_price_product: 30.0,
+        };
+
+        let path2 = PathAllocation {
+            hops: vec![
+                HopDescriptor::new("pool_wp".to_string(), weth.clone(), pepe.clone())
+                    .with_amounts(BigUint::from(1600u64), gas.clone()),
+                HopDescriptor::new("pool_b".to_string(), pepe.clone(), uni.clone())
+                    .with_amounts(BigUint::from(1600u64), gas.clone()),
+                HopDescriptor::new("pool_us".to_string(), uni.clone(), usdc.clone())
+                    .with_amounts(BigUint::from(1600u64), gas.clone()),
+                HopDescriptor::new("pool_a".to_string(), usdc.clone(), dai.clone())
+                    .with_amounts(BigUint::from(1600u64), gas.clone()),
+                HopDescriptor::new("pool_dw".to_string(), dai.clone(), wbtc.clone())
+                    .with_amounts(BigUint::from(3200u64), gas),
+            ],
+            flow_fraction: 0.4,
+            amount_in: BigUint::from(400u64),
+            amount_out: BigUint::from(3200u64),
+            marginal_price_product: 8.0,
+        };
+
+        // merge_shared_hops collapses Pool A and Pool B into single entries.
+        let merged = merge_shared_hops(&[path1.clone(), path2.clone()]).unwrap();
+        assert_eq!(
+            merged[&usdc.address]
+                .iter()
+                .filter(|s| s.hop.component_id == "pool_a")
+                .count(),
+            1,
+            "merge_shared_hops merges pool_a into one"
+        );
+        assert_eq!(
+            merged[&pepe.address]
+                .iter()
+                .filter(|s| s.hop.component_id == "pool_b")
+                .count(),
+            1,
+            "merge_shared_hops merges pool_b into one"
+        );
+
+        // build_split_route rejects the combination.
+        let err = build_split_route(&[path1, path2], &market, &ord)
+            .expect_err("must reject cyclic path combination");
+        assert!(
+            matches!(&err, AlgorithmError::Other(msg) if msg.contains("dependency cycle")),
+            "expected AlgorithmError::Other with dependency cycle, got: {err}"
         );
     }
 }
