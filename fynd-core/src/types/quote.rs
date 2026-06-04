@@ -1310,7 +1310,7 @@ fn validate_bfs_connectivity(
     }
     for (token_in, _) in swaps_by_token_in {
         if !reachable.contains(token_in) {
-            return Err(RouteValidationError::DisconnectedBranchCollection {
+            return Err(RouteValidationError::DisconnectedSplitStart {
                 token_in: token_in.clone(),
                 start_token: first_token.clone(),
             });
@@ -1339,7 +1339,7 @@ fn validate_dead_ends(
         .flat_map(|(_, swaps)| swaps)
     {
         if !non_first_input_tokens.contains(&swap.token_out) && &swap.token_out != terminal_token {
-            return Err(RouteValidationError::DeadEndOutput {
+            return Err(RouteValidationError::DisconnectedSplitEnd {
                 token_out: swap.token_out.clone(),
                 terminal_token: terminal_token.clone(),
             });
@@ -1429,10 +1429,10 @@ pub enum RouteValidationError {
     /// in the route and not the terminal token.
     #[non_exhaustive]
     #[error(
-        "dead-end output: {token_out} is not consumed by any later step \
+        "disconnected split end: {token_out} is not consumed by any later step \
          in the route and is not the terminal token {terminal_token}"
     )]
-    DeadEndOutput {
+    DisconnectedSplitEnd {
         /// The output token that leads nowhere.
         token_out: Address,
         /// The route's terminal token.
@@ -1441,10 +1441,10 @@ pub enum RouteValidationError {
     /// A split's input token is not reachable from the route's start token.
     #[non_exhaustive]
     #[error(
-        "disconnected split: input {token_in} is not reachable \
+        "disconnected split start: input {token_in} is not reachable \
          from start token {start_token}"
     )]
-    DisconnectedBranchCollection {
+    DisconnectedSplitStart {
         /// Input token of the unreachable split.
         token_in: Address,
         /// The route's start token.
@@ -1921,7 +1921,7 @@ mod tests {
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::DisconnectedBranchCollection { .. }));
+        assert!(matches!(err, RouteValidationError::DisconnectedSplitStart { .. }));
     }
 
     #[test]
@@ -1937,7 +1937,7 @@ mod tests {
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::DeadEndOutput { .. }));
+        assert!(matches!(err, RouteValidationError::DisconnectedSplitEnd { .. }));
     }
 
     #[test]
