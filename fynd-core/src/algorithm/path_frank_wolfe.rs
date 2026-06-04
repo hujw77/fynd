@@ -233,12 +233,16 @@ impl PathFrankWolfeAlgorithm {
         existing: &[PathAllocation],
     ) -> bool {
         existing.iter().any(|alloc| {
-            alloc.hops.len() == candidate.len()
-                && alloc.hops.iter().zip(candidate.iter()).all(|(a, b)| {
-                    a.component_id == b.component_id
-                        && a.token_in.address == b.token_in.address
-                        && a.token_out.address == b.token_out.address
-                })
+            alloc.hops.len() == candidate.len() &&
+                alloc
+                    .hops
+                    .iter()
+                    .zip(candidate.iter())
+                    .all(|(a, b)| {
+                        a.component_id == b.component_id &&
+                            a.token_in.address == b.token_in.address &&
+                            a.token_out.address == b.token_out.address
+                    })
         })
     }
 }
@@ -552,8 +556,7 @@ mod tests {
             amount_out: BigUint::from(200u64),
             marginal_price_product: 2.0,
         };
-        let candidate =
-            vec![HopDescriptor::new("P1".to_string(), token_a, token_c)];
+        let candidate = vec![HopDescriptor::new("P1".to_string(), token_a, token_c)];
         assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
     }
 
