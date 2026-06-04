@@ -219,8 +219,11 @@ impl PathFrankWolfeAlgorithm {
             .collect()
     }
 
-    /// Returns `true` if `candidate` has the same ordered sequence of pool component IDs as any
-    /// existing allocation.
+    /// Returns `true` if `candidate` has the same ordered sequence of
+    /// `(component_id, token_in, token_out)` as any existing allocation.
+    ///
+    /// Both the pool and the token pair must match at every hop — the same pool used with
+    /// different tokens (e.g. in a multi-token pool) is a distinct path.
     ///
     /// Paths that share only a prefix but diverge at a later hop are **not** duplicates — the
     /// shared hops are handled by `build_split_route`, which emits a single combined swap for
@@ -230,17 +233,13 @@ impl PathFrankWolfeAlgorithm {
         candidate: &[HopDescriptor],
         existing: &[PathAllocation],
     ) -> bool {
-        let candidate_ids: Vec<&str> = candidate
-            .iter()
-            .map(|h| h.component_id.as_str())
-            .collect();
         existing.iter().any(|alloc| {
-            let existing_ids: Vec<&str> = alloc
-                .hops
-                .iter()
-                .map(|h| h.component_id.as_str())
-                .collect();
-            existing_ids == candidate_ids
+            alloc.hops.len() == candidate.len()
+                && alloc.hops.iter().zip(candidate.iter()).all(|(a, b)| {
+                    a.component_id == b.component_id
+                        && a.token_in.address == b.token_in.address
+                        && a.token_out.address == b.token_out.address
+                })
         })
     }
 }
@@ -537,6 +536,25 @@ mod tests {
             HopDescriptor::new("P1".to_string(), token_a, token_b.clone()),
             HopDescriptor::new("P3".to_string(), token_b, token_c),
         ];
+        assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
+    }
+
+    #[test]
+    fn test_is_duplicate_path_same_pool_different_tokens() {
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+
+        // Same pool "P1" but with different token pairs — not a duplicate.
+        let alloc = PathAllocation {
+            hops: vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())],
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(100u64),
+            amount_out: BigUint::from(200u64),
+            marginal_price_product: 2.0,
+        };
+        let candidate =
+            vec![HopDescriptor::new("P1".to_string(), token_a, token_c)];
         assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
     }
 
