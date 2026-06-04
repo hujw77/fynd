@@ -1325,7 +1325,10 @@ fn validate_dead_ends(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     swaps: &[Swap],
 ) -> Result<(), RouteValidationError> {
-    let terminal_token = &swaps[swaps.len() - 1].token_out;
+    let terminal_token = &swaps
+        .last()
+        .ok_or(RouteValidationError::EmptyRoute)?
+        .token_out;
     let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
         .iter()
         .skip(1)
@@ -1353,7 +1356,10 @@ fn validate_cycles(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
     swaps: &[Swap],
 ) -> Result<(), RouteValidationError> {
-    let terminal_token = &swaps[swaps.len() - 1].token_out;
+    let terminal_token = &swaps
+        .last()
+        .ok_or(RouteValidationError::EmptyRoute)?
+        .token_out;
     let first_token = &swaps_by_token_in[0].0;
     let is_round_trip = first_token == terminal_token;
     if is_round_trip && swaps_by_token_in.len() <= 1 {
