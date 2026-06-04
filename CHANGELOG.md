@@ -1,3 +1,10 @@
+## [0.71.1](https://github.com/propeller-heads/fynd/compare/0.71.0...0.71.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* pass TLS setting to protocol stream builder ([600ff69](https://github.com/propeller-heads/fynd/commit/600ff6997e5295ef0bfd674d2f9488380004c0fc))
+
 ## [0.71.0](https://github.com/propeller-heads/fynd/compare/0.70.0...0.71.0) (2026-06-04)
 
 
