@@ -63,38 +63,7 @@ impl Default for PathFrankWolfeAlgorithm {
     }
 }
 
-impl Algorithm for PathFrankWolfeAlgorithm {
-    type GraphType = StableDiGraph<()>;
-    type GraphManager = PetgraphStableDiGraphManager<()>;
-
-    fn name(&self) -> &str {
-        "path_frank_wolfe"
-    }
-
-    async fn find_best_route(
-        &self,
-        _graph: &Self::GraphType,
-        _market: MarketData,
-        _label: Option<StateLabel>,
-        _derived: Option<SharedDerivedDataRef>,
-        _order: &Order,
-    ) -> Result<RouteResult, AlgorithmError> {
-        unimplemented!("PathFrankWolfe split-routing loop not yet implemented")
-    }
-
-    fn computation_requirements(&self) -> ComputationRequirements {
-        ComputationRequirements::none()
-            .allow_stale("token_prices")
-            .expect("token_prices requirement conflicts (bug)")
-            .allow_stale("spot_prices")
-            .expect("spot_prices requirement conflicts (bug)")
-    }
-
-    fn timeout(&self) -> Duration {
-        self.inner.timeout()
-    }
-}
-
+impl PathFrankWolfeAlgorithm {
     /// Computes the minimum probe amount from the initial route's price impact.
     ///
     /// Returns `None` when the probe exceeds `config.max_probe × total_amount`,
@@ -142,16 +111,17 @@ impl Algorithm for PathFrankWolfeAlgorithm {
                         path.amount_out
                     ))
                 })?;
-            let ideal_out = amount_in * path.marginal_price_product;
-            if ideal_out <= 0.0 {
+            if amount_in <= 0.0 {
+                return Err(AlgorithmError::Other(format!("non-positive amount_in ({amount_in})")));
+            }
+            if path.marginal_price_product <= 0.0 {
                 return Err(AlgorithmError::Other(format!(
-                    "non-positive ideal output ({ideal_out}) from \
-                     amount_in={amount_in}, \
-                     marginal_price_product={}",
+                    "non-positive marginal_price_product ({})",
                     path.marginal_price_product
                 )));
             }
 
+            let ideal_out = amount_in * path.marginal_price_product;
             let price_impact = 1.0 - amount_out / ideal_out;
             weighted_price_impact += path.flow_fraction * price_impact;
         }
@@ -230,7 +200,7 @@ mod tests {
         //   gas_floor = 100_000 / 0.001 = 100_000_000
         //   max_probe = 1_000_000 * 0.25 = 250_000
         let total = BigUint::from(1_000_000u64);
-        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
+        let algo = PathFrankWolfeAlgorithm::default();
 
         let result = algo.compute_probe_amount(&total, 0.001, 100_000.0);
         assert!(result.is_none());
@@ -242,7 +212,7 @@ mod tests {
         //   probe = gas_cost / price_impact, so doubling price impact halves
         //   the probe.
         let total = BigUint::from(10_000_000u64);
-        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
+        let algo = PathFrankWolfeAlgorithm::default();
         let gas_cost = 1000.0;
 
         let probe_high_pi = algo
@@ -269,7 +239,7 @@ mod tests {
         //   gas_floor = 1000 / 0.10 = 10_000
         //   max_probe = 1_000_000 * 0.25 = 250_000
         let total = BigUint::from(1_000_000u64);
-        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
+        let algo = PathFrankWolfeAlgorithm::default();
 
         let probe_amount = algo
             .compute_probe_amount(&total, 0.10, 1000.0)
@@ -280,7 +250,7 @@ mod tests {
     #[test]
     fn test_probe_amount_zero_price_impact() {
         let total = BigUint::from(1_000_000u64);
-        let algo = PathFrankWolfeAlgorithm::new_with_defaults().unwrap();
+        let algo = PathFrankWolfeAlgorithm::default();
 
         assert!(algo
             .compute_probe_amount(&total, 0.0, 1000.0)
