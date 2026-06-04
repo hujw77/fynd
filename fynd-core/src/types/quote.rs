@@ -1226,16 +1226,8 @@ impl Route {
         validate_split_amounts(&swaps_by_token_in)?;
         validate_bfs_connectivity(&swaps_by_token_in, &token_in_to_index)?;
 
-        let first_token = &swaps_by_token_in[0].0;
-        let terminal_token = &self.swaps[self.swaps.len() - 1].token_out;
-        let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
-            .iter()
-            .skip(1)
-            .map(|(token_in, _)| token_in)
-            .collect();
-
-        validate_dead_ends(&swaps_by_token_in, &non_first_input_tokens, terminal_token)?;
-        validate_cycles(&swaps_by_token_in, first_token, terminal_token)?;
+        validate_dead_ends(&swaps_by_token_in, &self.swaps)?;
+        validate_cycles(&swaps_by_token_in, &self.swaps)?;
 
         Ok(())
     }
@@ -1331,21 +1323,22 @@ fn validate_bfs_connectivity(
 /// collection or be the terminal output token.
 fn validate_dead_ends(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
-    non_first_input_tokens: &HashSet<&Address>,
-    terminal_token: &Address,
+    swaps: &[Swap],
 ) -> Result<(), RouteValidationError> {
+    let terminal_token = &swaps[swaps.len() - 1].token_out;
+    let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
+        .iter()
+        .skip(1)
+        .map(|(token_in, _)| token_in)
+        .collect();
     for swap in swaps_by_token_in
         .iter()
         .flat_map(|(_, swaps)| swaps)
     {
         if !non_first_input_tokens.contains(&swap.token_out) && &swap.token_out != terminal_token {
-            return Err(RouteValidationError::InvalidSplit {
-                reason: format!(
-                    "swap output {} is a dead end — not consumed by any \
-                     later branch collection and not the terminal token \
-                     {terminal_token}",
-                    swap.token_out
-                ),
+            return Err(RouteValidationError::DeadEndOutput {
+                token_out: swap.token_out.clone(),
+                terminal_token: terminal_token.clone(),
             });
         }
     }
@@ -1358,9 +1351,10 @@ fn validate_dead_ends(
 /// collection — a single-collection round-trip is always rejected.
 fn validate_cycles(
     swaps_by_token_in: &[(Address, Vec<&Swap>)],
-    first_token: &Address,
-    terminal_token: &Address,
+    swaps: &[Swap],
 ) -> Result<(), RouteValidationError> {
+    let terminal_token = &swaps[swaps.len() - 1].token_out;
+    let first_token = &swaps_by_token_in[0].0;
     let is_round_trip = first_token == terminal_token;
     if is_round_trip && swaps_by_token_in.len() <= 1 {
         return Err(RouteValidationError::UnsupportedCycle {
@@ -1423,6 +1417,19 @@ pub enum RouteValidationError {
     InvalidSplit {
         /// Human-readable description of the violation.
         reason: String,
+    },
+    /// A swap output token is a dead end — not consumed by any later branch
+    /// collection and not the terminal token.
+    #[non_exhaustive]
+    #[error(
+        "dead-end output: {token_out} is not consumed by any later branch \
+         collection and is not the terminal token {terminal_token}"
+    )]
+    DeadEndOutput {
+        /// The output token that leads nowhere.
+        token_out: Address,
+        /// The route's terminal token.
+        terminal_token: Address,
     },
     /// A branch collection's input token is not reachable from the route's
     /// start token.
@@ -1924,7 +1931,7 @@ mod tests {
         ];
         let route = Route::new(swaps, HashMap::new());
         let err = route.validate().unwrap_err();
-        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+        assert!(matches!(err, RouteValidationError::DeadEndOutput { .. }));
     }
 
     #[test]
