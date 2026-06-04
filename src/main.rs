@@ -19,7 +19,8 @@
 //!            --protocols uniswap_v2,uniswap_v3
 //! ```
 //!
-//! `--rpc-url` defaults to `https://eth.llamarpc.com`. For production, provide a dedicated endpoint:
+//! `--rpc-url` defaults to a chain-specific public endpoint. For production, provide a dedicated
+//! one:
 //!
 //! ```bash
 //! fynd serve --tycho-url tycho-fynd-ethereum.propellerheads.xyz \
@@ -54,7 +55,10 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tycho_simulation::{tycho_common::models::Chain, utils::default_blocklist};
+use tycho_simulation::{
+    tycho_common::models::{Chain, TvlThresholdTier},
+    utils::default_blocklist,
+};
 
 fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -198,18 +202,19 @@ fn resolve_tycho_url(chain: &str, override_url: Option<&str>) -> Result<String, 
     }
 }
 
-/// Resolves the Ethereum RPC URL: uses the override if provided, otherwise falls back to the
-/// public endpoint with a warning.
-fn resolve_rpc_url(override_url: Option<&str>) -> String {
+/// Resolves the JSON-RPC URL: uses the override if provided, otherwise falls back to the
+/// chain-specific public endpoint with a warning.
+fn resolve_rpc_url(chain: &str, override_url: Option<&str>) -> Result<String, SolverError> {
     match override_url {
-        Some(url) => url.to_string(),
+        Some(url) => Ok(url.to_string()),
         None => {
+            let default = defaults::default_rpc_url(chain).map_err(SolverError::SetupError)?;
             warn!(
-                "No --rpc-url provided. Using public endpoint: {}. \
+                "No --rpc-url provided. Using public endpoint for {}: {}. \
                 For production use, provide a dedicated RPC endpoint.",
-                defaults::DEFAULT_RPC_URL
+                chain, default
             );
-            defaults::DEFAULT_RPC_URL.to_string()
+            Ok(default.to_string())
         }
     }
 }
@@ -280,7 +285,10 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
         .map_err(|e| SolverError::SetupError(format!("failed to parse chain: {}", e)))?;
 
     let tycho_url = resolve_tycho_url(&args.chain, args.tycho_url.as_deref())?;
-    let rpc_url = resolve_rpc_url(args.rpc_url.as_deref());
+    let rpc_url = resolve_rpc_url(&args.chain, args.rpc_url.as_deref())?;
+    let min_tvl = args
+        .min_tvl
+        .unwrap_or_else(|| chain.default_tvl_threshold(TvlThresholdTier::Low));
 
     let protocols = resolve_protocols(
         &tycho_url,
@@ -299,7 +307,7 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
             .map_err(|e| SolverError::SetupError(format!("invalid pool configuration: {e}")))?
             .http_host(args.http_host.clone())
             .http_port(args.http_port)
-            .min_tvl(args.min_tvl)
+            .min_tvl(min_tvl)
             .min_token_quality(args.min_token_quality)
             .traded_n_days_ago(args.traded_n_days_ago)
             .tvl_buffer_ratio(args.tvl_buffer_ratio)

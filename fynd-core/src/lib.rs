@@ -55,6 +55,17 @@ pub use price_guard::{
     provider::{ExternalPrice, PriceProvider, PriceProviderError},
 };
 pub use solver::{FyndBuilder, PoolConfig, Solver, SolverBuildError, SolverParts, WaitReadyError};
+/// Processes ephemeral pending bundles against live Tycho market state. Obtained by calling
+/// [`FyndBuilder::build_with_pending`](solver::FyndBuilder::build_with_pending).
+pub use tycho_simulation::evm::pending::PendingBlockProcessor;
+/// Error type produced by [`PendingBlockProcessor`] when simulating a pending bundle.
+pub use tycho_simulation::evm::pending::PendingError;
+/// A pending transaction bundle passed to [`PendingBlockProcessor`] for simulation.
+pub use tycho_simulation::evm::pending::PendingUpdate;
+/// Implement this trait and register it via
+/// [`FyndBuilder::with_pending_indexer`](solver::FyndBuilder::with_pending_indexer)
+/// to receive raw transaction deltas during pending-block simulation.
+pub use tycho_simulation::tycho_common::traits::TxDeltaIndexer;
 pub use types::{
     BlockInfo, ClientFeeParams, ComponentId, EncodingOptions, FeeBreakdown, Order, OrderQuote,
     OrderSide, OrderValidationError, PermitDetails, PermitSingle, Quote, QuoteOptions,

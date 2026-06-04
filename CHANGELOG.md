@@ -1,3 +1,33 @@
+## [0.71.0](https://github.com/propeller-heads/fynd/compare/0.70.0...0.71.0) (2026-06-04)
+
+
+### Features
+
+* **fynd-core:** add build_with_pending for embedded pending-block simulation ([f2b1d9a](https://github.com/propeller-heads/fynd/commit/f2b1d9a896f2d7a8b9badf186867e6bab34f1747))
+* **fynd-core:** expose subscribe_market_events on Solver ([eac1011](https://github.com/propeller-heads/fynd/commit/eac101141ed16fce309ae471627984fb3f7ea037))
+* **fynd-core:** expose with_pending_indexer on FyndBuilder ([e7a313f](https://github.com/propeller-heads/fynd/commit/e7a313f558a9faf69154cb64994ef57f7415839b))
+
+
+### Bug Fixes
+
+* **fynd-core:** handle RFQ protocols in run_with_pending ([b0b279b](https://github.com/propeller-heads/fynd/commit/b0b279b4c2c0221baf44399c6b99e93ee7feaf42))
+* **fynd-core:** remove RFQ guard from run_with_pending ([4203c1c](https://github.com/propeller-heads/fynd/commit/4203c1cb83d00e755605f39b5933910ead9083e3))
+* **fynd-core:** surface feed setup errors through pending oneshot channel ([115a6fb](https://github.com/propeller-heads/fynd/commit/115a6fbe0fd9547589b86539271bd110850c6a78))
+
+## [0.70.0](https://github.com/propeller-heads/fynd/compare/0.69.0...0.70.0) (2026-06-03)
+
+
+### Features
+
+* add per-chain default RPC URLs ([835fc74](https://github.com/propeller-heads/fynd/commit/835fc744d23260ccacaf4a47bd4d0e52c2e30f3a))
+* use chain-aware TVL default from tycho-common ([9965a4c](https://github.com/propeller-heads/fynd/commit/9965a4c92ca7e5657e74518b187e744671068a3f))
+
+
+### Bug Fixes
+
+* use keyless dRPC endpoints for default RPC URLs ([36e477b](https://github.com/propeller-heads/fynd/commit/36e477b4888cb2dac0fcaa15e17f1e16132c4fab))
+* use wrapped WPOL as Polygon gas token ([88adf8f](https://github.com/propeller-heads/fynd/commit/88adf8f0d622d17b744cb888dcab6ec89efe8459))
+
 ## [0.69.0](https://github.com/propeller-heads/fynd/compare/0.68.0...0.69.0) (2026-06-03)
 
 
