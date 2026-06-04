@@ -1413,17 +1413,18 @@ pub enum RouteValidationError {
         last: Address,
     },
     /// A split route has invalid split fractions.
+    #[non_exhaustive]
     #[error("invalid split route: {reason}")]
     InvalidSplit {
         /// Human-readable description of the violation.
         reason: String,
     },
-    /// A swap output token is a dead end — not consumed by any later branch
-    /// collection and not the terminal token.
+    /// A swap output token is a dead end — not consumed by any later step
+    /// in the route and not the terminal token.
     #[non_exhaustive]
     #[error(
-        "dead-end output: {token_out} is not consumed by any later branch \
-         collection and is not the terminal token {terminal_token}"
+        "dead-end output: {token_out} is not consumed by any later step \
+         in the route and is not the terminal token {terminal_token}"
     )]
     DeadEndOutput {
         /// The output token that leads nowhere.
@@ -1431,15 +1432,14 @@ pub enum RouteValidationError {
         /// The route's terminal token.
         terminal_token: Address,
     },
-    /// A branch collection's input token is not reachable from the route's
-    /// start token.
+    /// A split's input token is not reachable from the route's start token.
     #[non_exhaustive]
     #[error(
-        "disconnected branch collection: input {token_in} is not reachable \
+        "disconnected split: input {token_in} is not reachable \
          from start token {start_token}"
     )]
     DisconnectedBranchCollection {
-        /// Input token of the unreachable branch collection.
+        /// Input token of the unreachable split.
         token_in: Address,
         /// The route's start token.
         start_token: Address,
