@@ -7,7 +7,10 @@
 
 use std::collections::HashSet;
 
-use tokio::{sync::{broadcast, oneshot}, task::JoinHandle};
+use tokio::{
+    sync::{broadcast, oneshot},
+    task::JoinHandle,
+};
 use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, span, trace, Instrument, Level};
 use tycho_simulation::{
