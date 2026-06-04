@@ -1,3 +1,21 @@
+## [0.73.0](https://github.com/propeller-heads/fynd/compare/0.72.2...0.73.0) (2026-06-04)
+
+
+### Features
+
+* add split route validation ([7fe41d2](https://github.com/propeller-heads/fynd/commit/7fe41d2e029ab9a306b5d8f0584a2f41f0ec3d0f))
+* add test setup visualizations ([8b6501f](https://github.com/propeller-heads/fynd/commit/8b6501faf1ce04e221c3e975fe272c92b09250e9))
+* allow multiple groups to cycle back to start in split round-trips ([45787c6](https://github.com/propeller-heads/fynd/commit/45787c6552c54eaa2db5a6b6535d83d5c6260836))
+* reject split route if there is only one hop and it has a cycle ([921a739](https://github.com/propeller-heads/fynd/commit/921a73931efa8fe90306a41a56e3ce9e39db2e76))
+* update Route struct description to include info about the split swaps ([e88e313](https://github.com/propeller-heads/fynd/commit/e88e313ba6fd3fbff9534cabeb3bdbf98911df8b))
+
+
+### Bug Fixes
+
+* add comment for clarity ([1bced29](https://github.com/propeller-heads/fynd/commit/1bced296a4e975ba89e764aa7832a83d296cc0e1))
+* change error type for consistency ([7cc98e6](https://github.com/propeller-heads/fynd/commit/7cc98e6191c44b56014a1c9452c69d41d499e4dd))
+* use safe .last() instead of direct indexing ([5d7d89d](https://github.com/propeller-heads/fynd/commit/5d7d89dc7b27cad0e775babb3edb811f22a2218c))
+
 ## [0.72.2](https://github.com/propeller-heads/fynd/compare/0.72.1...0.72.2) (2026-06-04)
 
 ## [0.72.1](https://github.com/propeller-heads/fynd/compare/0.72.0...0.72.1) (2026-06-04)
