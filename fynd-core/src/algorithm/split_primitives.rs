@@ -133,7 +133,9 @@ impl MarketOverrides {
     ) -> Self {
         if let Some(sim) = self.0.remove(&id) {
             // If already wrapped, add the new pair to the existing set.
-            let wrapped = if let Some(selective) = sim.as_any().downcast_ref::<SelectiveZeroGasSim>()
+            let wrapped = if let Some(selective) = sim
+                .as_any()
+                .downcast_ref::<SelectiveZeroGasSim>()
             {
                 let mut pairs = selective.zero_gas_pairs.clone();
                 pairs.insert((token_in, token_out));
@@ -202,7 +204,8 @@ impl ProtocolSim for SelectiveZeroGasSim {
         sell_token: Bytes,
         buy_token: Bytes,
     ) -> Result<(BigUint, BigUint), SimulationError> {
-        self.inner.get_limits(sell_token, buy_token)
+        self.inner
+            .get_limits(sell_token, buy_token)
     }
 
     fn delta_transition(
