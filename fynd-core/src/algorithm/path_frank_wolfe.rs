@@ -5,7 +5,7 @@
 //! single-path discovery; this module layers on the Frank-Wolfe optimisation
 //! loop to determine the best split fractions.
 
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
@@ -151,17 +151,17 @@ impl PathFrankWolfeAlgorithm {
 
         // Pools committed in the current solution are executed once on-chain — their gas is
         // already priced into the combined transaction. Zero out marginal gas so BF doesn't
-        // double-charge them when evaluating extensions.
-        let committed: HashSet<String> = current_allocations
-            .iter()
-            .flat_map(|a| {
-                a.hops
-                    .iter()
-                    .map(|h| h.component_id.clone())
-            })
-            .collect();
-        for pool_id in committed {
-            overrides = overrides.with_zero_gas(pool_id);
+        // double-charge them when evaluating extensions. We track by (component_id, token_in,
+        // token_out) because different token pairs through the same pool are separate on-chain
+        // swaps with independent gas costs.
+        for alloc in current_allocations {
+            for hop in &alloc.hops {
+                overrides = overrides.with_zero_gas(
+                    hop.component_id.clone(),
+                    hop.token_in.address.clone(),
+                    hop.token_out.address.clone(),
+                );
+            }
         }
 
         let token_in = ctx
@@ -735,7 +735,7 @@ mod tests {
 
         let overrides = MarketOverrides::empty()
             .with_override("P1".to_string(), Box::new(sim.clone()))
-            .with_zero_gas("P1".to_string());
+            .with_zero_gas("P1".to_string(), token_a.address.clone(), token_b.address.clone());
 
         let result = overrides
             .get(&"P1".to_string())
