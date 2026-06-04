@@ -468,7 +468,7 @@ pub(crate) fn evaluate_total_output(
 /// Paths are processed in order so shared pools accumulate the effects of
 /// all prior paths.
 pub(crate) fn build_post_swap_overrides(
-    paths: &[&PathAllocation],
+    paths: &[PathAllocation],
     market: &MarketState,
 ) -> MarketOverrides {
     let mut overrides = MarketOverrides::empty();
@@ -1256,7 +1256,7 @@ mod tests {
             marginal_price_product: 2.0,
         };
 
-        let degraded = build_post_swap_overrides(&[&allocation], &market);
+        let degraded = build_post_swap_overrides(&[allocation], &market);
 
         // xy=k: amount_out = amount_in * reserve_out / (reserve_in + amount_in)
         // Fresh pool (10000/20000): 100 * 20000 / (10000 + 100) = 198

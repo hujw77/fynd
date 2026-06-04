@@ -147,8 +147,7 @@ impl PathFrankWolfeAlgorithm {
         current_allocations: &[PathAllocation],
         probe_amount: &BigUint,
     ) -> Result<Vec<HopDescriptor>, AlgorithmError> {
-        let paths: Vec<&PathAllocation> = current_allocations.iter().collect();
-        let mut overrides = build_post_swap_overrides(&paths, &ctx.market_data);
+        let mut overrides = build_post_swap_overrides(current_allocations, &ctx.market_data);
 
         // Pools committed in the current solution are executed once on-chain — their gas is
         // already priced into the combined transaction. Zero out marginal gas so BF doesn't
