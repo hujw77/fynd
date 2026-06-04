@@ -136,14 +136,14 @@ impl TychoFeed {
                 stream_builder = stream_builder.enable_partial_blocks();
             }
 
-            Some(
+            Some(Box::pin(
                 stream_builder
                     .set_tokens(all_tokens.clone())
                     .await
                     .build()
                     .await
                     .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
-            )
+            ))
         } else {
             None
         };
@@ -335,7 +335,7 @@ impl TychoFeed {
             };
         }
 
-        let (mut protocol_stream, pending) = match stream_builder
+        let (protocol_stream, pending) = match stream_builder
             .build_with_pending()
             .await
         {
@@ -346,6 +346,7 @@ impl TychoFeed {
                 return Err(e);
             }
         };
+        let mut protocol_stream = Box::pin(protocol_stream);
 
         if pending_tx.send(Ok(pending)).is_err() {
             tracing::warn!(
