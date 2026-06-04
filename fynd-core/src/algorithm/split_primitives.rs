@@ -465,8 +465,8 @@ struct SplitSwap {
 }
 
 /// Merge shared hops across paths, summing their flow fractions, and return
-/// them grouped by `token_in` (sorted by fraction descending within each
-/// group).
+/// them collected by `token_in` (sorted by fraction descending within each
+/// branch collection).
 fn merge_shared_hops(
     paths: &[PathAllocation],
 ) -> Result<HashMap<Bytes, Vec<SplitSwap>>, AlgorithmError> {
@@ -516,24 +516,24 @@ fn merge_shared_hops(
         }
     }
 
-    let mut hops_by_token: HashMap<Bytes, Vec<SplitSwap>> = HashMap::new();
+    let mut branch_collections: HashMap<Bytes, Vec<SplitSwap>> = HashMap::new();
     for (_, swap) in hops {
-        hops_by_token
+        branch_collections
             .entry(swap.hop.token_in.address.clone())
             .or_default()
             .push(swap);
     }
-    for group in hops_by_token.values_mut() {
-        group.sort_by(|a, b| {
+    for branch_collection in branch_collections.values_mut() {
+        branch_collection.sort_by(|a, b| {
             b.split
                 .partial_cmp(&a.split)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    Ok(hops_by_token)
+    Ok(branch_collections)
 }
 
-/// Normalize fractions within a group, convert them to input amounts, and
+/// Normalize fractions within a branch collection, convert them to input amounts, and
 /// assign final split values using the tycho-execution remainder convention
 /// (last hop gets `split = 0.0`).
 fn assign_splits_and_amounts(
@@ -562,7 +562,7 @@ fn assign_splits_and_amounts(
 ///
 /// Paths may share pool hops (same `component_id`, `token_in`, `token_out`).
 /// When they do, this function emits one combined swap rather than duplicates.
-/// Within each group of swaps sharing a `token_in`, the tycho-execution
+/// Within each branch collection of swaps sharing a `token_in`, the tycho-execution
 /// remainder convention is applied: sorted by fraction descending, all but the
 /// last receive their explicit split fraction, while the last gets
 /// `split = 0.0` (meaning "use all remaining balance").
@@ -591,7 +591,7 @@ pub(crate) fn build_split_route(
             continue;
         }
         // Terminal tokens (e.g. the final output) have no outgoing swaps.
-        let Some(group) = hops_by_token.remove(&token_addr) else {
+        let Some(branch_collection) = hops_by_token.remove(&token_addr) else {
             continue;
         };
         let total = available
@@ -599,7 +599,7 @@ pub(crate) fn build_split_route(
             .cloned()
             .unwrap_or_default();
 
-        for split_swap in assign_splits_and_amounts(group, &total) {
+        for split_swap in assign_splits_and_amounts(branch_collection, &total) {
             let sim = market
                 .get_simulation_state(&split_swap.hop.component_id)
                 .ok_or_else(|| AlgorithmError::DataNotFound {
@@ -1112,19 +1112,19 @@ mod tests {
 
         let hops_by_token = merge_shared_hops(&paths).unwrap();
 
-        // Group at A: one merged hop (P1, fraction = 0.6 + 0.4 = 1.0).
-        let group_a = &hops_by_token[&token_a.address];
-        assert_eq!(group_a.len(), 1);
-        assert_eq!(group_a[0].hop.component_id, "P1");
-        assert!((group_a[0].split - 1.0).abs() < f64::EPSILON);
+        // Branch collection at A: one merged hop (P1, fraction = 0.6 + 0.4 = 1.0).
+        let branch_collection_a = &hops_by_token[&token_a.address];
+        assert_eq!(branch_collection_a.len(), 1);
+        assert_eq!(branch_collection_a[0].hop.component_id, "P1");
+        assert!((branch_collection_a[0].split - 1.0).abs() < f64::EPSILON);
 
-        // Group at B: two hops (P2 and P3), sorted descending by fraction.
-        let group_b = &hops_by_token[&token_b.address];
-        assert_eq!(group_b.len(), 2);
-        assert_eq!(group_b[0].hop.component_id, "P2");
-        assert!((group_b[0].split - 0.6).abs() < f64::EPSILON);
-        assert_eq!(group_b[1].hop.component_id, "P3");
-        assert!((group_b[1].split - 0.4).abs() < f64::EPSILON);
+        // Branch collection at B: two hops (P2 and P3), sorted descending by fraction.
+        let branch_collection_b = &hops_by_token[&token_b.address];
+        assert_eq!(branch_collection_b.len(), 2);
+        assert_eq!(branch_collection_b[0].hop.component_id, "P2");
+        assert!((branch_collection_b[0].split - 0.6).abs() < f64::EPSILON);
+        assert_eq!(branch_collection_b[1].hop.component_id, "P3");
+        assert!((branch_collection_b[1].split - 0.4).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1132,7 +1132,7 @@ mod tests {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
 
-        let group = vec![
+        let branch_collection = vec![
             SplitSwap {
                 hop: HopDescriptor::new("pool1".to_string(), token_a.clone(), token_b.clone()),
                 split: 0.7,
@@ -1149,7 +1149,7 @@ mod tests {
             },
         ];
 
-        let result = assign_splits_and_amounts(group, &BigUint::from(1000u64));
+        let result = assign_splits_and_amounts(branch_collection, &BigUint::from(1000u64));
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].split, 0.7);
@@ -1166,7 +1166,7 @@ mod tests {
         let token_a = token(0x0A, "A");
         let token_b = token(0x0B, "B");
 
-        let group = vec![SplitSwap {
+        let branch_collection = vec![SplitSwap {
             hop: HopDescriptor::new("pool1".to_string(), token_a, token_b),
             split: 1.0,
             amount_in: BigUint::ZERO,
@@ -1175,7 +1175,7 @@ mod tests {
         }];
 
         let total = BigUint::from(1000u64);
-        let result = assign_splits_and_amounts(group, &total);
+        let result = assign_splits_and_amounts(branch_collection, &total);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].split, 0.0);
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(
             *ab_swap.split(),
             0.0,
-            "A→B is the sole swap in its group, so it gets the remainder convention (split = 0.0)"
+            "A→B is the sole swap in its branch collection, so it gets the remainder convention (split = 0.0)"
         );
 
         // B→C swaps: P2 (0.7) first, P3 (0.3) last.
