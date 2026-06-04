@@ -170,7 +170,7 @@ impl PathFrankWolfeAlgorithm {
             .get(&ctx.token_in_node)
             .cloned()
             .ok_or_else(|| AlgorithmError::DataNotFound {
-                kind: "token_in address",
+                kind: "token_in node address",
                 id: Some(format!("{:?}", ctx.token_in_node)),
             })?;
         let token_out = ctx
@@ -178,7 +178,7 @@ impl PathFrankWolfeAlgorithm {
             .get(&ctx.token_out_node)
             .cloned()
             .ok_or_else(|| AlgorithmError::DataNotFound {
-                kind: "token_out address",
+                kind: "token_out node address",
                 id: Some(format!("{:?}", ctx.token_out_node)),
             })?;
         let probe_order = Order::new(
