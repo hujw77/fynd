@@ -150,7 +150,7 @@ impl PathFrankWolfeAlgorithm {
         let mut overrides = build_post_swap_overrides(current_allocations, &ctx.market_data);
 
         // Pools committed in the current solution are executed once on-chain — their gas is
-        // already priced into the combined transaction. Zero out marginal gas so BF doesn't
+        // already priced into the combined transaction. Zero out protocol gas so BF doesn't
         // double-charge them when evaluating extensions. We track by (component_id, token_in,
         // token_out) because different token pairs through the same pool are separate on-chain
         // swaps with independent gas costs.
@@ -169,7 +169,7 @@ impl PathFrankWolfeAlgorithm {
             .get(&ctx.token_in_node)
             .cloned()
             .ok_or_else(|| AlgorithmError::DataNotFound {
-                kind: "token_in node address",
+                kind: "token_in node index",
                 id: Some(format!("{:?}", ctx.token_in_node)),
             })?;
         let token_out = ctx
@@ -177,7 +177,7 @@ impl PathFrankWolfeAlgorithm {
             .get(&ctx.token_out_node)
             .cloned()
             .ok_or_else(|| AlgorithmError::DataNotFound {
-                kind: "token_out node address",
+                kind: "token_out node index",
                 id: Some(format!("{:?}", ctx.token_out_node)),
             })?;
         let probe_order = Order::new(
