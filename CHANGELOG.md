@@ -1,3 +1,10 @@
+## [0.75.0](https://github.com/propeller-heads/fynd/compare/0.74.0...0.75.0) (2026-06-05)
+
+
+### Features
+
+* **PFW:** compute_probe_amount and compute_average_price_impact ([9fcdb21](https://github.com/propeller-heads/fynd/commit/9fcdb2139251ebe5ee18a56b067db3febd0f5d9d))
+
 ## [0.74.0](https://github.com/propeller-heads/fynd/compare/0.73.0...0.74.0) (2026-06-05)
 
 
