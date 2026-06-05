@@ -29,11 +29,17 @@ impl HopDescriptor {
     pub(crate) fn new(component_id: ComponentId, token_in: Token, token_out: Token) -> Self {
         Self { component_id, token_in, token_out }
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_amounts(self, amount_out: BigUint, gas: BigUint) -> SimulatedHop {
+        SimulatedHop { descriptor: self, amount_out, gas }
+    }
 }
 
 /// A [`HopDescriptor`] paired with its simulation result. Used in
 /// [`PathAllocation::hops`] where the solving algorithm has already
 /// computed per-hop outputs and gas.
+#[derive(Clone)]
 pub(crate) struct SimulatedHop {
     pub(crate) descriptor: HopDescriptor,
     pub(crate) amount_out: BigUint,
@@ -66,18 +72,18 @@ impl PathAllocation {
         if self.hops.is_empty() {
             return Err(AlgorithmError::Other("path has no hops".to_string()));
         }
-        let first_token = &self.hops[0].token_in.address;
+        let first_token = &self.hops[0].descriptor.token_in.address;
         let mut seen = HashSet::new();
         seen.insert(first_token.clone());
         let last_idx = self.hops.len() - 1;
         for (i, hop) in self.hops.iter().enumerate() {
-            if !seen.insert(hop.token_out.address.clone()) {
-                let is_valid_round_trip = i == last_idx && &hop.token_out.address == first_token;
+            let out_addr = &hop.descriptor.token_out.address;
+            if !seen.insert(out_addr.clone()) {
+                let is_valid_round_trip = i == last_idx && out_addr == first_token;
                 if !is_valid_round_trip {
                     return Err(AlgorithmError::Other(format!(
-                        "path revisits token {} at hop {i} \
+                        "path revisits token {out_addr} at hop {i} \
                          (would corrupt merge_shared_hops)",
-                        hop.token_out.address,
                     )));
                 }
             }
