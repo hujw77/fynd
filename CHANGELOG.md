@@ -1,3 +1,10 @@
+## [0.75.1](https://github.com/propeller-heads/fynd/compare/0.75.0...0.75.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **split routing:** validate paths before merge_shared_hops ([e110c77](https://github.com/propeller-heads/fynd/commit/e110c77690e1370b64f42fe4ec8681370da502d9))
+
 ## [0.75.0](https://github.com/propeller-heads/fynd/compare/0.74.0...0.75.0) (2026-06-05)
 
 
