@@ -1,3 +1,10 @@
+## [0.75.3](https://github.com/propeller-heads/fynd/compare/0.75.2...0.75.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* complete HopDescriptor/SimulatedHop split after rebase ([aa9a0c4](https://github.com/propeller-heads/fynd/commit/aa9a0c45507f83acc48827fccc862115bee853c8))
+
 ## [0.75.2](https://github.com/propeller-heads/fynd/compare/0.75.1...0.75.2) (2026-06-05)
 
 
