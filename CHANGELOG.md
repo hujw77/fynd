@@ -1,3 +1,10 @@
+## [0.74.0](https://github.com/propeller-heads/fynd/compare/0.73.0...0.74.0) (2026-06-05)
+
+
+### Features
+
+* PathFrankWolfe structs ([4bb5511](https://github.com/propeller-heads/fynd/commit/4bb5511978473f822d68051801842eceb447fde6))
+
 ## [0.73.0](https://github.com/propeller-heads/fynd/compare/0.72.2...0.73.0) (2026-06-04)
 
 
