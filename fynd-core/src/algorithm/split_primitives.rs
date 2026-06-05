@@ -115,13 +115,41 @@ impl MarketOverrides {
         self
     }
 
-    /// Insert a zero-gas wrapper around an existing sim. The underlying pool still
-    /// produces correct amounts; only `get_amount_out().gas` is zeroed. Use for pools
-    /// already present in `current_allocations` — their gas is paid once in the
-    /// combined transaction.
-    pub(crate) fn with_zero_gas(mut self, id: ComponentId, sim: Box<dyn ProtocolSim>) -> Self {
-        self.0
-            .insert(id, Box::new(ZeroGasSim(sim)));
+    /// Wraps an existing override entry so that `get_amount_out().gas` is zero for
+    /// the specified `(token_in, token_out)` pair, but unchanged for other pairs
+    /// through the same pool.
+    ///
+    /// Different token pairs through the same pool are separate on-chain swaps with
+    /// independent gas costs, so only committed pairs should be zeroed. Call this
+    /// once per committed `(component_id, token_in, token_out)` triple.
+    ///
+    /// Multiple calls for the same component accumulate pairs. If the ID has no
+    /// override entry, this is a no-op.
+    pub(crate) fn with_zero_gas(
+        mut self,
+        id: ComponentId,
+        token_in: Bytes,
+        token_out: Bytes,
+    ) -> Self {
+        if let Some(sim) = self.0.remove(&id) {
+            // If already wrapped, add the new pair to the existing set.
+            let wrapped = if let Some(selective) = sim
+                .as_any()
+                .downcast_ref::<SelectiveZeroGasSim>()
+            {
+                let mut pairs = selective.zero_gas_pairs.clone();
+                pairs.insert((token_in, token_out));
+                Box::new(SelectiveZeroGasSim {
+                    inner: selective.inner.clone_box(),
+                    zero_gas_pairs: pairs,
+                }) as Box<dyn ProtocolSim>
+            } else {
+                let mut pairs = HashSet::new();
+                pairs.insert((token_in, token_out));
+                Box::new(SelectiveZeroGasSim { inner: sim, zero_gas_pairs: pairs })
+            };
+            self.0.insert(id, wrapped);
+        }
         self
     }
 
@@ -130,25 +158,23 @@ impl MarketOverrides {
     }
 }
 
-/// Wraps a sim so that `get_amount_out().gas` is always zero while amounts
-/// remain correct. Use for pools whose gas is already accounted for elsewhere.
-pub(crate) fn wrap_zero_gas(sim: Box<dyn ProtocolSim>) -> Box<dyn ProtocolSim> {
-    Box::new(ZeroGasSim(sim))
+/// Wrapper that delegates all [`ProtocolSim`] calls unchanged except
+/// [`get_amount_out`](ProtocolSim::get_amount_out), where it zeroes the returned gas
+/// only for token pairs in `zero_gas_pairs`. Other pairs pass through unchanged.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SelectiveZeroGasSim {
+    inner: Box<dyn ProtocolSim>,
+    zero_gas_pairs: HashSet<(Bytes, Bytes)>,
 }
 
-/// Wrapper that delegates all [`ProtocolSim`] calls unchanged except
-/// [`get_amount_out`](ProtocolSim::get_amount_out), where it zeroes the returned gas.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ZeroGasSim(Box<dyn ProtocolSim>);
-
 #[typetag::serde]
-impl ProtocolSim for ZeroGasSim {
+impl ProtocolSim for SelectiveZeroGasSim {
     fn fee(&self) -> f64 {
-        self.0.fee()
+        self.inner.fee()
     }
 
     fn spot_price(&self, base: &Token, quote: &Token) -> Result<f64, SimulationError> {
-        self.0.spot_price(base, quote)
+        self.inner.spot_price(base, quote)
     }
 
     fn get_amount_out(
@@ -158,10 +184,18 @@ impl ProtocolSim for ZeroGasSim {
         token_out: &Token,
     ) -> Result<GetAmountOutResult, SimulationError> {
         let mut result = self
-            .0
+            .inner
             .get_amount_out(amount_in, token_in, token_out)?;
-        result.gas = BigUint::ZERO;
-        result.new_state = Box::new(ZeroGasSim(result.new_state));
+        if self
+            .zero_gas_pairs
+            .contains(&(token_in.address.clone(), token_out.address.clone()))
+        {
+            result.gas = BigUint::ZERO;
+        }
+        result.new_state = Box::new(SelectiveZeroGasSim {
+            inner: result.new_state,
+            zero_gas_pairs: self.zero_gas_pairs.clone(),
+        });
         Ok(result)
     }
 
@@ -170,7 +204,8 @@ impl ProtocolSim for ZeroGasSim {
         sell_token: Bytes,
         buy_token: Bytes,
     ) -> Result<(BigUint, BigUint), SimulationError> {
-        self.0.get_limits(sell_token, buy_token)
+        self.inner
+            .get_limits(sell_token, buy_token)
     }
 
     fn delta_transition(
@@ -179,12 +214,15 @@ impl ProtocolSim for ZeroGasSim {
         tokens: &HashMap<Bytes, Token>,
         balances: &Balances,
     ) -> Result<(), TransitionError> {
-        self.0
+        self.inner
             .delta_transition(delta, tokens, balances)
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolSim> {
-        Box::new(ZeroGasSim(self.0.clone_box()))
+        Box::new(SelectiveZeroGasSim {
+            inner: self.inner.clone_box(),
+            zero_gas_pairs: self.zero_gas_pairs.clone(),
+        })
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -199,7 +237,7 @@ impl ProtocolSim for ZeroGasSim {
         other
             .as_any()
             .downcast_ref::<Self>()
-            .map(|o| self.0.eq(&*o.0))
+            .map(|o| self.inner.eq(&*o.inner) && self.zero_gas_pairs == o.zero_gas_pairs)
             .unwrap_or(false)
     }
 }
@@ -465,7 +503,7 @@ pub(crate) fn evaluate_total_output(
 /// Paths are processed in order so shared pools accumulate the effects of
 /// all prior paths.
 pub(crate) fn build_post_swap_overrides(
-    paths: &[&PathAllocation],
+    paths: &[PathAllocation],
     market: &MarketState,
 ) -> MarketOverrides {
     let mut overrides = MarketOverrides::empty();
@@ -1073,7 +1111,8 @@ mod tests {
 
         // Zero gas on pool_ab, leave pool_bc as a normal override.
         let overrides = MarketOverrides::empty()
-            .with_zero_gas("pool_ab".to_string(), Box::new(sim_ab))
+            .with_override("pool_ab".to_string(), Box::new(sim_ab))
+            .with_zero_gas("pool_ab".to_string(), token_a.address.clone(), token_b.address.clone())
             .with_override("pool_bc".to_string(), Box::new(sim_bc));
 
         let hops_ab = [HopDescriptor::new("pool_ab".to_string(), token_a.clone(), token_b.clone())];
@@ -1252,7 +1291,7 @@ mod tests {
             marginal_price_product: 2.0,
         };
 
-        let degraded = build_post_swap_overrides(&[&allocation], &market);
+        let degraded = build_post_swap_overrides(&[allocation], &market);
 
         // xy=k: amount_out = amount_in * reserve_out / (reserve_in + amount_in)
         // Fresh pool (10000/20000): 100 * 20000 / (10000 + 100) = 198

@@ -11,14 +11,17 @@ use num_bigint::BigUint;
 use num_traits::ToPrimitive;
 
 use super::{
-    split_primitives::{split_amount, PathAllocation},
+    bellman_ford::{BellmanFordContext, FindRouteOptions},
+    split_primitives::{
+        build_post_swap_overrides, split_amount, HopDescriptor, PathAllocation, SimulatedHop,
+    },
     Algorithm, AlgorithmConfig, AlgorithmError, BellmanFordAlgorithm,
 };
 use crate::{
     derived::{computation::ComputationRequirements, SharedDerivedDataRef},
     feed::market_data::{MarketData, StateLabel},
     graph::{petgraph::StableDiGraph, PetgraphStableDiGraphManager},
-    types::{quote::Order, RouteResult},
+    types::{quote::Order, OrderSide, RouteResult},
 };
 
 /// Tuning parameters for the path-based Frank-Wolfe split-routing loop.
@@ -127,6 +130,130 @@ impl PathFrankWolfeAlgorithm {
         }
         Ok(weighted_price_impact)
     }
+
+    /// Finds the next candidate routing path for the Frank-Wolfe algorithm.
+    ///
+    /// Builds a post-swap market state that reflects `current_allocations` (applying each
+    /// allocation's simulated pool outputs as overrides), then runs Bellman-Ford at
+    /// `probe_amount` to discover the best remaining route.
+    ///
+    /// Pools already present in `current_allocations` are promoted to zero-gas so their
+    /// committed gas cost is not counted again as marginal cost for the new path.
+    ///
+    /// Returns an ordered sequence of [`SimulatedHop`]s representing the discovered path,
+    /// or an error if no route exists.
+    #[allow(dead_code)]
+    pub(crate) fn find_candidate_path(
+        &self,
+        ctx: &BellmanFordContext,
+        current_allocations: &[PathAllocation],
+        probe_amount: &BigUint,
+    ) -> Result<Vec<SimulatedHop>, AlgorithmError> {
+        let mut overrides = build_post_swap_overrides(current_allocations, &ctx.market_data);
+
+        // Pools committed in the current solution are executed once on-chain — their gas is
+        // already priced into the combined transaction. Zero out protocol gas so BF doesn't
+        // double-charge them when evaluating extensions. We track by (component_id, token_in,
+        // token_out) because different token pairs through the same pool are separate on-chain
+        // swaps with independent gas costs.
+        for alloc in current_allocations {
+            for hop in &alloc.hops {
+                overrides = overrides.with_zero_gas(
+                    hop.descriptor.component_id.clone(),
+                    hop.descriptor.token_in.address.clone(),
+                    hop.descriptor.token_out.address.clone(),
+                );
+            }
+        }
+
+        let token_in = ctx
+            .node_address
+            .get(&ctx.token_in_node)
+            .cloned()
+            .ok_or_else(|| AlgorithmError::DataNotFound {
+                kind: "token_in node index",
+                id: Some(format!("{:?}", ctx.token_in_node)),
+            })?;
+        let token_out = ctx
+            .node_address
+            .get(&ctx.token_out_node)
+            .cloned()
+            .ok_or_else(|| AlgorithmError::DataNotFound {
+                kind: "token_out node index",
+                id: Some(format!("{:?}", ctx.token_out_node)),
+            })?;
+        let probe_order = Order::new(
+            token_in,
+            token_out,
+            probe_amount.clone(),
+            OrderSide::Sell,
+            Default::default(),
+        );
+
+        let result =
+            self.inner
+                .find_single_route(ctx, &probe_order, FindRouteOptions { overrides })?;
+
+        let route = result.route();
+        let tokens = route.tokens();
+        route
+            .swaps()
+            .iter()
+            .map(|swap| {
+                let token_in = tokens
+                    .get(swap.token_in())
+                    .cloned()
+                    .ok_or_else(|| AlgorithmError::DataNotFound {
+                        kind: "token",
+                        id: Some(format!("{:?}", swap.token_in())),
+                    })?;
+                let token_out = tokens
+                    .get(swap.token_out())
+                    .cloned()
+                    .ok_or_else(|| AlgorithmError::DataNotFound {
+                        kind: "token",
+                        id: Some(format!("{:?}", swap.token_out())),
+                    })?;
+                Ok(SimulatedHop {
+                    descriptor: HopDescriptor::new(
+                        swap.component_id().to_string(),
+                        token_in,
+                        token_out,
+                    ),
+                    amount_out: swap.amount_out().clone(),
+                    gas: swap.gas_estimate().clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Returns `true` if `candidate` has the same ordered sequence of
+    /// `(component_id, token_in, token_out)` as any existing allocation.
+    ///
+    /// Both the pool and the token pair must match at every hop — the same pool used with
+    /// different tokens (e.g. in a multi-token pool) is a distinct path.
+    ///
+    /// Paths that share only a prefix but diverge at a later hop are **not** duplicates — the
+    /// shared hops are handled by `build_split_route`, which emits a single combined swap for
+    /// the common segment.
+    #[allow(dead_code)]
+    pub(crate) fn is_duplicate_path(
+        candidate: &[SimulatedHop],
+        existing: &[PathAllocation],
+    ) -> bool {
+        existing.iter().any(|alloc| {
+            alloc.hops.len() == candidate.len() &&
+                alloc
+                    .hops
+                    .iter()
+                    .zip(candidate.iter())
+                    .all(|(a, b)| {
+                        a.descriptor.component_id == b.descriptor.component_id &&
+                            a.descriptor.token_in.address == b.descriptor.token_in.address &&
+                            a.descriptor.token_out.address == b.descriptor.token_out.address
+                    })
+        })
+    }
 }
 
 impl Algorithm for PathFrankWolfeAlgorithm {
@@ -166,8 +293,22 @@ impl Algorithm for PathFrankWolfeAlgorithm {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration as StdDuration;
+
+    use tycho_simulation::tycho_common::simulation::protocol_sim::ProtocolSim;
+
     use super::*;
-    use crate::algorithm::AlgorithmConfig;
+    use crate::{
+        algorithm::{
+            split_primitives::{build_split_route, MarketOverrides},
+            test_utils::{
+                order, setup_market_unweighted, token, ConstantProductSim, MockProtocolSim,
+            },
+            AlgorithmConfig,
+        },
+        graph::GraphManager,
+        types::OrderSide,
+    };
 
     impl PathFrankWolfeAlgorithm {
         /// Returns a reference to the PFW-specific tuning config.
@@ -358,4 +499,263 @@ mod tests {
     #[test]
     #[ignore]
     fn test_pi_exit_criterion_stops_loop_early() {}
+
+    // ==================== find_candidate_path / is_duplicate_path ====================
+
+    fn pfw_algo(max_hops: usize) -> PathFrankWolfeAlgorithm {
+        PathFrankWolfeAlgorithm::new(
+            AlgorithmConfig::new(1, max_hops, StdDuration::from_millis(1000), None).unwrap(),
+            PathFrankWolfeConfig::default(),
+        )
+    }
+
+    #[test]
+    fn test_is_duplicate_path_exact_match() {
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let candidate =
+            vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                .with_amounts(BigUint::from(200u64), BigUint::from(50_000u64))];
+        let alloc = PathAllocation {
+            hops: vec![HopDescriptor::new("P1".to_string(), token_a, token_b)
+                .with_amounts(BigUint::from(200u64), BigUint::from(50_000u64))],
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(100u64),
+            amount_out: BigUint::from(200u64),
+            marginal_price_product: 2.0,
+        };
+        assert!(PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
+    }
+
+    #[test]
+    fn test_is_duplicate_path_shared_prefix() {
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+
+        let zero = BigUint::from(0u64);
+        let alloc = PathAllocation {
+            hops: vec![
+                HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                    .with_amounts(zero.clone(), zero.clone()),
+                HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone())
+                    .with_amounts(zero.clone(), zero.clone()),
+            ],
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(100u64),
+            amount_out: BigUint::from(200u64),
+            marginal_price_product: 1.0,
+        };
+
+        // [P1, P3] shares first hop with [P1, P2] but diverges at hop 2
+        let candidate = vec![
+            HopDescriptor::new("P1".to_string(), token_a, token_b.clone())
+                .with_amounts(zero.clone(), zero.clone()),
+            HopDescriptor::new("P3".to_string(), token_b, token_c)
+                .with_amounts(zero.clone(), zero.clone()),
+        ];
+        assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
+    }
+
+    #[test]
+    fn test_is_duplicate_path_same_pool_different_tokens() {
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+
+        // Same pool "P1" but with different token pairs — not a duplicate.
+        let zero = BigUint::from(0u64);
+        let alloc = PathAllocation {
+            hops: vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                .with_amounts(zero.clone(), zero.clone())],
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(100u64),
+            amount_out: BigUint::from(200u64),
+            marginal_price_product: 2.0,
+        };
+        let candidate = vec![HopDescriptor::new("P1".to_string(), token_a, token_c)
+            .with_amounts(zero.clone(), zero.clone())];
+        assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
+    }
+
+    #[tokio::test]
+    async fn test_shared_first_pool_two_outputs() {
+        // Two paths share pool P1 (A→B) and diverge at B→C via P2 vs P3.
+        //
+        // P2 has higher initial rate but degrades after one allocation; BF then discovers P3.
+        // Verifies: `is_duplicate_path` returns false, `build_split_route` emits 3 swaps,
+        // P1 gas counted once.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            (
+                "P1",
+                &token_a,
+                &token_b,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(10_000u64),
+                    reserve_1: BigUint::from(10_000u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+            (
+                "P2",
+                &token_b,
+                &token_c,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(1_000u64),
+                    reserve_1: BigUint::from(1_500u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+            (
+                "P3",
+                &token_b,
+                &token_c,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(1_000u64),
+                    reserve_1: BigUint::from(1_000u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+        ]);
+
+        let algo = pfw_algo(3);
+        let probe_amount = BigUint::from(1_000u64);
+        let ord = order(&token_a, &token_c, 1_000, OrderSide::Sell);
+
+        let ctx = algo
+            .inner
+            .build_context(graph_manager.graph(), market, None, None, &ord)
+            .await
+            .unwrap();
+
+        // First candidate: P2 has 1.5x rate vs P3's 1.0x → finds [P1, P2].
+        let first_path = algo
+            .find_candidate_path(&ctx, &[], &probe_amount)
+            .unwrap();
+        assert_eq!(first_path[0].descriptor.component_id, "P1");
+        assert_eq!(first_path[1].descriptor.component_id, "P2");
+
+        let first_amount_out = first_path[1].amount_out.clone();
+        let first_alloc = PathAllocation {
+            hops: first_path,
+            flow_fraction: 0.5,
+            amount_in: probe_amount.clone(),
+            amount_out: first_amount_out,
+            marginal_price_product: 1.5,
+        };
+
+        // After allocating 1000 A on [P1, P2], P2 degrades enough that BF finds [P1, P3].
+        let second_path = algo
+            .find_candidate_path(&ctx, std::slice::from_ref(&first_alloc), &probe_amount)
+            .unwrap();
+        assert_eq!(second_path[0].descriptor.component_id, "P1");
+        assert_eq!(second_path[1].descriptor.component_id, "P3");
+
+        // Shared prefix [P1] does not make these duplicates.
+        assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(
+            &second_path,
+            std::slice::from_ref(&first_alloc)
+        ));
+
+        let second_amount_out = second_path[1].amount_out.clone();
+        let second_alloc = PathAllocation {
+            hops: second_path,
+            flow_fraction: 0.5,
+            amount_in: probe_amount.clone(),
+            amount_out: second_amount_out,
+            marginal_price_product: 1.0,
+        };
+
+        // build_split_route must emit 3 swaps: one combined A→B (P1), two B→C (P2, P3).
+        let all_allocs = [first_alloc, second_alloc];
+        let route = build_split_route(&all_allocs, &ctx.market_data, &ord).unwrap();
+        let swaps = route.swaps();
+        assert_eq!(swaps.len(), 3, "expected P1 + P2 + P3 = 3 swaps");
+        let ids: Vec<&str> = swaps
+            .iter()
+            .map(|s| s.component_id())
+            .collect();
+        assert_eq!(
+            ids.iter()
+                .filter(|&&id| id == "P1")
+                .count(),
+            1,
+            "P1 deduplicated"
+        );
+        assert!(ids.contains(&"P2"));
+        assert!(ids.contains(&"P3"));
+        // P1 gas counted once: P1(50k) + P2(50k) + P3(50k) = 150k.
+        assert_eq!(route.total_gas(), BigUint::from(150_000u64));
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_path_stops_iteration() {
+        // When BF repeatedly returns the same path, `is_duplicate_path` detects it so the
+        // Frank-Wolfe loop can stop.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let (market, graph_manager) = setup_market_unweighted(vec![(
+            "P1",
+            &token_a,
+            &token_b,
+            Box::new(MockProtocolSim::new(2.0)) as Box<dyn ProtocolSim>,
+        )]);
+
+        let algo = pfw_algo(2);
+        let probe_amount = BigUint::from(100u64);
+        let ord = order(&token_a, &token_b, 100, OrderSide::Sell);
+
+        let ctx = algo
+            .inner
+            .build_context(graph_manager.graph(), market, None, None, &ord)
+            .await
+            .unwrap();
+
+        let first_path = algo
+            .find_candidate_path(&ctx, &[], &probe_amount)
+            .unwrap();
+        assert_eq!(first_path[0].descriptor.component_id, "P1");
+
+        let first_alloc = PathAllocation {
+            hops: first_path,
+            flow_fraction: 1.0,
+            amount_in: probe_amount.clone(),
+            amount_out: BigUint::from(200u64),
+            marginal_price_product: 2.0,
+        };
+
+        // P1 is the only pool — BF returns it again.
+        let second_path = algo
+            .find_candidate_path(&ctx, std::slice::from_ref(&first_alloc), &probe_amount)
+            .unwrap();
+        assert!(PathFrankWolfeAlgorithm::is_duplicate_path(
+            &second_path,
+            std::slice::from_ref(&first_alloc)
+        ));
+    }
+
+    #[test]
+    fn test_with_zero_gas_zeroes_gas_keeps_amounts() {
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let sim = MockProtocolSim::new(2.0).with_gas(50_000);
+
+        let overrides = MarketOverrides::empty()
+            .with_override("P1".to_string(), Box::new(sim.clone()))
+            .with_zero_gas("P1".to_string(), token_a.address.clone(), token_b.address.clone());
+
+        let result = overrides
+            .get(&"P1".to_string())
+            .unwrap()
+            .get_amount_out(BigUint::from(100u64), &token_a, &token_b)
+            .unwrap();
+
+        assert_eq!(result.amount, BigUint::from(200u64), "amount unaffected");
+        assert_eq!(result.gas, BigUint::ZERO, "gas zeroed by with_zero_gas");
+    }
 }
