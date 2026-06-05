@@ -12,7 +12,9 @@ use num_traits::ToPrimitive;
 
 use super::{
     bellman_ford::{BellmanFordContext, FindRouteOptions},
-    split_primitives::{build_post_swap_overrides, split_amount, HopDescriptor, PathAllocation},
+    split_primitives::{
+        build_post_swap_overrides, split_amount, HopDescriptor, PathAllocation, SimulatedHop,
+    },
     Algorithm, AlgorithmConfig, AlgorithmError, BellmanFordAlgorithm,
 };
 use crate::{
@@ -138,7 +140,7 @@ impl PathFrankWolfeAlgorithm {
     /// Pools already present in `current_allocations` are promoted to zero-gas so their
     /// committed gas cost is not counted again as marginal cost for the new path.
     ///
-    /// Returns an ordered sequence of [`HopDescriptor`]s representing the discovered path,
+    /// Returns an ordered sequence of [`SimulatedHop`]s representing the discovered path,
     /// or an error if no route exists.
     #[allow(dead_code)]
     pub(crate) fn find_candidate_path(
@@ -146,7 +148,7 @@ impl PathFrankWolfeAlgorithm {
         ctx: &BellmanFordContext,
         current_allocations: &[PathAllocation],
         probe_amount: &BigUint,
-    ) -> Result<Vec<HopDescriptor>, AlgorithmError> {
+    ) -> Result<Vec<SimulatedHop>, AlgorithmError> {
         let mut overrides = build_post_swap_overrides(current_allocations, &ctx.market_data);
 
         // Pools committed in the current solution are executed once on-chain — their gas is
@@ -157,9 +159,9 @@ impl PathFrankWolfeAlgorithm {
         for alloc in current_allocations {
             for hop in &alloc.hops {
                 overrides = overrides.with_zero_gas(
-                    hop.component_id.clone(),
-                    hop.token_in.address.clone(),
-                    hop.token_out.address.clone(),
+                    hop.descriptor.component_id.clone(),
+                    hop.descriptor.token_in.address.clone(),
+                    hop.descriptor.token_out.address.clone(),
                 );
             }
         }
@@ -212,8 +214,15 @@ impl PathFrankWolfeAlgorithm {
                         kind: "token",
                         id: Some(format!("{:?}", swap.token_out())),
                     })?;
-                Ok(HopDescriptor::new(swap.component_id().to_string(), token_in, token_out)
-                    .with_amounts(swap.amount_out().clone(), swap.gas_estimate().clone()))
+                Ok(SimulatedHop {
+                    descriptor: HopDescriptor::new(
+                        swap.component_id().to_string(),
+                        token_in,
+                        token_out,
+                    ),
+                    amount_out: swap.amount_out().clone(),
+                    gas: swap.gas_estimate().clone(),
+                })
             })
             .collect()
     }
@@ -229,7 +238,7 @@ impl PathFrankWolfeAlgorithm {
     /// the common segment.
     #[allow(dead_code)]
     pub(crate) fn is_duplicate_path(
-        candidate: &[HopDescriptor],
+        candidate: &[SimulatedHop],
         existing: &[PathAllocation],
     ) -> bool {
         existing.iter().any(|alloc| {
@@ -239,9 +248,9 @@ impl PathFrankWolfeAlgorithm {
                     .iter()
                     .zip(candidate.iter())
                     .all(|(a, b)| {
-                        a.component_id == b.component_id &&
-                            a.token_in.address == b.token_in.address &&
-                            a.token_out.address == b.token_out.address
+                        a.descriptor.component_id == b.descriptor.component_id &&
+                            a.descriptor.token_in.address == b.descriptor.token_in.address &&
+                            a.descriptor.token_out.address == b.descriptor.token_out.address
                     })
         })
     }
@@ -498,7 +507,6 @@ mod tests {
             AlgorithmConfig::new(1, max_hops, StdDuration::from_millis(1000), None).unwrap(),
             PathFrankWolfeConfig::default(),
         )
-        .unwrap()
     }
 
     #[test]
@@ -506,9 +514,11 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let candidate =
-            vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())];
+            vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                .with_amounts(BigUint::from(200u64), BigUint::from(50_000u64))];
         let alloc = PathAllocation {
-            hops: vec![HopDescriptor::new("P1".to_string(), token_a, token_b)],
+            hops: vec![HopDescriptor::new("P1".to_string(), token_a, token_b)
+                .with_amounts(BigUint::from(200u64), BigUint::from(50_000u64))],
             flow_fraction: 1.0,
             amount_in: BigUint::from(100u64),
             amount_out: BigUint::from(200u64),
@@ -523,10 +533,13 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
+        let zero = BigUint::from(0u64);
         let alloc = PathAllocation {
             hops: vec![
-                HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone()),
-                HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone()),
+                HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                    .with_amounts(zero.clone(), zero.clone()),
+                HopDescriptor::new("P2".to_string(), token_b.clone(), token_c.clone())
+                    .with_amounts(zero.clone(), zero.clone()),
             ],
             flow_fraction: 1.0,
             amount_in: BigUint::from(100u64),
@@ -536,8 +549,10 @@ mod tests {
 
         // [P1, P3] shares first hop with [P1, P2] but diverges at hop 2
         let candidate = vec![
-            HopDescriptor::new("P1".to_string(), token_a, token_b.clone()),
-            HopDescriptor::new("P3".to_string(), token_b, token_c),
+            HopDescriptor::new("P1".to_string(), token_a, token_b.clone())
+                .with_amounts(zero.clone(), zero.clone()),
+            HopDescriptor::new("P3".to_string(), token_b, token_c)
+                .with_amounts(zero.clone(), zero.clone()),
         ];
         assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
     }
@@ -549,14 +564,17 @@ mod tests {
         let token_c = token(0x03, "C");
 
         // Same pool "P1" but with different token pairs — not a duplicate.
+        let zero = BigUint::from(0u64);
         let alloc = PathAllocation {
-            hops: vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())],
+            hops: vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
+                .with_amounts(zero.clone(), zero.clone())],
             flow_fraction: 1.0,
             amount_in: BigUint::from(100u64),
             amount_out: BigUint::from(200u64),
             marginal_price_product: 2.0,
         };
-        let candidate = vec![HopDescriptor::new("P1".to_string(), token_a, token_c)];
+        let candidate = vec![HopDescriptor::new("P1".to_string(), token_a, token_c)
+            .with_amounts(zero.clone(), zero.clone())];
         assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(&candidate, &[alloc]));
     }
 
@@ -618,13 +636,10 @@ mod tests {
         let first_path = algo
             .find_candidate_path(&ctx, &[], &probe_amount)
             .unwrap();
-        assert_eq!(first_path[0].component_id, "P1");
-        assert_eq!(first_path[1].component_id, "P2");
+        assert_eq!(first_path[0].descriptor.component_id, "P1");
+        assert_eq!(first_path[1].descriptor.component_id, "P2");
 
-        let first_amount_out = first_path[1]
-            .amount_out
-            .clone()
-            .expect("amount_out populated");
+        let first_amount_out = first_path[1].amount_out.clone();
         let first_alloc = PathAllocation {
             hops: first_path,
             flow_fraction: 0.5,
@@ -637,8 +652,8 @@ mod tests {
         let second_path = algo
             .find_candidate_path(&ctx, std::slice::from_ref(&first_alloc), &probe_amount)
             .unwrap();
-        assert_eq!(second_path[0].component_id, "P1");
-        assert_eq!(second_path[1].component_id, "P3");
+        assert_eq!(second_path[0].descriptor.component_id, "P1");
+        assert_eq!(second_path[1].descriptor.component_id, "P3");
 
         // Shared prefix [P1] does not make these duplicates.
         assert!(!PathFrankWolfeAlgorithm::is_duplicate_path(
@@ -646,10 +661,7 @@ mod tests {
             std::slice::from_ref(&first_alloc)
         ));
 
-        let second_amount_out = second_path[1]
-            .amount_out
-            .clone()
-            .expect("amount_out populated");
+        let second_amount_out = second_path[1].amount_out.clone();
         let second_alloc = PathAllocation {
             hops: second_path,
             flow_fraction: 0.5,
@@ -707,7 +719,7 @@ mod tests {
         let first_path = algo
             .find_candidate_path(&ctx, &[], &probe_amount)
             .unwrap();
-        assert_eq!(first_path[0].component_id, "P1");
+        assert_eq!(first_path[0].descriptor.component_id, "P1");
 
         let first_alloc = PathAllocation {
             hops: first_path,
