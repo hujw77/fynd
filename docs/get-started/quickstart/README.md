@@ -74,7 +74,7 @@ fynd serve
 Each Fynd instance serves a single chain. `fynd serve` defaults to **Ethereum**; pass `--chain` to target another one:
 
 ```bash
-fynd serve --chain Base
+fynd serve --chain base
 ```
 
 For Docker, append the flag after `serve`:
@@ -84,10 +84,10 @@ docker run \
   -e TYCHO_API_KEY=your-api-key \
   -e RUST_LOG=fynd=info \
   -p 3000:3000 -p 9898:9898 \
-  ghcr.io/propeller-heads/fynd serve --chain Base
+  ghcr.io/propeller-heads/fynd serve --chain base
 ```
 
-These chains ship with built-in Tycho and RPC endpoints (names are case-insensitive): `Ethereum`, `Base`, `Unichain`, `BSC`, `Arbitrum`, `Polygon`. For any other chain, also pass `--tycho-url` and `--rpc-url` explicitly.
+These chains ship with built-in Tycho and RPC endpoints (names are case-insensitive): `ethereum`, `base`, `unichain`, `bsc`, `arbitrum`, `polygon`. For any other chain, also pass `--tycho-url` and `--rpc-url` explicitly.
 
 Your client must target the same chain. If you use the TypeScript client (Step 1), set `chainId` and the viem chain to match the server:
 
