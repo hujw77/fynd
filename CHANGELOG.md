@@ -1,3 +1,11 @@
+## [0.75.2](https://github.com/propeller-heads/fynd/compare/0.75.1...0.75.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **split routing:** reject cycle-creating path combos ([1813a0c](https://github.com/propeller-heads/fynd/commit/1813a0caa3262c33e869ddf4e2377fe7d73c4ed9))
+* **split routing:** topological order for cross-depth hops ([5895616](https://github.com/propeller-heads/fynd/commit/5895616d501b6b72206715827a3c9b0412a33f45))
+
 ## [0.75.1](https://github.com/propeller-heads/fynd/compare/0.75.0...0.75.1) (2026-06-05)
 
 
