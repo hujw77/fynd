@@ -1,3 +1,18 @@
+## [0.76.0](https://github.com/propeller-heads/fynd/compare/0.75.3...0.76.0) (2026-06-05)
+
+
+### Features
+
+* **PFW:** implement find_candidate_path and is_duplicate_path ([34ffd45](https://github.com/propeller-heads/fynd/commit/34ffd45aad102a2420aafa1b6bd0b6c10fa49026))
+
+
+### Bug Fixes
+
+* compare tokens in is_duplicate_path, not just component IDs ([c869a81](https://github.com/propeller-heads/fynd/commit/c869a81cba31fdb0920c77936de2a3a1bd635304))
+* complete HopDescriptor/SimulatedHop split after rebase ([6a280ce](https://github.com/propeller-heads/fynd/commit/6a280ce44f9113ef2d6ee76d307fe19ae9df8064))
+* update error messages ([ab1b845](https://github.com/propeller-heads/fynd/commit/ab1b8450fe216561ea6d2582b3dee21ffb6bd750))
+* zero gas per (pool, token_in, token_out), not per pool ([e8efb9b](https://github.com/propeller-heads/fynd/commit/e8efb9b305b64f75ccdd2419cf8cdc7497837a77))
+
 ## [0.75.3](https://github.com/propeller-heads/fynd/compare/0.75.2...0.75.3) (2026-06-05)
 
 
