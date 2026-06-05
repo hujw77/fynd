@@ -61,9 +61,9 @@ impl PathAllocation {
     /// A token appearing more than once means `merge_shared_hops` would
     /// incorrectly collapse distinct hops into one. The only exception is
     /// a round-trip where the final output equals the first input.
-    pub(crate) fn validate(&self) -> Result<(), AlgorithmError> {
+    pub(crate) fn validate_token_cycles(&self) -> Result<(), AlgorithmError> {
         if self.hops.is_empty() {
-            return Ok(());
+            return Err(AlgorithmError::Other("path has no hops".to_string()));
         }
         let first_token = &self.hops[0].token_in.address;
         let mut seen = HashSet::new();
@@ -602,7 +602,7 @@ pub(crate) fn build_split_route(
     order: &Order,
 ) -> Result<Route, AlgorithmError> {
     for path in paths {
-        path.validate()?;
+        path.validate_token_cycles()?;
     }
     let mut hops_by_token = merge_shared_hops(paths)?;
 
@@ -783,10 +783,10 @@ mod tests {
         assert!((result - 0.3).abs() < 1e-4, "expected ~0.3, got {result}");
     }
 
-    // ==================== PathAllocation::validate Tests ====================
+    // ==================== PathAllocation::validate_token_cycles Tests ====================
 
     #[test]
-    fn test_path_allocation_validate_valid_path() {
+    fn test_validate_token_cycles_valid_path() {
         let gas = BigUint::from(50_000u64);
         let path = PathAllocation {
             hops: vec![
@@ -800,11 +800,11 @@ mod tests {
             amount_out: BigUint::from(100u64),
             marginal_price_product: 1.0,
         };
-        assert!(path.validate().is_ok());
+        assert!(path.validate_token_cycles().is_ok());
     }
 
     #[test]
-    fn test_path_allocation_validate_empty_hops() {
+    fn test_validate_token_cycles_empty_hops() {
         let path = PathAllocation {
             hops: vec![],
             flow_fraction: 1.0,
@@ -812,11 +812,11 @@ mod tests {
             amount_out: BigUint::from(100u64),
             marginal_price_product: 1.0,
         };
-        assert!(path.validate().is_ok());
+        assert!(path.validate_token_cycles().is_err());
     }
 
     #[test]
-    fn test_path_allocation_validate_valid_round_trip() {
+    fn test_validate_token_cycles_valid_round_trip() {
         // A → B → A is a valid round-trip (first == last).
         let gas = BigUint::from(50_000u64);
         let path = PathAllocation {
@@ -831,11 +831,11 @@ mod tests {
             amount_out: BigUint::from(100u64),
             marginal_price_product: 1.0,
         };
-        assert!(path.validate().is_ok());
+        assert!(path.validate_token_cycles().is_ok());
     }
 
     #[test]
-    fn test_path_allocation_validate_rejects_mid_path_cycle() {
+    fn test_validate_token_cycles_rejects_mid_path_cycle() {
         // A → B → C → A → D: token A revisited mid-path (not a round-trip).
         // merge_shared_hops would incorrectly merge both A→? hops.
         let gas = BigUint::from(50_000u64);
@@ -855,11 +855,11 @@ mod tests {
             amount_out: BigUint::from(100u64),
             marginal_price_product: 1.0,
         };
-        assert!(path.validate().is_err());
+        assert!(path.validate_token_cycles().is_err());
     }
 
     #[test]
-    fn test_path_allocation_validate_rejects_intermediate_revisit() {
+    fn test_validate_token_cycles_rejects_intermediate_revisit() {
         // A → B → C → B → D: token B revisited.
         let gas = BigUint::from(50_000u64);
         let path = PathAllocation {
@@ -878,7 +878,7 @@ mod tests {
             amount_out: BigUint::from(100u64),
             marginal_price_product: 1.0,
         };
-        assert!(path.validate().is_err());
+        assert!(path.validate_token_cycles().is_err());
     }
 
     // ==================== Simulation Utility Tests ====================
