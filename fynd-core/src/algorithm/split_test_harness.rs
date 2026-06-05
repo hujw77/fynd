@@ -571,7 +571,7 @@ mod tests {
     }
 
     fn bf_default() -> BellmanFordAlgorithm {
-        BellmanFordAlgorithm::with_config(AlgorithmConfig::default()).unwrap()
+        BellmanFordAlgorithm::with_config(AlgorithmConfig::default())
     }
 
     // ==================== evaluate_scenario tests ====================
@@ -653,8 +653,7 @@ mod tests {
     async fn test_bf_lower_bounds() {
         let bf = BellmanFordAlgorithm::with_config(
             AlgorithmConfig::new(1, 4, Duration::from_millis(100), None).unwrap(),
-        )
-        .unwrap();
+        );
         for scenario in split_scenarios::all() {
             let name = scenario.name;
             let (market, gm) = scenario.build_market();
@@ -674,8 +673,7 @@ mod tests {
         let scenario = split_scenarios::double_split();
         let bf = BellmanFordAlgorithm::with_config(
             AlgorithmConfig::new(1, 4, Duration::from_millis(100), None).unwrap(),
-        )
-        .unwrap();
+        );
         let (market, gm) = scenario.build_market();
         let result = evaluate_scenario(&bf, &scenario, market, gm).await;
 
