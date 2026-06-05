@@ -621,8 +621,8 @@ fn assign_splits_and_amounts(
 /// intermediate token:
 ///
 /// ```text
-/// Path 1 (2 hops): WETH -> USDC -> DAI          (via Pool A)
-/// Path 2 (3 hops): WETH -> USDT -> USDC -> DAI  (via Pool A)
+/// Path 1 (2 hops): WETH -> USDC -(pool A)-> DAI
+/// Path 2 (3 hops): WETH -> USDT -> USDC -(pool A)-> DAI
 /// ```
 ///
 /// Pool A (USDC→DAI) is merged into one swap. If USDC were visited before
