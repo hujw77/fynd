@@ -20,7 +20,8 @@
 //! instance, or the [custom algorithm guide](https://docs.fynd.xyz/guides/custom-algorithm)
 //! to implement your own routing strategy.
 
-/// Route-finding algorithms. Includes [`MostLiquidAlgorithm`] and the
+/// Route-finding algorithms. Includes [`MostLiquidAlgorithm`],
+/// [`algorithm::BellmanFordAlgorithm`], [`PathFrankWolfeAlgorithm`], and the
 /// pluggable [`Algorithm`] trait.
 pub mod algorithm;
 /// Derived data computations: spot prices, pool depths, and gas prices.
@@ -46,7 +47,9 @@ pub mod worker_pool;
 pub mod worker_pool_router;
 
 // Re-export commonly used types for convenience
-pub use algorithm::{Algorithm, AlgorithmConfig, AlgorithmError, MostLiquidAlgorithm};
+pub use algorithm::{
+    Algorithm, AlgorithmConfig, AlgorithmError, MostLiquidAlgorithm, PathFrankWolfeAlgorithm,
+};
 // Required for implementing the Algorithm trait externally
 pub use derived::computation::ComputationRequirements;
 pub use feed::{events::MarketEvent, market_data::StateLabel};

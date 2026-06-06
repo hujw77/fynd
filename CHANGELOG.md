@@ -1,3 +1,54 @@
+## [0.76.0](https://github.com/propeller-heads/fynd/compare/0.75.3...0.76.0) (2026-06-05)
+
+
+### Features
+
+* **PFW:** implement find_candidate_path and is_duplicate_path ([34ffd45](https://github.com/propeller-heads/fynd/commit/34ffd45aad102a2420aafa1b6bd0b6c10fa49026))
+
+
+### Bug Fixes
+
+* compare tokens in is_duplicate_path, not just component IDs ([c869a81](https://github.com/propeller-heads/fynd/commit/c869a81cba31fdb0920c77936de2a3a1bd635304))
+* complete HopDescriptor/SimulatedHop split after rebase ([6a280ce](https://github.com/propeller-heads/fynd/commit/6a280ce44f9113ef2d6ee76d307fe19ae9df8064))
+* update error messages ([ab1b845](https://github.com/propeller-heads/fynd/commit/ab1b8450fe216561ea6d2582b3dee21ffb6bd750))
+* zero gas per (pool, token_in, token_out), not per pool ([e8efb9b](https://github.com/propeller-heads/fynd/commit/e8efb9b305b64f75ccdd2419cf8cdc7497837a77))
+
+## [0.75.3](https://github.com/propeller-heads/fynd/compare/0.75.2...0.75.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* complete HopDescriptor/SimulatedHop split after rebase ([aa9a0c4](https://github.com/propeller-heads/fynd/commit/aa9a0c45507f83acc48827fccc862115bee853c8))
+
+## [0.75.2](https://github.com/propeller-heads/fynd/compare/0.75.1...0.75.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **split routing:** reject cycle-creating path combos ([1813a0c](https://github.com/propeller-heads/fynd/commit/1813a0caa3262c33e869ddf4e2377fe7d73c4ed9))
+* **split routing:** topological order for cross-depth hops ([5895616](https://github.com/propeller-heads/fynd/commit/5895616d501b6b72206715827a3c9b0412a33f45))
+
+## [0.75.1](https://github.com/propeller-heads/fynd/compare/0.75.0...0.75.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **split routing:** validate paths before merge_shared_hops ([e110c77](https://github.com/propeller-heads/fynd/commit/e110c77690e1370b64f42fe4ec8681370da502d9))
+
+## [0.75.0](https://github.com/propeller-heads/fynd/compare/0.74.0...0.75.0) (2026-06-05)
+
+
+### Features
+
+* **PFW:** compute_probe_amount and compute_average_price_impact ([9fcdb21](https://github.com/propeller-heads/fynd/commit/9fcdb2139251ebe5ee18a56b067db3febd0f5d9d))
+
+## [0.74.0](https://github.com/propeller-heads/fynd/compare/0.73.0...0.74.0) (2026-06-05)
+
+
+### Features
+
+* PathFrankWolfe structs ([4bb5511](https://github.com/propeller-heads/fynd/commit/4bb5511978473f822d68051801842eceb447fde6))
+
 ## [0.73.0](https://github.com/propeller-heads/fynd/compare/0.72.2...0.73.0) (2026-06-04)
 
 
