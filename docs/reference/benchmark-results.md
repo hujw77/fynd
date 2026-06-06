@@ -249,6 +249,4 @@ All results in this section use identical hardware, protocol set, and request lo
 |      28 |              384.13 |              1201.92 | bellman_ford (3.1x) |
 |      32 |              366.06 |              1219.96 | bellman_ford (3.3x) |
 
-Both algorithms use the same 8-protocol set. `bellman_ford` is consistently **2.5–4× faster** at 3 hops. The advantage reflects the increased computational complexity of `most_liquid`'s 3-hop search.
-
-At 3 hops, the results **reverse**: `bellman_ford` is **2–2.5× faster** than `most_liquid` and keeps scaling while `most_liquid` plateaus. The `most_liquid` greedy search requires pre-computed edge weights (spot price × depth) that are recomputed on every block, creating a periodic pause that limits scaling; Bellman-Ford carries no pre-computed edge state so its per-block update is a no-op.
+Both algorithms use the same 8-protocol set. At 3 hops the ranking **reverses** from the 2-hop result: `bellman_ford` is consistently **2.5–4× faster** than `most_liquid`, and keeps scaling while `most_liquid` plateaus. The `most_liquid` greedy search requires pre-computed edge weights (spot price × depth) that are recomputed on every block, creating a periodic pause that limits scaling; Bellman-Ford carries no pre-computed edge state so its per-block update is a no-op.
