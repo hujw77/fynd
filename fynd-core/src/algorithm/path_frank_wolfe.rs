@@ -5,15 +5,18 @@
 //! single-path discovery; this module layers on the Frank-Wolfe optimisation
 //! loop to determine the best split fractions.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use num_bigint::BigUint;
-use num_traits::ToPrimitive;
+use num_bigint::{BigInt, BigUint};
+use num_traits::{ToPrimitive, Zero};
+use tracing::debug;
 
 use super::{
     bellman_ford::{BellmanFordContext, FindRouteOptions},
     split_primitives::{
-        build_post_swap_overrides, split_amount, HopDescriptor, PathAllocation, SimulatedHop,
+        build_post_swap_overrides, build_split_route, compute_marginal_price_product,
+        evaluate_total_output, golden_section_search, normalize_fractions, simulate_path,
+        split_amount, HopDescriptor, MarketOverrides, PathAllocation, SimulatedHop,
     },
     Algorithm, AlgorithmConfig, AlgorithmError, BellmanFordAlgorithm,
 };
@@ -47,8 +50,6 @@ impl Default for PathFrankWolfeConfig {
 /// and optimises the input split across them using a Frank-Wolfe loop.
 pub struct PathFrankWolfeAlgorithm {
     inner: BellmanFordAlgorithm,
-    // Used by the split-routing loop (not yet implemented).
-    #[allow(dead_code)]
     config: PathFrankWolfeConfig,
 }
 
@@ -71,7 +72,6 @@ impl PathFrankWolfeAlgorithm {
     ///
     /// Returns `None` when the probe exceeds `config.max_probe × total_amount`,
     /// signalling that splitting is not worthwhile.
-    #[allow(dead_code)]
     fn compute_probe_amount(
         &self,
         total_amount: &BigUint,
@@ -98,7 +98,6 @@ impl PathFrankWolfeAlgorithm {
     /// of the ideal (marginal-price) output. Paths are weighted by their share of
     /// total flow, not averaged equally — a 95/5 split means the big path
     /// dominates the result and the small path barely matters.
-    #[allow(dead_code)]
     fn compute_average_price_impact(paths: &[PathAllocation]) -> Result<f64, AlgorithmError> {
         let mut weighted_price_impact = 0.0;
         for path in paths {
@@ -142,7 +141,6 @@ impl PathFrankWolfeAlgorithm {
     ///
     /// Returns an ordered sequence of [`SimulatedHop`]s representing the discovered path,
     /// or an error if no route exists.
-    #[allow(dead_code)]
     pub(crate) fn find_candidate_path(
         &self,
         ctx: &BellmanFordContext,
@@ -226,6 +224,90 @@ impl PathFrankWolfeAlgorithm {
             })
             .collect()
     }
+
+    /// Computes the gas cost of a route in output-token units as `f64`.
+    ///
+    /// Returns `0.0` when gas price or token prices are unavailable 
+    fn gas_cost_output_tokens(route: &crate::types::Route, ctx: &BellmanFordContext) -> f64 {
+        let gas_price = match &ctx.gas_price_wei {
+            Some(gp) if !gp.is_zero() => gp,
+            _ => return 0.0,
+        };
+        let last_swap = match route.swaps().last() {
+            Some(s) => s,
+            None => return 0.0,
+        };
+        let price = match ctx
+            .token_prices
+            .as_ref()
+            .and_then(|tp| tp.get(last_swap.token_out()))
+        {
+            Some(p) if !p.denominator.is_zero() => p,
+            _ => return 0.0,
+        };
+        let gas_cost_wei = &route.total_gas() * gas_price;
+        let gas_cost_tokens = &gas_cost_wei * &price.numerator / &price.denominator;
+        gas_cost_tokens.to_f64().unwrap_or(0.0)
+    }
+
+    /// Converts a `Route` (from BF's initial solve) into a single `PathAllocation`.
+    fn route_to_allocation(
+        route: &crate::types::Route,
+        order: &Order,
+        ctx: &BellmanFordContext,
+    ) -> Result<PathAllocation, AlgorithmError> {
+        let tokens = route.tokens();
+        let hops: Vec<SimulatedHop> = route
+            .swaps()
+            .iter()
+            .map(|swap| {
+                let token_in = tokens
+                    .get(swap.token_in())
+                    .cloned()
+                    .ok_or_else(|| AlgorithmError::DataNotFound {
+                        kind: "token",
+                        id: Some(format!("{:?}", swap.token_in())),
+                    })?;
+                let token_out = tokens
+                    .get(swap.token_out())
+                    .cloned()
+                    .ok_or_else(|| AlgorithmError::DataNotFound {
+                        kind: "token",
+                        id: Some(format!("{:?}", swap.token_out())),
+                    })?;
+                Ok(SimulatedHop {
+                    descriptor: HopDescriptor::new(
+                        swap.component_id().to_string(),
+                        token_in,
+                        token_out,
+                    ),
+                    amount_out: swap.amount_out().clone(),
+                    gas: swap.gas_estimate().clone(),
+                })
+            })
+            .collect::<Result<_, AlgorithmError>>()?;
+
+        let descriptors: Vec<HopDescriptor> = hops
+            .iter()
+            .map(|h| h.descriptor.clone())
+            .collect();
+        let overrides = MarketOverrides::empty();
+        let marginal_price_product =
+            compute_marginal_price_product(&descriptors, &ctx.market_data, &overrides)?;
+        let amount_out = hops
+            .last()
+            .map(|h| h.amount_out.clone())
+            .unwrap_or_default();
+
+        Ok(PathAllocation {
+            hops,
+            flow_fraction: 1.0,
+            amount_in: order.amount().clone(),
+            amount_out,
+            marginal_price_product,
+        })
+    }
+
     /// Golden-section search over the split fraction `gamma ∈ [0, 1]`.
     ///
     /// At each probe point, builds trial fractions (existing paths scaled by
@@ -323,12 +405,8 @@ impl PathFrankWolfeAlgorithm {
                 .iter()
                 .map(|h| h.descriptor.clone())
                 .collect();
-            let sim = simulate_path(
-                &hop_descriptors,
-                &alloc_amount_in,
-                &ctx.market_data,
-                &overrides,
-            )?;
+            let sim =
+                simulate_path(&hop_descriptors, &alloc_amount_in, &ctx.market_data, &overrides)?;
             alloc.amount_in = alloc_amount_in;
             alloc.amount_out = sim.amount_out;
             alloc.marginal_price_product = sim.marginal_price_product;
@@ -337,6 +415,40 @@ impl PathFrankWolfeAlgorithm {
         Ok(())
     }
 
+    /// Computes `net_amount_out` for a split route, mirroring
+    /// `BellmanFordAlgorithm::compute_net_amount_out`.
+    fn compute_split_net_amount_out(
+        route: &crate::types::Route,
+        ctx: &BellmanFordContext,
+    ) -> BigInt {
+        let Some(last_swap) = route.swaps().last() else {
+            return BigInt::zero();
+        };
+        let output_token = last_swap.token_out();
+        let total_out: BigUint = route
+            .swaps()
+            .iter()
+            .filter(|s| s.token_out() == output_token)
+            .map(|s| s.amount_out().clone())
+            .fold(BigUint::zero(), |acc, x| acc + x);
+
+        let gas_price = match &ctx.gas_price_wei {
+            Some(gp) if !gp.is_zero() => gp,
+            _ => return BigInt::from(total_out),
+        };
+        let price = match ctx
+            .token_prices
+            .as_ref()
+            .and_then(|tp| tp.get(output_token))
+        {
+            Some(p) if !p.denominator.is_zero() => p,
+            _ => return BigInt::from(total_out),
+        };
+
+        let gas_cost_wei = &route.total_gas() * gas_price;
+        let gas_cost_tokens = &gas_cost_wei * &price.numerator / &price.denominator;
+        BigInt::from(total_out) - BigInt::from(gas_cost_tokens)
+    }
 
     /// Returns `true` if `candidate` has the same ordered sequence of
     /// `(component_id, token_in, token_out)` as any existing allocation.
@@ -347,7 +459,6 @@ impl PathFrankWolfeAlgorithm {
     /// Paths that share only a prefix but diverge at a later hop are **not** duplicates — the
     /// shared hops are handled by `build_split_route`, which emits a single combined swap for
     /// the common segment.
-    #[allow(dead_code)]
     pub(crate) fn is_duplicate_path(
         candidate: &[SimulatedHop],
         existing: &[PathAllocation],
@@ -383,10 +494,104 @@ impl Algorithm for PathFrankWolfeAlgorithm {
         derived: Option<SharedDerivedDataRef>,
         order: &Order,
     ) -> Result<RouteResult, AlgorithmError> {
-        // Delegate to inner BF until the split-routing loop is implemented.
-        self.inner
-            .find_best_route(graph, market, label, derived, order)
-            .await
+        let start = Instant::now();
+        let ctx = self
+            .inner
+            .build_context(graph, market, label, derived, order)
+            .await?;
+
+        // Step 1: initial single-path route via BF at full amount.
+        let single_path_result =
+            self.inner
+                .find_single_route(&ctx, order, FindRouteOptions::default())?;
+
+        let mut allocations =
+            vec![Self::route_to_allocation(single_path_result.route(), order, &ctx)?];
+
+        // Compute gas cost and initial probe.
+        let gas_cost = Self::gas_cost_output_tokens(single_path_result.route(), &ctx);
+        let total_amount = order.amount();
+        let initial_pi = Self::compute_average_price_impact(&allocations)?;
+        if self
+            .compute_probe_amount(total_amount, initial_pi, gas_cost)
+            .is_none()
+        {
+            debug!(pi = initial_pi, gas_cost, "price impact too low to justify splitting");
+            return Ok(single_path_result);
+        }
+
+        // Frank-Wolfe loop — discover up to max_paths - 1 additional paths.
+        for iteration in 1..self.config.max_paths {
+            if start.elapsed() >= self.timeout() {
+                debug!(iteration, "pfw timeout, returning partial result");
+                break;
+            }
+
+            let pi = Self::compute_average_price_impact(&allocations)?;
+            let probe_amount = match self.compute_probe_amount(total_amount, pi, gas_cost) {
+                Some(p) => p,
+                None => {
+                    debug!(iteration, pi, "probe exceeds cap, stopping");
+                    break;
+                }
+            };
+
+            let candidate = match self.find_candidate_path(&ctx, &allocations, &probe_amount) {
+                Ok(c) => c,
+                Err(e) => {
+                    debug!(iteration, ?e, "no candidate path found, stopping");
+                    break;
+                }
+            };
+
+            if Self::is_duplicate_path(&candidate, &allocations) {
+                debug!(iteration, "duplicate path, exploration exhausted");
+                break;
+            }
+
+            // golden-section line search for optimal step size.
+            let gamma = self.optimize_step_size(&allocations, &candidate, total_amount, &ctx);
+
+            // step too small → no benefit.
+            if gamma < self.config.min_split {
+                debug!(iteration, gamma, "step size below min_split, stopping");
+                break;
+            }
+
+            self.apply_step(&mut allocations, &candidate, gamma, total_amount, &ctx)?;
+            debug!(iteration, paths = allocations.len(), gamma, "pfw iteration complete");
+        }
+
+        // Step 3: if we only have one path, the initial result is already optimal.
+        if allocations.len() <= 1 {
+            return Ok(single_path_result);
+        }
+
+        // Build the split route and compare with the initial single-path result.
+        let split_route = build_split_route(&allocations, &ctx.market_data, order)?;
+        let gas_price = ctx
+            .gas_price_wei
+            .clone()
+            .unwrap_or_default();
+        let split_net = Self::compute_split_net_amount_out(&split_route, &ctx);
+        let split_result = RouteResult::new(split_route, split_net, gas_price);
+
+        if split_result.net_amount_out() > single_path_result.net_amount_out() {
+            debug!(
+                split_net = %split_result.net_amount_out(),
+                initial_net = %single_path_result.net_amount_out(),
+                paths = allocations.len(),
+                "split route beats single path"
+            );
+            Ok(split_result)
+        } else {
+            debug!(
+                split_net = %split_result.net_amount_out(),
+                initial_net = %single_path_result.net_amount_out(),
+                "single path still best"
+            );
+            Ok(single_path_result)
+        }
     }
 
     fn computation_requirements(&self) -> ComputationRequirements {
