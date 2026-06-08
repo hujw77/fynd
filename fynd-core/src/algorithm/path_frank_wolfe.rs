@@ -227,7 +227,7 @@ impl PathFrankWolfeAlgorithm {
 
     /// Computes the gas cost of a route in output-token units as `f64`.
     ///
-    /// Returns `0.0` when gas price or token prices are unavailable 
+    /// Returns `0.0` when gas price or token prices are unavailable
     fn gas_cost_output_tokens(route: &crate::types::Route, ctx: &BellmanFordContext) -> f64 {
         let gas_price = match &ctx.gas_price_wei {
             Some(gp) if !gp.is_zero() => gp,
@@ -609,9 +609,13 @@ impl Algorithm for PathFrankWolfeAlgorithm {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration as StdDuration;
+    use std::{sync::Arc, time::Duration as StdDuration};
 
-    use tycho_simulation::tycho_common::simulation::protocol_sim::ProtocolSim;
+    use tokio::sync::RwLock;
+    use tycho_simulation::tycho_common::{
+        models::token::Token,
+        simulation::protocol_sim::{Price, ProtocolSim},
+    };
 
     use super::*;
     use crate::{
@@ -622,9 +626,29 @@ mod tests {
             },
             AlgorithmConfig,
         },
+        derived::{types::TokenGasPrices, DerivedData, SharedDerivedDataRef},
         graph::GraphManager,
         types::OrderSide,
     };
+
+    /// Builds a `SharedDerivedDataRef` with token prices for the given tokens.
+    ///
+    /// Price is set so gas costs are small but non-zero relative to test trade
+    /// amounts. With `setup_market_unweighted` (gas_price=100 wei) and pool
+    /// gas=50,000, each hop costs ~5 output tokens.
+    fn derived_with_token_prices(tokens: &[&Token]) -> SharedDerivedDataRef {
+        let mut prices = TokenGasPrices::new();
+        // 1 token = 1,000,000 wei of gas token.
+        // gas_cost_tokens = (gas × gas_price) / 1,000,000
+        //                 = (50,000 × 100) / 1,000,000 = 5 tokens per hop
+        let price = Price::new(BigUint::from(1u64), BigUint::from(1_000_000u64));
+        for token in tokens {
+            prices.insert(token.address.clone(), price.clone());
+        }
+        let mut derived = DerivedData::new();
+        derived.set_token_prices(prices, vec![], 1, true);
+        Arc::new(RwLock::new(derived))
+    }
 
     impl PathFrankWolfeAlgorithm {
         /// Returns a reference to the PFW-specific tuning config.
@@ -811,10 +835,80 @@ mod tests {
         assert!((pi - 0.14).abs() < 1e-10, "expected 0.14, got {pi}");
     }
 
-    // TODO(ENG-5856): requires the main loop to verify early exit behavior.
-    #[test]
-    #[ignore]
-    fn test_pi_exit_criterion_stops_loop_early() {}
+    #[tokio::test]
+    async fn test_pi_exit_criterion_stops_loop_early() {
+        // Three distinct pools so BF can always find a new (non-duplicate) path.
+        // High gas costs relative to trade size mean that after the first split
+        // lowers PI, `compute_probe_amount` returns None before iteration 2 can
+        // discover the third pool → the loop exits via PI criterion at 2 swaps
+        // instead of the 3 it would produce with lower gas.
+        //
+        // Math (constant-product, reserves R=5000, trade=2000):
+        //   Initial PI (full amount, one pool): 2000/7000 ≈ 0.286
+        //   After ~50/50 split (1000 each):     1000/6000 ≈ 0.167
+        //   gas_cost = 1_000_000 × 100 / 1_000_000 = 100 output tokens
+        //   PI threshold = gas_cost / (total × max_probe) = 100 / 500 = 0.2
+        //   0.286 > 0.2 → enters loop; 0.167 < 0.2 → exits via PI criterion.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |gas: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(5_000u64),
+                reserve_1: BigUint::from(5_000u64),
+                gas,
+            })
+        };
+
+        // High-gas run: PI exit should cap the result at 2 swaps.
+        let (market_hi, gm_hi) = setup_market_unweighted(vec![
+            ("P1", &token_a, &token_b, cp(1_000_000)),
+            ("P2", &token_a, &token_b, cp(1_000_000)),
+            ("P3", &token_a, &token_b, cp(1_000_000)),
+        ]);
+
+        let config = PathFrankWolfeConfig {
+            max_paths: 4,
+            max_probe: 0.25,
+            min_split: 0.01,
+            ..Default::default()
+        };
+        let algo = pfw_algo_with_config(2, config.clone());
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 2_000, OrderSide::Sell);
+
+        let result_hi = algo
+            .find_best_route(gm_hi.graph(), market_hi, None, Some(derived.clone()), &ord)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result_hi.route().swaps().len(),
+            2,
+            "PI exit should stop the loop after the first split"
+        );
+
+        // Lower-gas control: same pools but gas_cost=50 output tokens.
+        // PI threshold = 50 / 500 = 0.1, below post-split PI (~0.167),
+        // so PI exit never fires and the algorithm discovers all three pools.
+        let (market_lo, gm_lo) = setup_market_unweighted(vec![
+            ("P1", &token_a, &token_b, cp(500_000)),
+            ("P2", &token_a, &token_b, cp(500_000)),
+            ("P3", &token_a, &token_b, cp(500_000)),
+        ]);
+
+        let algo_lo = pfw_algo_with_config(2, config);
+        let result_lo = algo_lo
+            .find_best_route(gm_lo.graph(), market_lo, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result_lo.route().swaps().len(),
+            3,
+            "without PI exit, all three pools should be used"
+        );
+    }
 
     // ==================== find_candidate_path / is_duplicate_path ====================
 
@@ -1073,5 +1167,431 @@ mod tests {
 
         assert_eq!(result.amount, BigUint::from(200u64), "amount unaffected");
         assert_eq!(result.gas, BigUint::ZERO, "gas zeroed by with_zero_gas");
+    }
+
+    // ==================== find_best_route main loop ====================
+
+    fn pfw_algo_with_config(
+        max_hops: usize,
+        pfw_config: PathFrankWolfeConfig,
+    ) -> PathFrankWolfeAlgorithm {
+        PathFrankWolfeAlgorithm::new(
+            AlgorithmConfig::new(1, max_hops, StdDuration::from_millis(5000), None).unwrap(),
+            pfw_config,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_single_path_no_split() {
+        // Only one pool exists → the loop terminates via duplicate detection and
+        // returns the single-path result unchanged.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let (market, graph_manager) = setup_market_unweighted(vec![(
+            "P1",
+            &token_a,
+            &token_b,
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(10_000u64),
+                reserve_1: BigUint::from(10_000u64),
+                gas: 50_000,
+            }) as Box<dyn ProtocolSim>,
+        )]);
+
+        let algo = pfw_algo(2);
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 1_000, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        let swaps = result.route().swaps();
+        assert_eq!(swaps.len(), 1, "single path, single swap");
+        assert_eq!(swaps[0].component_id(), "P1");
+    }
+
+    #[tokio::test]
+    async fn test_two_parallel_pools_symmetric() {
+        // Two identical A→B pools → should split ~50/50.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |reserve: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(reserve),
+                reserve_1: BigUint::from(reserve),
+                gas: 50_000,
+            })
+        };
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            ("P1", &token_a, &token_b, cp(100_000)),
+            ("P2", &token_a, &token_b, cp(100_000)),
+        ]);
+
+        let algo = pfw_algo_with_config(
+            2,
+            PathFrankWolfeConfig {
+                max_paths: 4,
+                max_probe: 0.25,
+                min_split: 0.01,
+                ..Default::default()
+            },
+        );
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 10_000, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        let swaps = result.route().swaps();
+        assert_eq!(swaps.len(), 2, "should use both pools");
+        let ids: Vec<&str> = swaps
+            .iter()
+            .map(|s| s.component_id())
+            .collect();
+        assert!(ids.contains(&"P1"));
+        assert!(ids.contains(&"P2"));
+
+        // Both pools are identical → amounts should be roughly equal (within 10%).
+        let amounts: Vec<f64> = swaps
+            .iter()
+            .map(|s| s.amount_in().to_f64().unwrap())
+            .collect();
+        let ratio = amounts[0] / amounts[1];
+        assert!(
+            (0.8..=1.2).contains(&ratio),
+            "expected roughly equal split, got ratio {ratio} (amounts: {amounts:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_two_parallel_pools_asymmetric() {
+        // One deep pool (200k reserves) and one shallow pool (50k reserves).
+        // Large trade should favor the deep pool but still route some through the shallow one.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |reserve: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(reserve),
+                reserve_1: BigUint::from(reserve),
+                gas: 50_000,
+            })
+        };
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            ("deep", &token_a, &token_b, cp(200_000)),
+            ("shallow", &token_a, &token_b, cp(50_000)),
+        ]);
+
+        let algo = pfw_algo_with_config(
+            2,
+            PathFrankWolfeConfig {
+                max_paths: 4,
+                max_probe: 0.5,
+                min_split: 0.01,
+                ..Default::default()
+            },
+        );
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 30_000, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        let swaps = result.route().swaps();
+        assert_eq!(swaps.len(), 2, "should use both pools");
+
+        let deep_swap = swaps
+            .iter()
+            .find(|s| s.component_id() == "deep")
+            .unwrap();
+        let shallow_swap = swaps
+            .iter()
+            .find(|s| s.component_id() == "shallow")
+            .unwrap();
+
+        assert!(
+            deep_swap.amount_in() > shallow_swap.amount_in(),
+            "deep pool should get more flow: deep={}, shallow={}",
+            deep_swap.amount_in(),
+            shallow_swap.amount_in()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_split_beats_single_route() {
+        // Large trade through two parallel pools should produce more output than
+        // routing everything through just one.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |reserve: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(reserve),
+                reserve_1: BigUint::from(reserve),
+                gas: 50_000,
+            })
+        };
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            ("P1", &token_a, &token_b, cp(100_000)),
+            ("P2", &token_a, &token_b, cp(100_000)),
+        ]);
+
+        let algo = pfw_algo_with_config(
+            2,
+            PathFrankWolfeConfig {
+                max_paths: 4,
+                max_probe: 0.25,
+                min_split: 0.01,
+                ..Default::default()
+            },
+        );
+        // Large trade: 50% of each pool's reserves → significant price impact.
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 50_000, OrderSide::Sell);
+
+        let split_result = algo
+            .find_best_route(
+                graph_manager.graph(),
+                market.clone(),
+                None,
+                Some(derived.clone()),
+                &ord,
+            )
+            .await
+            .unwrap();
+
+        // Single-path: route everything through one pool.
+        let single_algo =
+            pfw_algo_with_config(2, PathFrankWolfeConfig { max_paths: 1, ..Default::default() });
+        let single_result = single_algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        assert!(
+            split_result.net_amount_out() > single_result.net_amount_out(),
+            "split output ({}) should beat single ({})",
+            split_result.net_amount_out(),
+            single_result.net_amount_out()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_three_paths_discovered() {
+        // Diamond graph: A→B via P1, P2, P3 — three parallel routes.
+        // With enough max_paths the algorithm should discover all three.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |reserve: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(reserve),
+                reserve_1: BigUint::from(reserve),
+                gas: 50_000,
+            })
+        };
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            ("P1", &token_a, &token_b, cp(100_000)),
+            ("P2", &token_a, &token_b, cp(80_000)),
+            ("P3", &token_a, &token_b, cp(60_000)),
+        ]);
+
+        let algo = pfw_algo_with_config(
+            2,
+            PathFrankWolfeConfig {
+                max_paths: 5,
+                max_probe: 0.5,
+                min_split: 0.01,
+                line_search_evals: 16,
+            },
+        );
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let ord = order(&token_a, &token_b, 30_000, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        let swaps = result.route().swaps();
+        let ids: Vec<&str> = swaps
+            .iter()
+            .map(|s| s.component_id())
+            .collect();
+        assert_eq!(ids.len(), 3, "expected 3 paths, got {ids:?}");
+        assert!(ids.contains(&"P1"), "missing P1");
+        assert!(ids.contains(&"P2"), "missing P2");
+        assert!(ids.contains(&"P3"), "missing P3");
+    }
+
+    #[tokio::test]
+    async fn test_shared_pool_degradation() {
+        // Two routes share an interior pool: A→B via P1, then B→C via P_shared.
+        // A second route: A→B via P2, then B→C via P_shared.
+        // Sequential simulation through P_shared must degrade state correctly.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let token_c = token(0x03, "C");
+
+        let (market, graph_manager) = setup_market_unweighted(vec![
+            (
+                "P1",
+                &token_a,
+                &token_b,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(100_000u64),
+                    reserve_1: BigUint::from(100_000u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+            (
+                "P2",
+                &token_a,
+                &token_b,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(100_000u64),
+                    reserve_1: BigUint::from(100_000u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+            (
+                "P_shared",
+                &token_b,
+                &token_c,
+                Box::new(ConstantProductSim {
+                    reserve_0: BigUint::from(200_000u64),
+                    reserve_1: BigUint::from(200_000u64),
+                    gas: 50_000,
+                }) as Box<dyn ProtocolSim>,
+            ),
+        ]);
+
+        let algo = pfw_algo_with_config(
+            3,
+            PathFrankWolfeConfig {
+                max_paths: 4,
+                max_probe: 0.5,
+                min_split: 0.01,
+                ..Default::default()
+            },
+        );
+        let derived = derived_with_token_prices(&[&token_a, &token_b, &token_c]);
+        let ord = order(&token_a, &token_c, 20_000, OrderSide::Sell);
+
+        let result = algo
+            .find_best_route(
+                graph_manager.graph(),
+                market.clone(),
+                None,
+                Some(derived.clone()),
+                &ord,
+            )
+            .await
+            .unwrap();
+
+        let swaps = result.route().swaps();
+        let ids: Vec<&str> = swaps
+            .iter()
+            .map(|s| s.component_id())
+            .collect();
+
+        // Should use both entry pools plus the shared pool.
+        assert!(ids.contains(&"P1") && ids.contains(&"P2"), "should use both entry pools");
+        assert!(ids.contains(&"P_shared"), "must use shared B→C pool");
+
+        // Output should be better than single-path (which goes through one entry
+        // pool and hits P_shared with the full amount).
+        let single_algo =
+            pfw_algo_with_config(3, PathFrankWolfeConfig { max_paths: 1, ..Default::default() });
+        let single_result = single_algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+
+        assert!(
+            result.net_amount_out() > single_result.net_amount_out(),
+            "split ({}) should be > single ({})",
+            result.net_amount_out(),
+            single_result.net_amount_out()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_returns_partial_result() {
+        // With a generous timeout the algo splits across all pools.
+        // With a near-zero timeout it returns fewer paths, proving the FW loop
+        // was cut short while still producing a valid result.
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+
+        let cp = |reserve: u64| -> Box<dyn ProtocolSim> {
+            Box::new(ConstantProductSim {
+                reserve_0: BigUint::from(reserve),
+                reserve_1: BigUint::from(reserve),
+                gas: 50_000,
+            })
+        };
+
+        let pool_names: [&str; 8] = ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7"];
+
+        let pfw_config =
+            PathFrankWolfeConfig { max_paths: 8, min_split: 0.001, ..Default::default() };
+        let ord = order(&token_a, &token_b, 80_000, OrderSide::Sell);
+
+        // Generous timeout — should split across many pools.
+        let pools: Vec<_> = pool_names
+            .iter()
+            .map(|id| (*id, &token_a, &token_b, cp(100_000)))
+            .collect();
+        let (market, graph_manager) = setup_market_unweighted(pools);
+        let generous_algo = pfw_algo_with_config(2, pfw_config.clone());
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let generous_result = generous_algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+        let generous_swaps = generous_result.route().swaps().len();
+
+        // Near-zero timeout — should produce a valid result with fewer paths.
+        let pools: Vec<_> = pool_names
+            .iter()
+            .map(|id| (*id, &token_a, &token_b, cp(100_000)))
+            .collect();
+        let (market, graph_manager) = setup_market_unweighted(pools);
+        let timeout_algo = PathFrankWolfeAlgorithm::new(
+            AlgorithmConfig::new(1, 2, StdDuration::from_millis(1), None).unwrap(),
+            pfw_config,
+        );
+        let derived = derived_with_token_prices(&[&token_a, &token_b]);
+        let timeout_result = timeout_algo
+            .find_best_route(graph_manager.graph(), market, None, Some(derived), &ord)
+            .await
+            .unwrap();
+        let timeout_swaps = timeout_result.route().swaps().len();
+
+        assert!(
+            !timeout_result
+                .route()
+                .swaps()
+                .is_empty(),
+            "timed-out result must still contain at least one swap"
+        );
+        assert!(
+            timeout_swaps < generous_swaps,
+            "timed-out result ({timeout_swaps} swaps) should use fewer paths \
+             than generous result ({generous_swaps} swaps)"
+        );
     }
 }
