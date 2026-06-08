@@ -226,6 +226,61 @@ impl PathFrankWolfeAlgorithm {
             })
             .collect()
     }
+    /// Golden-section search over the split fraction `gamma ∈ [0, 1]`.
+    ///
+    /// At each probe point, builds trial fractions (existing paths scaled by
+    /// `1 − gamma`, candidate at `gamma`) and evaluates the combined output via
+    /// `evaluate_total_output`.
+    fn optimize_step_size(
+        &self,
+        current_allocations: &[PathAllocation],
+        candidate: &[SimulatedHop],
+        total_amount: &BigUint,
+        ctx: &BellmanFordContext,
+    ) -> f64 {
+        let existing_descriptors: Vec<Vec<HopDescriptor>> = current_allocations
+            .iter()
+            .map(|a| {
+                a.hops
+                    .iter()
+                    .map(|h| h.descriptor.clone())
+                    .collect()
+            })
+            .collect();
+        let candidate_descriptors: Vec<HopDescriptor> = candidate
+            .iter()
+            .map(|h| h.descriptor.clone())
+            .collect();
+        let overrides = MarketOverrides::empty();
+
+        let evaluate_split = |gamma: f64| -> f64 {
+            let mut trial_fractions: Vec<f64> = current_allocations
+                .iter()
+                .map(|a| a.flow_fraction * (1.0 - gamma))
+                .collect();
+            trial_fractions.push(gamma);
+
+            let mut trial_paths: Vec<&[HopDescriptor]> = existing_descriptors
+                .iter()
+                .map(|v| v.as_slice())
+                .collect();
+            trial_paths.push(&candidate_descriptors);
+
+            match evaluate_total_output(
+                &trial_paths,
+                &trial_fractions,
+                total_amount,
+                &ctx.market_data,
+                &overrides,
+            ) {
+                Ok((total_output, _gas)) => total_output.to_f64().unwrap_or(0.0),
+                Err(_) => 0.0,
+            }
+        };
+
+        golden_section_search(evaluate_split, 0.0, 1.0, self.config.line_search_evals)
+    }
+
 
     /// Returns `true` if `candidate` has the same ordered sequence of
     /// `(component_id, token_in, token_out)` as any existing allocation.
