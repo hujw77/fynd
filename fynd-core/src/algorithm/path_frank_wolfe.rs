@@ -281,6 +281,62 @@ impl PathFrankWolfeAlgorithm {
         golden_section_search(evaluate_split, 0.0, 1.0, self.config.line_search_evals)
     }
 
+    /// Applies a Frank-Wolfe step: shifts `gamma` fraction of flow to the
+    /// candidate path, re-simulates all paths, and prunes negligible allocations.
+    fn apply_step(
+        &self,
+        allocations: &mut Vec<PathAllocation>,
+        candidate: &[SimulatedHop],
+        gamma: f64,
+        total_amount: &BigUint,
+        ctx: &BellmanFordContext,
+    ) -> Result<(), AlgorithmError> {
+        for alloc in allocations.iter_mut() {
+            alloc.flow_fraction *= 1.0 - gamma;
+        }
+
+        allocations.push(PathAllocation {
+            hops: candidate.to_vec(),
+            flow_fraction: gamma,
+            amount_in: BigUint::zero(),
+            amount_out: BigUint::zero(),
+            marginal_price_product: 0.0,
+        });
+
+        allocations.retain(|a| a.flow_fraction >= self.config.min_split);
+
+        let mut remaining_fractions: Vec<f64> = allocations
+            .iter()
+            .map(|a| a.flow_fraction)
+            .collect();
+        normalize_fractions(&mut remaining_fractions)
+            .map_err(|e| AlgorithmError::Other(e.to_string()))?;
+        let overrides = MarketOverrides::empty();
+        for (alloc, &frac) in allocations
+            .iter_mut()
+            .zip(remaining_fractions.iter())
+        {
+            alloc.flow_fraction = frac;
+            let (alloc_amount_in, _) = split_amount(total_amount, frac);
+            let hop_descriptors: Vec<HopDescriptor> = alloc
+                .hops
+                .iter()
+                .map(|h| h.descriptor.clone())
+                .collect();
+            let sim = simulate_path(
+                &hop_descriptors,
+                &alloc_amount_in,
+                &ctx.market_data,
+                &overrides,
+            )?;
+            alloc.amount_in = alloc_amount_in;
+            alloc.amount_out = sim.amount_out;
+            alloc.marginal_price_product = sim.marginal_price_product;
+        }
+
+        Ok(())
+    }
+
 
     /// Returns `true` if `candidate` has the same ordered sequence of
     /// `(component_id, token_in, token_out)` as any existing allocation.
