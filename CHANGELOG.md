@@ -1,3 +1,20 @@
+## [0.77.0](https://github.com/propeller-heads/fynd/compare/0.76.0...0.77.0) (2026-06-09)
+
+
+### Features
+
+* add apply_step()  to shift the relevant part of flow to the candidate path ([49a13f2](https://github.com/propeller-heads/fynd/commit/49a13f2a54c853d13ed017a0f6547d7b19481911))
+* add find_best_route tests for PFW main loop ([7e02e82](https://github.com/propeller-heads/fynd/commit/7e02e828b29494b4945a8e72df42f14df69f99b4))
+* add optimize_step_size function for PFW ([7de9552](https://github.com/propeller-heads/fynd/commit/7de9552386250c8bf9a5ce6be28198c32e346089))
+* implement main algo loop ([84a069f](https://github.com/propeller-heads/fynd/commit/84a069f79e257332dc841859a9c9931e4b24c01d))
+
+
+### Bug Fixes
+
+* error on empty vec of swaps ([54d4eb9](https://github.com/propeller-heads/fynd/commit/54d4eb9f58854fc8d6bf74923df68022879f160b))
+* error on routes with no swap ([9ed31d3](https://github.com/propeller-heads/fynd/commit/9ed31d333a1c5010f41f62f05d2de80d1541890e))
+* reuse logic from gas_cost_output_tokens instead of reimplementing ([08677c2](https://github.com/propeller-heads/fynd/commit/08677c24a92f65c4e7a5902b35db9806a6d03fd8))
+
 ## [0.76.0](https://github.com/propeller-heads/fynd/compare/0.75.3...0.76.0) (2026-06-05)
 
 
