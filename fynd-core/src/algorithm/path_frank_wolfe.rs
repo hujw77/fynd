@@ -539,7 +539,7 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             let candidate = match self.find_candidate_path(&ctx, &allocations, &probe_amount) {
                 Ok(c) => c,
                 Err(e) => {
-                    debug!(iteration, ?e, "no candidate path found, stopping");
+                    debug!(iteration, ?e, "no additional candidate path found, stopping further searches");
                     break;
                 }
             };
