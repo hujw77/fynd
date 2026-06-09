@@ -288,6 +288,13 @@ impl PathFrankWolfeAlgorithm {
             })
             .collect::<Result<_, AlgorithmError>>()?;
 
+        if hops.is_empty() {
+            return Err(AlgorithmError::DataNotFound {
+                kind: "swap",
+                id: Some("route contains no swaps".to_string()),
+            });
+        }
+
         let descriptors: Vec<HopDescriptor> = hops
             .iter()
             .map(|h| h.descriptor.clone())
