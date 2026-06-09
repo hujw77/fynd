@@ -226,26 +226,29 @@ impl PathFrankWolfeAlgorithm {
     }
 
     /// Computes the gas cost of a route in output-token units as `f64`.
-    fn gas_cost_output_tokens(route: &Route, ctx: &BellmanFordContext) -> f64 {
+    fn gas_cost_output_tokens(
+        route: &Route,
+        ctx: &BellmanFordContext,
+    ) -> Result<f64, AlgorithmError> {
         let gas_price = match &ctx.gas_price_wei {
             Some(gp) if !gp.is_zero() => gp,
-            _ => return 0.0,
+            _ => return Ok(0.0),
         };
-        let last_swap = match route.swaps().last() {
-            Some(s) => s,
-            None => return 0.0,
-        };
+        let last_swap = route
+            .swaps()
+            .last()
+            .ok_or_else(|| AlgorithmError::Other("route has no swaps".to_string()))?;
         let price = match ctx
             .token_prices
             .as_ref()
             .and_then(|tp| tp.get(last_swap.token_out()))
         {
             Some(p) if !p.denominator.is_zero() => p,
-            _ => return 0.0,
+            _ => return Ok(0.0),
         };
         let gas_cost_wei = &route.total_gas() * gas_price;
         let gas_cost_tokens = &gas_cost_wei * &price.numerator / &price.denominator;
-        gas_cost_tokens.to_f64().unwrap_or(0.0)
+        Ok(gas_cost_tokens.to_f64().unwrap_or(0.0))
     }
 
     /// Converts a `Route` (from BF's initial solve) into a single `PathAllocation`.
@@ -416,10 +419,14 @@ impl PathFrankWolfeAlgorithm {
 
     /// Computes `net_amount_out` for a split route, mirroring
     /// `BellmanFordAlgorithm::compute_net_amount_out`.
-    fn compute_split_net_amount_out(route: &Route, ctx: &BellmanFordContext) -> BigInt {
-        let Some(last_swap) = route.swaps().last() else {
-            return BigInt::zero();
-        };
+    fn compute_split_net_amount_out(
+        route: &Route,
+        ctx: &BellmanFordContext,
+    ) -> Result<BigInt, AlgorithmError> {
+        let last_swap = route
+            .swaps()
+            .last()
+            .ok_or_else(|| AlgorithmError::Other("route has no swaps".to_string()))?;
         let output_token = last_swap.token_out();
         let total_out: BigUint = route
             .swaps()
@@ -428,9 +435,9 @@ impl PathFrankWolfeAlgorithm {
             .map(|s| s.amount_out().clone())
             .fold(BigUint::zero(), |acc, x| acc + x);
 
-        let gas_cost = Self::gas_cost_output_tokens(route, ctx);
+        let gas_cost = Self::gas_cost_output_tokens(route, ctx)?;
         let gas_cost_tokens = BigUint::from(gas_cost.ceil() as u128);
-        BigInt::from(total_out) - BigInt::from(gas_cost_tokens)
+        Ok(BigInt::from(total_out) - BigInt::from(gas_cost_tokens))
     }
 
     /// Returns `true` if `candidate` has the same ordered sequence of
@@ -492,7 +499,7 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             vec![Self::route_to_allocation(single_path_result.route(), order, &ctx)?];
 
         // Compute gas cost and initial probe.
-        let gas_cost = Self::gas_cost_output_tokens(single_path_result.route(), &ctx);
+        let gas_cost = Self::gas_cost_output_tokens(single_path_result.route(), &ctx)?;
         let total_amount = order.amount();
         let initial_pi = Self::compute_average_price_impact(&allocations)?;
         if self
@@ -560,7 +567,7 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             .gas_price_wei
             .clone()
             .unwrap_or_default();
-        let split_net = Self::compute_split_net_amount_out(&split_route, &ctx);
+        let split_net = Self::compute_split_net_amount_out(&split_route, &ctx)?;
         let split_result = RouteResult::new(split_route, split_net, gas_price);
 
         if split_result.net_amount_out() > single_path_result.net_amount_out() {
