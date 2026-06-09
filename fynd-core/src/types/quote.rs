@@ -14,25 +14,22 @@
 //! - [`Route`] - Sequence of swaps to execute
 //! - [`Swap`] - A single swap on a specific protocol
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use num_bigint::{BigInt, BigUint};
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 pub use tycho_execution::encoding::models::UserTransferType;
-use tycho_simulation::{
-    tycho_common::models::Address,
-    tycho_core::{
-        models::{protocol::ProtocolComponent, token::Token},
-        simulation::protocol_sim::ProtocolSim,
-        Bytes,
-    },
+use tycho_simulation::tycho_common::{
+    models::{protocol::ProtocolComponent, token::Token, Address},
+    simulation::protocol_sim::ProtocolSim,
+    Bytes,
 };
 use uuid::Uuid;
 
 use super::primitives::ComponentId;
-use crate::{price_guard::config::PriceGuardConfig, AlgorithmError};
+use crate::{feed::market_data::StateLabel, price_guard::config::PriceGuardConfig, AlgorithmError};
 
 // ============================================================================
 // REQUEST TYPES
@@ -86,6 +83,10 @@ pub struct QuoteOptions {
     /// Options for encoding the solution into an on-chain transaction.
     /// If `None`, the solution is returned without an encoded transaction.
     encoding_options: Option<EncodingOptions>,
+    /// Solve against this named state overlay. `None` solves against the base Tycho state.
+    /// Skipped during JSON serialization — only meaningful when calling Fynd as a Rust library.
+    #[serde(skip)]
+    state_label: Option<StateLabel>,
 }
 
 impl QuoteOptions {
@@ -113,6 +114,12 @@ impl QuoteOptions {
         self
     }
 
+    /// Targets a named state overlay for this request.
+    pub fn with_state_label(mut self, label: StateLabel) -> Self {
+        self.state_label = Some(label);
+        self
+    }
+
     /// Returns the timeout in milliseconds.
     pub fn timeout_ms(&self) -> Option<u64> {
         self.timeout_ms
@@ -131,6 +138,36 @@ impl QuoteOptions {
     /// Returns the encoding options.
     pub fn encoding_options(&self) -> Option<&EncodingOptions> {
         self.encoding_options.as_ref()
+    }
+
+    /// Returns the overlay label, if one was set.
+    pub fn state_label(&self) -> Option<&StateLabel> {
+        self.state_label.as_ref()
+    }
+}
+
+/// Parameters for a single solve operation.
+///
+/// Constructed from [`QuoteOptions`] and passed through the task pipeline down to the worker.
+/// Kept separate from [`QuoteOptions`] so solve-specific parameters can evolve independently
+/// of the HTTP request surface.
+#[must_use]
+#[derive(Debug, Clone, Default)]
+pub struct SolveParams {
+    /// Solve against this labeled state overlay. `None` uses the base Tycho state.
+    state_label: Option<StateLabel>,
+}
+
+impl SolveParams {
+    /// Targets a named state overlay.
+    pub fn with_state_label(mut self, label: StateLabel) -> Self {
+        self.state_label = Some(label);
+        self
+    }
+
+    /// Returns the overlay label, if one was set.
+    pub fn state_label(&self) -> Option<&StateLabel> {
+        self.state_label.as_ref()
     }
 }
 
@@ -213,6 +250,10 @@ pub struct FeeBreakdown {
     /// This is the value encoded as min_amount_out in the transaction.
     #[serde_as(as = "DisplayFromStr")]
     min_amount_received: BigUint,
+    /// keccak256 of the ABI-encoded swap bytes, present when client fee params were provided.
+    /// Clients use this to compute the 10-field EIP-712 signing hash for the client fee.
+    #[serde(skip)]
+    swaps_hash: Option<[u8; 32]>,
 }
 
 impl FeeBreakdown {
@@ -223,7 +264,13 @@ impl FeeBreakdown {
         max_slippage: BigUint,
         min_amount_received: BigUint,
     ) -> Self {
-        Self { router_fee, client_fee, max_slippage, min_amount_received }
+        Self { router_fee, client_fee, max_slippage, min_amount_received, swaps_hash: None }
+    }
+
+    /// Attaches the keccak256 hash of the encoded swap bytes.
+    pub fn with_swaps_hash(mut self, hash: [u8; 32]) -> Self {
+        self.swaps_hash = Some(hash);
+        self
     }
 
     /// Router protocol fee amount.
@@ -244,6 +291,12 @@ impl FeeBreakdown {
     /// Minimum amount the user receives on-chain.
     pub fn min_amount_received(&self) -> &BigUint {
         &self.min_amount_received
+    }
+
+    /// keccak256 of the ABI-encoded swap bytes.
+    /// Used by clients to construct the full 10-field EIP-712 `ClientFee` signing hash.
+    pub fn swaps_hash(&self) -> Option<&[u8; 32]> {
+        self.swaps_hash.as_ref()
     }
 }
 
@@ -696,6 +749,9 @@ pub struct OrderQuote {
     sender: Bytes,
     /// Address of the receiver.
     receiver: Bytes,
+    /// The state overlay this quote was computed against.
+    /// When no overlay was requested this is the block number of the base state at solve time.
+    solved_against: StateLabel,
 }
 
 impl OrderQuote {
@@ -711,6 +767,7 @@ impl OrderQuote {
         algorithm: String,
         sender: Bytes,
         receiver: Bytes,
+        solved_against: StateLabel,
     ) -> Self {
         Self {
             order_id,
@@ -728,6 +785,7 @@ impl OrderQuote {
             fee_breakdown: None,
             sender,
             receiver,
+            solved_against,
         }
     }
 
@@ -758,6 +816,15 @@ impl OrderQuote {
     /// Sets the encoded EVM transaction in place.
     pub fn set_transaction(&mut self, transaction: Transaction) {
         self.transaction = Some(transaction);
+    }
+
+    /// Sets the gas_estimate in place
+    pub fn set_gas_estimate(&mut self, gas_estimate: BigUint) {
+        self.gas_estimate = gas_estimate;
+    }
+
+    pub(crate) fn set_amount_out_net_gas(&mut self, value: BigUint) {
+        self.amount_out_net_gas = value;
     }
 
     /// Returns the order ID.
@@ -844,6 +911,11 @@ impl OrderQuote {
     pub fn receiver(&self) -> &Bytes {
         &self.receiver
     }
+
+    /// Returns the state overlay this quote was computed against.
+    pub fn solved_against(&self) -> &StateLabel {
+        &self.solved_against
+    }
 }
 
 /// Status of an order solution.
@@ -920,21 +992,28 @@ impl BlockInfo {
 // ROUTE & SWAP TYPES
 // ============================================================================
 
-/// A route consisting of one or more sequential swaps.
+/// A route consisting of one or more swaps, either sequential or split.
 ///
 /// A route describes the path through liquidity pools to execute a swap.
-/// For multi-hop swaps, the output of each swap becomes the input of the next.
+/// For sequential (multi-hop) swaps, the output of each swap becomes the input
+/// of the next. For split swaps, the input is divided across multiple parallel
+/// paths (each swap carries a `split` fraction).
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     /// Ordered sequence of swaps to execute.
     swaps: Vec<Swap>,
+    /// Full `Token` objects keyed by address, populated by the algorithm that
+    /// built the route. Skipped during (de)serialization — only the in-process
+    /// encoding path consumes it.
+    #[serde(skip, default)]
+    tokens: HashMap<Bytes, Token>,
 }
 
 impl Route {
     /// Creates a new route from an ordered sequence of swaps.
-    pub fn new(swaps: Vec<Swap>) -> Self {
-        Self { swaps }
+    pub fn new(swaps: Vec<Swap>, tokens: HashMap<Bytes, Token>) -> Self {
+        Self { swaps, tokens }
     }
 
     /// Returns the swaps in this route.
@@ -945,6 +1024,12 @@ impl Route {
     /// Consumes the route and returns its swaps.
     pub fn into_swaps(self) -> Vec<Swap> {
         self.swaps
+    }
+
+    /// Returns the token map attached to this route. Empty unless populated via
+    /// [`Route::with_tokens`].
+    pub(crate) fn tokens(&self) -> &HashMap<Bytes, Token> {
+        &self.tokens
     }
 }
 
@@ -1042,7 +1127,7 @@ impl Route {
             .collect()
     }
 
-    /// Returns the total gas estimate for all swaps in this route.
+    /// Returns the total gas estimate for all swaps in this route (naive approach).
     pub fn total_gas(&self) -> BigUint {
         self.swaps
             .iter()
@@ -1063,7 +1148,19 @@ impl Route {
         if self.swaps.is_empty() {
             return Err(RouteValidationError::EmptyRoute);
         }
+        if self.is_split() {
+            return self.validate_split_route();
+        }
+        self.validate_sequential_route()
+    }
 
+    /// Validates a sequential (non-split) route.
+    ///
+    /// Checks:
+    /// - Consecutive swaps are connected (output token == next input token)
+    /// - No token appears more than once unless it is both the first and last token (simple
+    ///   round-trip cycle)
+    fn validate_sequential_route(&self) -> Result<(), RouteValidationError> {
         for window in self.swaps.windows(2) {
             if window[0].token_out != window[1].token_in {
                 return Err(RouteValidationError::DisconnectedSwaps {
@@ -1097,6 +1194,198 @@ impl Route {
 
         Ok(())
     }
+
+    /// Returns `true` if the route contains any swaps with non-zero split
+    /// fractions.
+    pub fn is_split(&self) -> bool {
+        self.swaps.iter().any(|s| s.split > 0.0)
+    }
+
+    /// Validates a split route.
+    ///
+    /// Collects swaps into branch collections by `token_in`, then checks:
+    /// - Single-swap branch collections: `split` must be `0.0`
+    /// - Multi-swap branch collections: all but the last must have `0.0 < split < 1.0`, the last
+    ///   must have `split == 0.0` (remainder), and the sum must be strictly less than `1.0`
+    /// - BFS connectivity: outputs of each branch collection connect to inputs of the next
+    fn validate_split_route(&self) -> Result<(), RouteValidationError> {
+        // Collect swaps into branch collections by their input token. Each
+        // branch collection represents a split (parallel branches sharing the
+        // same token_in), not a sequential path.
+        let mut token_in_to_index: HashMap<Address, usize> = HashMap::new();
+        let mut swaps_by_token_in: Vec<(Address, Vec<&Swap>)> = Vec::new();
+        for swap in &self.swaps {
+            if let Some(&idx) = token_in_to_index.get(&swap.token_in) {
+                swaps_by_token_in[idx].1.push(swap);
+            } else {
+                token_in_to_index.insert(swap.token_in.clone(), swaps_by_token_in.len());
+                swaps_by_token_in.push((swap.token_in.clone(), vec![swap]));
+            }
+        }
+
+        validate_split_amounts(&swaps_by_token_in)?;
+        validate_bfs_connectivity(&swaps_by_token_in, &token_in_to_index)?;
+
+        validate_dead_ends(&swaps_by_token_in, &self.swaps)?;
+        validate_cycles(&swaps_by_token_in, &self.swaps)?;
+
+        Ok(())
+    }
+}
+
+fn validate_split_amounts(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+) -> Result<(), RouteValidationError> {
+    for (token_in, branch_collection) in swaps_by_token_in {
+        if branch_collection.len() == 1 {
+            if branch_collection[0].split != 0.0 {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "single swap for token_in {token_in} \
+                         must have split == 0.0, got {}",
+                        branch_collection[0].split
+                    ),
+                });
+            }
+            continue;
+        }
+
+        let mut sum = 0.0_f64;
+        let last_idx = branch_collection.len() - 1;
+        for (i, swap) in branch_collection.iter().enumerate() {
+            if i < last_idx {
+                if swap.split <= 0.0 || swap.split >= 1.0 {
+                    return Err(RouteValidationError::InvalidSplit {
+                        reason: format!(
+                            "swap {} for token_in {token_in} \
+                             must have 0.0 < split < 1.0, got {}",
+                            i, swap.split
+                        ),
+                    });
+                }
+                sum += swap.split;
+            } else if swap.split != 0.0 {
+                return Err(RouteValidationError::InvalidSplit {
+                    reason: format!(
+                        "last branch in collection for token_in {token_in} \
+                         must have split == 0.0 (remainder), got {}",
+                        swap.split
+                    ),
+                });
+            }
+        }
+
+        if sum >= 1.0 {
+            return Err(RouteValidationError::InvalidSplit {
+                reason: format!(
+                    "split sum for token_in {token_in} must be \
+                     < 1.0, got {sum}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// BFS connectivity: starting from the first branch collection's token_in,
+/// expand through swap outputs to verify all branch collection inputs are
+/// reachable.
+fn validate_bfs_connectivity(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    token_in_to_index: &HashMap<Address, usize>,
+) -> Result<(), RouteValidationError> {
+    let first_token = &swaps_by_token_in[0].0;
+    let mut reachable: HashSet<&Address> = HashSet::new();
+    reachable.insert(first_token);
+    let mut tokens_to_visit: VecDeque<&Address> = VecDeque::new();
+    tokens_to_visit.push_back(first_token);
+    while let Some(token) = tokens_to_visit.pop_front() {
+        if let Some(&idx) = token_in_to_index.get(token) {
+            for swap in &swaps_by_token_in[idx].1 {
+                if reachable.insert(&swap.token_out) {
+                    tokens_to_visit.push_back(&swap.token_out);
+                }
+            }
+        }
+    }
+    for (token_in, _) in swaps_by_token_in {
+        if !reachable.contains(token_in) {
+            return Err(RouteValidationError::DisconnectedSplitStart {
+                token_in: token_in.clone(),
+                start_token: first_token.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Dead-end detection: every swap output must either feed a later branch
+/// collection or be the terminal output token.
+fn validate_dead_ends(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    swaps: &[Swap],
+) -> Result<(), RouteValidationError> {
+    let terminal_token = &swaps
+        .last()
+        .ok_or(RouteValidationError::EmptyRoute)?
+        .token_out;
+    let non_first_input_tokens: HashSet<&Address> = swaps_by_token_in
+        .iter()
+        .skip(1)
+        .map(|(token_in, _)| token_in)
+        .collect();
+    for swap in swaps_by_token_in
+        .iter()
+        .flat_map(|(_, swaps)| swaps)
+    {
+        if !non_first_input_tokens.contains(&swap.token_out) && &swap.token_out != terminal_token {
+            return Err(RouteValidationError::DisconnectedSplitEnd {
+                token_out: swap.token_out.clone(),
+                terminal_token: terminal_token.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Cycle detection: no swap output may match an earlier branch collection's
+/// input. Exception: in a round-trip (first == terminal) outputs equal to
+/// `first_token` are allowed, provided the route has more than one branch
+/// collection — a single-collection round-trip is always rejected.
+fn validate_cycles(
+    swaps_by_token_in: &[(Address, Vec<&Swap>)],
+    swaps: &[Swap],
+) -> Result<(), RouteValidationError> {
+    let terminal_token = &swaps
+        .last()
+        .ok_or(RouteValidationError::EmptyRoute)?
+        .token_out;
+    let first_token = &swaps_by_token_in[0].0;
+    let is_round_trip = first_token == terminal_token;
+    if is_round_trip && swaps_by_token_in.len() <= 1 {
+        return Err(RouteValidationError::UnsupportedCycle {
+            token: first_token.clone(),
+            first: first_token.clone(),
+            last: terminal_token.clone(),
+        });
+    }
+    let mut earlier_inputs: HashSet<&Address> = HashSet::new();
+    for (token_in, branch_collection) in swaps_by_token_in {
+        earlier_inputs.insert(token_in);
+        for swap in branch_collection {
+            if !earlier_inputs.contains(&swap.token_out) {
+                continue;
+            }
+            if !(is_round_trip && &swap.token_out == first_token) {
+                return Err(RouteValidationError::UnsupportedCycle {
+                    token: swap.token_out.clone(),
+                    first: first_token.clone(),
+                    last: terminal_token.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Errors that can occur when validating a [`Route`].
@@ -1128,6 +1417,38 @@ pub enum RouteValidationError {
         first: Address,
         /// Last token in the route.
         last: Address,
+    },
+    /// A split route has invalid split fractions.
+    #[non_exhaustive]
+    #[error("invalid split route: {reason}")]
+    InvalidSplit {
+        /// Human-readable description of the violation.
+        reason: String,
+    },
+    /// A swap output token is a dead end — not consumed by any later step
+    /// in the route and not the terminal token.
+    #[non_exhaustive]
+    #[error(
+        "disconnected split end: {token_out} is not consumed by any later step \
+         in the route and is not the terminal token {terminal_token}"
+    )]
+    DisconnectedSplitEnd {
+        /// The output token that leads nowhere.
+        token_out: Address,
+        /// The route's terminal token.
+        terminal_token: Address,
+    },
+    /// A split's input token is not reachable from the route's start token.
+    #[non_exhaustive]
+    #[error(
+        "disconnected split start: input {token_in} is not reachable \
+         from start token {start_token}"
+    )]
+    DisconnectedSplitStart {
+        /// Input token of the unreachable split.
+        token_in: Address,
+        /// The route's start token.
+        start_token: Address,
     },
 }
 
@@ -1258,12 +1579,22 @@ pub struct Transaction {
     value: num_bigint::BigUint,
     /// ABI-encoded calldata.
     data: Vec<u8>,
+    /// Byte offset of the client fee signature within `data`.
+    /// Clients use this to patch the 65-byte EIP-712 signature into the calldata.
+    #[serde(skip)]
+    client_fee_signature_offset: Option<usize>,
 }
 
 impl Transaction {
     /// Creates a new transaction.
     pub fn new(to: Bytes, value: BigUint, data: Vec<u8>) -> Self {
-        Self { to, value, data }
+        Self { to, value, data, client_fee_signature_offset: None }
+    }
+
+    /// Attaches the byte offset of the client fee signature within the calldata.
+    pub fn with_client_fee_signature_offset(mut self, offset: usize) -> Self {
+        self.client_fee_signature_offset = Some(offset);
+        self
     }
 
     /// Returns the contract address to call.
@@ -1279,6 +1610,11 @@ impl Transaction {
     /// Returns the ABI-encoded calldata.
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Byte offset of the client fee signature within `data`.
+    pub fn client_fee_signature_offset(&self) -> Option<usize> {
+        self.client_fee_signature_offset
     }
 }
 
@@ -1395,7 +1731,7 @@ mod tests {
             .into_iter()
             .map(|(a, b)| make_swap(a, b, 1000, 990))
             .collect();
-        Route::new(swaps)
+        Route::new(swaps, HashMap::new())
     }
 
     #[rstest]
@@ -1452,7 +1788,7 @@ mod tests {
         let swaps: Vec<Swap> = (0..num_swaps)
             .map(|i| make_swap(i as u8, (i + 1) as u8, 1000, 990))
             .collect();
-        let route = Route::new(swaps);
+        let route = Route::new(swaps, HashMap::new());
         assert_eq!(route.total_gas(), BigUint::from(expected_gas));
     }
 
@@ -1494,6 +1830,177 @@ mod tests {
                 _ => panic!("Unknown error type"),
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Split Route Validation Tests
+    // -------------------------------------------------------------------------
+
+    fn make_split_swap(token_in: u8, token_out: u8, split: f64) -> Swap {
+        make_swap(token_in, token_out, 1000, 990).with_split(split)
+    }
+
+    #[test]
+    fn test_validate_interior_split_valid() {
+        //     ┌──[50%]──┐
+        // A → B         C
+        //     └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.0),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_interior_split_no_remainder() {
+        //     ┌──[50%]──┐
+        // A → B         C   ERROR: last swap has split=0.3, not 0.0
+        //     └──[30%]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.3),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_interior_split_sum_exceeds_one() {
+        //     ┌──[60%]──┐
+        // A → B──[50%]──C   ERROR: 0.6 + 0.5 ≥ 1.0
+        //     └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0),
+            make_split_swap(0x02, 0x03, 0.6),
+            make_split_swap(0x02, 0x03, 0.5),
+            make_split_swap(0x02, 0x03, 0.0),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_source_split_valid() {
+        //   ┌──[50%]── B ──┐
+        // A │               D
+        //   └──[rem]── C ──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5),
+            make_split_swap(0x01, 0x03, 0.0),
+            make_swap(0x02, 0x04, 490, 480),
+            make_swap(0x03, 0x04, 490, 480),
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_split_single_swap_nonzero_split() {
+        // A ──[50%]── B   ERROR: single swap must have split=0.0
+        let swaps = vec![make_split_swap(0x01, 0x02, 0.5)];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::InvalidSplit { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_unreachable_branch_collection() {
+        //   ┌──[50%]──┐
+        // A │          B    C → D   ERROR: C unreachable from A
+        //   └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x02, 0.0), // A→B (remainder)
+            make_swap(0x03, 0x04, 490, 480),  // C→D (unreachable)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::DisconnectedSplitStart { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_dead_end() {
+        //   ┌──[50%]── B → D   ERROR: dead end, D not consumed
+        // A │
+        //   └──[rem]── C → E   (terminal)
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D (dead end)
+            make_swap(0x03, 0x05, 490, 480),  // C→E (terminal)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::DisconnectedSplitEnd { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_cycle() {
+        //     ┌──[50%]── C ──┐
+        // A → B               → B   ERROR: C→B and D→B cycle back
+        //     └──[rem]── D ──┘
+        let swaps = vec![
+            make_swap(0x01, 0x02, 1000, 990),                // A→B
+            make_swap(0x02, 0x03, 990, 980).with_split(0.5), // B→C
+            make_swap(0x02, 0x04, 490, 480).with_split(0.0), // B→D remainder
+            make_swap(0x03, 0x02, 980, 970),                 // C→B (cycle)
+            make_swap(0x04, 0x02, 480, 470),                 // D→B (cycle)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
+    }
+
+    #[test]
+    fn test_validate_split_round_trip_valid() {
+        //   ┌──[50%]── B ──┐
+        // A │               D → A   (round-trip back to start)
+        //   └──[rem]── C ──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.5), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D
+            make_swap(0x03, 0x04, 490, 480),  // C→D
+            make_swap(0x04, 0x01, 960, 950),  // D→A (round-trip)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_split_round_trip_valid_from_multiple_branch_collections() {
+        //       ┌──[40%]── C ──┐
+        // A → B │               → A   (round-trip back to start)
+        //       └──[rem]── D ──┘
+        let swaps = vec![
+            make_swap(0x01, 0x02, 960, 950),  // A→B
+            make_split_swap(0x02, 0x03, 0.4), // B→C
+            make_split_swap(0x02, 0x04, 0.0), // B→D
+            make_swap(0x03, 0x01, 960, 950),  // C→A (round-trip)
+            make_swap(0x04, 0x01, 960, 950),  // D→A (round-trip)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(route.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_split_single_branch_collection_round_trip() {
+        //   ┌──[50%]──┐
+        // A │         │ A   ERROR: single branch collection cycling back to start
+        //   └──[rem]──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x01, 0.5), // A→A
+            make_split_swap(0x01, 0x01, 0.0), // A→A (remainder)
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        let err = route.validate().unwrap_err();
+        assert!(matches!(err, RouteValidationError::UnsupportedCycle { .. }));
     }
 
     // -------------------------------------------------------------------------
@@ -1709,6 +2216,58 @@ mod tests {
             100
         );
         assert!((deserialized.slippage() - 0.005).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_validate_split_topology_with_all_zero_splits() {
+        // Diamond topology but all split fractions are 0.0.
+        // is_split() returns false, so validate_sequential_route() runs
+        // and rejects the route (connectivity breaks at the second A→ swap).
+        //   ┌──[0.0]── B ──┐
+        // A │               D
+        //   └──[0.0]── C ──┘
+        let swaps = vec![
+            make_split_swap(0x01, 0x02, 0.0), // A→B
+            make_split_swap(0x01, 0x03, 0.0), // A→C
+            make_swap(0x02, 0x04, 490, 480),  // B→D
+            make_swap(0x03, 0x04, 490, 480),  // C→D
+        ];
+        let route = Route::new(swaps, HashMap::new());
+        assert!(matches!(route.validate(), Err(RouteValidationError::DisconnectedSwaps { .. })));
+    }
+
+    #[test]
+    fn test_is_split_detection() {
+        // A → B                     (no split)
+        let route_single = make_route(vec![(0x01, 0x02)]);
+        assert!(!route_single.is_split());
+
+        // A → B → C                 (no split)
+        let route_multi = make_route(vec![(0x01, 0x02), (0x02, 0x03)]);
+        assert!(!route_multi.is_split());
+
+        //     ┌──[60%]──┐
+        // A → B         C           (interior split)
+        //     └──[rem]──┘
+        let swaps_interior = vec![
+            make_swap(0x01, 0x02, 1000, 990),                // A→B, no split
+            make_swap(0x02, 0x03, 594, 580).with_split(0.6), // B→C via P2, 60%
+            make_swap(0x02, 0x03, 396, 385),                 // B→C via P3, remainder
+        ];
+        let route_interior = Route::new(swaps_interior, HashMap::new());
+        assert!(route_interior.is_split());
+
+        //   ┌──[60%]── B ──┐
+        // A │               C       (source-level split)
+        //   └──[rem]── D ──┘
+        let swaps_source = vec![
+            make_swap(0x01, 0x02, 600, 590).with_split(0.6), // A→B, 60%
+            make_swap(0x02, 0x03, 590, 580),                 // B→C
+            make_swap(0x01, 0x04, 400, 390),                 // A→D, remainder
+            make_swap(0x04, 0x03, 390, 380),                 // D→C
+        ];
+        let route_source = Route::new(swaps_source, HashMap::new());
+        assert!(route_source.is_split());
     }
 
     #[test]

@@ -226,11 +226,16 @@ fn order_quote_to_quote(
         .cloned()
         .map(Transaction::from);
     let fee_breakdown = order_quote.fee_breakdown().map(|fb| {
+        let swaps_hash = fb.swaps_hash().and_then(|b| {
+            let arr: [u8; 32] = b.0.as_ref().try_into().ok()?;
+            Some(arr)
+        });
         FeeBreakdown::new(
             fb.router_fee().clone(),
             fb.client_fee().clone(),
             fb.max_slippage().clone(),
             fb.min_amount_received().clone(),
+            swaps_hash,
         )
     });
     Ok(Quote::new(
@@ -253,11 +258,15 @@ fn order_quote_to_quote(
 
 impl From<dto::Transaction> for Transaction {
     fn from(dt: dto::Transaction) -> Self {
-        Transaction::new(
+        let mut tx = Transaction::new(
             bytes::Bytes::copy_from_slice(dt.to().as_ref()),
             dt.value().clone(),
             dt.data().to_vec(),
-        )
+        );
+        if let Some(offset) = dt.client_fee_signature_offset() {
+            tx.client_fee_signature_offset = Some(offset);
+        }
+        tx
     }
 }
 

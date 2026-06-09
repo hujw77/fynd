@@ -25,7 +25,7 @@ use tycho_simulation::{
 use super::{Algorithm, AlgorithmConfig, NoPathReason};
 use crate::{
     derived::{computation::ComputationRequirements, types::TokenGasPrices, SharedDerivedDataRef},
-    feed::market_data::{SharedMarketData, SharedMarketDataRef},
+    feed::market_data::{MarketData, MarketState, StateLabel},
     graph::{petgraph::StableDiGraph, Path, PetgraphStableDiGraphManager},
     types::{ComponentId, Order, Route, RouteResult, Swap},
     AlgorithmError,
@@ -36,6 +36,7 @@ pub struct MostLiquidAlgorithm {
     max_hops: usize,
     timeout: Duration,
     max_routes: Option<usize>,
+    connector_tokens: Option<HashSet<Address>>,
 }
 
 /// Algorithm-specific edge data for liquidity-based routing.
@@ -185,7 +186,13 @@ impl crate::graph::EdgeWeightFromSimAndDerived for DepthAndPrice {
 impl MostLiquidAlgorithm {
     /// Creates a new MostLiquidAlgorithm with default settings.
     pub fn new() -> Self {
-        Self { min_hops: 1, max_hops: 3, timeout: Duration::from_millis(500), max_routes: None }
+        Self {
+            min_hops: 1,
+            max_hops: 3,
+            timeout: Duration::from_millis(500),
+            max_routes: None,
+            connector_tokens: None,
+        }
     }
 
     /// Creates a new MostLiquidAlgorithm with custom settings.
@@ -195,6 +202,7 @@ impl MostLiquidAlgorithm {
             max_hops: config.max_hops(),
             timeout: config.timeout(),
             max_routes: config.max_routes(),
+            connector_tokens: config.connector_tokens().cloned(),
         })
     }
 
@@ -208,13 +216,14 @@ impl MostLiquidAlgorithm {
     /// Returns `AlgorithmError` if:
     /// - Source token is not in the graph
     /// - Destination token is not in the graph
-    #[instrument(level = "debug", skip(graph))]
+    #[instrument(level = "debug", skip(graph, connector_tokens))]
     fn find_paths<'a>(
         graph: &'a StableDiGraph<DepthAndPrice>,
         from: &Address,
         to: &Address,
         min_hops: usize,
         max_hops: usize,
+        connector_tokens: Option<&HashSet<Address>>,
     ) -> Result<Vec<Path<'a, DepthAndPrice>>, AlgorithmError> {
         if min_hops == 0 || min_hops > max_hops {
             return Err(AlgorithmError::InvalidConfiguration {
@@ -264,6 +273,16 @@ impl MostLiquidAlgorithm {
                 let is_closing_circular_route = from_idx == to_idx && next_node == to_idx;
                 if already_visited && !is_closing_circular_route {
                     continue;
+                }
+
+                // Skip disallowed connector tokens. Endpoints (from / to) are always permitted.
+                let is_destination = next_node == to_idx;
+                if !is_destination {
+                    if let Some(tokens) = connector_tokens {
+                        if !tokens.contains(next_addr) {
+                            continue;
+                        }
+                    }
                 }
 
                 let mut new_path = current_path.clone();
@@ -330,7 +349,7 @@ impl MostLiquidAlgorithm {
     #[instrument(level = "trace", skip(path, market, token_prices), fields(hop_count = path.len()))]
     pub(crate) fn simulate_path<D>(
         path: &Path<D>,
-        market: &SharedMarketData,
+        market: &MarketState,
         token_prices: Option<&TokenGasPrices>,
         amount_in: BigUint,
     ) -> Result<RouteResult, AlgorithmError> {
@@ -339,6 +358,7 @@ impl MostLiquidAlgorithm {
 
         // Track state overrides for pools we've already swapped through.
         let mut state_overrides: HashMap<&ComponentId, Box<dyn ProtocolSim>> = HashMap::new();
+        let mut tokens: HashMap<Address, Token> = HashMap::new();
 
         for (address_in, edge_data, address_out) in path.iter() {
             // Get token and component data for the simulation call
@@ -391,13 +411,19 @@ impl MostLiquidAlgorithm {
                 component.clone(),
                 state.clone_box(),
             ));
+            tokens
+                .entry(token_in.address.clone())
+                .or_insert_with(|| token_in.clone());
+            tokens
+                .entry(token_out.address.clone())
+                .or_insert_with(|| token_out.clone());
 
             state_overrides.insert(component_id, result.new_state);
             current_amount = result.amount;
         }
 
         // Calculate net amount out (output - gas cost in output token terms)
-        let route = Route::new(swaps);
+        let route = Route::new(swaps, tokens);
         let output_amount = route
             .swaps()
             .last()
@@ -458,7 +484,8 @@ impl Algorithm for MostLiquidAlgorithm {
     async fn find_best_route(
         &self,
         graph: &Self::GraphType,
-        market: SharedMarketDataRef,
+        market: MarketData,
+        label: Option<StateLabel>,
         derived: Option<SharedDerivedDataRef>,
         order: &Order,
     ) -> Result<RouteResult, AlgorithmError> {
@@ -489,6 +516,7 @@ impl Algorithm for MostLiquidAlgorithm {
             order.token_out(),
             self.min_hops,
             self.max_hops,
+            self.connector_tokens.as_ref(),
         )?;
 
         let paths_candidates = all_paths.len();
@@ -543,11 +571,17 @@ impl Algorithm for MostLiquidAlgorithm {
 
         // Step 4: Brief lock — check gas price + extract market subset for simulation
         let market = {
-            let market = market.read().await;
+            let market = match label.as_ref() {
+                Some(l) => market
+                    .read_labeled(l)
+                    .await
+                    .map_err(|e| AlgorithmError::Other(e.to_string()))?,
+                None => market.read().await,
+            };
             if market.gas_price().is_none() {
                 return Err(AlgorithmError::DataNotFound { kind: "gas price", id: None });
             }
-            let market_subset = market.extract_subset(&component_ids);
+            let market_subset = market.extract_subset_with_overlay(&component_ids);
             drop(market);
             market_subset
         };
@@ -695,10 +729,9 @@ impl Algorithm for MostLiquidAlgorithm {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::Arc};
+    use std::collections::HashSet;
 
     use rstest::rstest;
-    use tokio::sync::RwLock;
     use tycho_simulation::{
         tycho_core::simulation::protocol_sim::Price,
         tycho_ethereum::gas::{BlockGasPrice, GasPrice},
@@ -709,7 +742,7 @@ mod tests {
         algorithm::test_utils::{
             addr, component,
             fixtures::{addrs, diamond_graph, linear_graph, parallel_graph},
-            market_read, order, setup_market, token, MockProtocolSim, ONE_ETH,
+            market_read, order, setup_market_weighted, token, MockProtocolSim, ONE_ETH,
         },
         derived::{
             computation::{FailedItem, FailedItemError},
@@ -720,8 +753,8 @@ mod tests {
         types::OrderSide,
     };
 
-    fn wrap_market(market: SharedMarketData) -> SharedMarketDataRef {
-        Arc::new(RwLock::new(market))
+    fn wrap_market(market: MarketState) -> MarketData {
+        MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market)))
     }
 
     /// Creates a SharedDerivedDataRef with token prices set for testing.
@@ -740,7 +773,7 @@ mod tests {
 
         let mut derived_data = DerivedData::new();
         derived_data.set_token_prices(token_prices, vec![], 1, true);
-        Arc::new(RwLock::new(derived_data))
+        std::sync::Arc::new(tokio::sync::RwLock::new(derived_data))
     }
     // ==================== try_score_path Tests ====================
 
@@ -757,7 +790,7 @@ mod tests {
 
         // Use find_paths to get the 2-hop path A->B->C
         let graph = m.graph();
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &c, 2, 2).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &c, 2, 2, None).unwrap();
         assert_eq!(paths.len(), 1);
         let path = &paths[0];
 
@@ -778,7 +811,7 @@ mod tests {
         let (a, b, _, _) = addrs();
         let m = linear_graph();
         let graph = m.graph();
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &b, 1, 1).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &b, 1, 1, None).unwrap();
         assert_eq!(paths.len(), 1);
         assert!(MostLiquidAlgorithm::try_score_path(&paths[0]).is_none());
     }
@@ -799,7 +832,7 @@ mod tests {
 
         let graph = m.graph();
         // Find A->B->A paths (circular, 2 hops)
-        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &a, 2, 2).unwrap();
+        let paths = MostLiquidAlgorithm::find_paths(graph, &a, &a, 2, 2, None).unwrap();
 
         // Should find at least one path
         assert_eq!(paths.len(), 1);
@@ -1086,17 +1119,17 @@ mod tests {
         let g = m.graph();
 
         // Forward: A->B (1 hop), A->C (2 hops), A->D (3 hops)
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab"]]));
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bc"]]));
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bc", "cd"]]));
 
         // Reverse: D->A (bidirectional pools)
-        let p = MostLiquidAlgorithm::find_paths(g, &d, &a, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &d, &a, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["cd", "bc", "ab"]]));
     }
 
@@ -1107,12 +1140,12 @@ mod tests {
         let g = m.graph();
 
         // A->D needs 3 hops, max_hops=2 finds nothing
-        assert!(MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2)
+        assert!(MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None)
             .unwrap()
             .is_empty());
 
         // A->C is 2 hops, min_hops=3 finds nothing
-        assert!(MostLiquidAlgorithm::find_paths(g, &a, &c, 3, 3)
+        assert!(MostLiquidAlgorithm::find_paths(g, &a, &c, 3, 3, None)
             .unwrap()
             .is_empty());
     }
@@ -1124,11 +1157,11 @@ mod tests {
         let g = m.graph();
 
         // A->B: 3 parallel pools = 3 paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab1"], vec!["ab2"], vec!["ab3"]]));
 
         // A->C: 3 A->B pools × 2 B->C pools = 6 paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &c, 1, 2, None).unwrap();
         assert_eq!(
             all_ids(p),
             HashSet::from([
@@ -1149,7 +1182,7 @@ mod tests {
         let g = m.graph();
 
         // A->D: two 2-hop paths
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab", "bd"], vec!["ac", "cd"]]));
     }
 
@@ -1163,7 +1196,7 @@ mod tests {
         // Revisit paths like A->B->C->B or A->B->B->B are pruned because
         // they create intermediate cycles unsupported by Tycho execution
         // (only first == last cycles are allowed, i.e. from == to).
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 3, None).unwrap();
         assert_eq!(all_ids(p), HashSet::from([vec!["ab"]]));
     }
 
@@ -1176,7 +1209,7 @@ mod tests {
 
         // A->A (cyclic path) with 2 hops: should find all 9 combinations (3 pools × 3 pools)
         // Note: min_hops=2 because cyclic paths require at least 2 hops
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &a, 2, 2).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &a, 2, 2, None).unwrap();
         assert_eq!(
             all_ids(p),
             HashSet::from([
@@ -1206,7 +1239,7 @@ mod tests {
         let from = if from_exists { a } else { non_existent.clone() };
         let to = if to_exists { b } else { non_existent };
 
-        let result = MostLiquidAlgorithm::find_paths(g, &from, &to, 1, 3);
+        let result = MostLiquidAlgorithm::find_paths(g, &from, &to, 1, 3, None);
 
         assert!(matches!(result, Err(AlgorithmError::NoPath { .. })));
     }
@@ -1220,7 +1253,7 @@ mod tests {
         let g = m.graph();
 
         assert!(matches!(
-            MostLiquidAlgorithm::find_paths(g, &a, &b, min_hops, max_hops)
+            MostLiquidAlgorithm::find_paths(g, &a, &b, min_hops, max_hops, None)
                 .err()
                 .unwrap(),
             AlgorithmError::InvalidConfiguration { reason: _ }
@@ -1246,7 +1279,7 @@ mod tests {
         m.initialize_graph(&t);
         let g = m.graph();
 
-        let p = MostLiquidAlgorithm::find_paths(g, &a, &e, 1, 3).unwrap();
+        let p = MostLiquidAlgorithm::find_paths(g, &a, &e, 1, 3, None).unwrap();
 
         // BFS guarantees paths are ordered by hop count
         assert_eq!(p.len(), 3, "Expected 3 paths total");
@@ -1268,7 +1301,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let paths = MostLiquidAlgorithm::find_paths(
             manager.graph(),
@@ -1276,13 +1309,14 @@ mod tests {
             &token_b.address,
             1,
             1,
+            None,
         )
         .unwrap();
         let path = paths.into_iter().next().unwrap();
 
         let result = MostLiquidAlgorithm::simulate_path(
             &path,
-            &market_read(&market),
+            market_read(&market).base_market_state(),
             None,
             BigUint::from(100u64),
         )
@@ -1300,7 +1334,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool2", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1311,13 +1345,14 @@ mod tests {
             &token_c.address,
             2,
             2,
+            None,
         )
         .unwrap();
         let path = paths.into_iter().next().unwrap();
 
         let result = MostLiquidAlgorithm::simulate_path(
             &path,
-            &market_read(&market),
+            market_read(&market).base_market_state(),
             None,
             BigUint::from(10u64),
         )
@@ -1339,7 +1374,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // A->B->A path requires min_hops=2, max_hops=2
         // Since the graph is bidirectional, we should get A->B->A path
@@ -1349,6 +1384,7 @@ mod tests {
             &token_a.address,
             2,
             2,
+            None,
         )
         .unwrap();
 
@@ -1358,7 +1394,7 @@ mod tests {
 
         let result = MostLiquidAlgorithm::simulate_path(
             &path,
-            &market_read(&market),
+            market_read(&market).base_market_state(),
             None,
             BigUint::from(10u64),
         )
@@ -1378,7 +1414,7 @@ mod tests {
         let token_c = token(0x03, "C");
 
         let (market, _) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
         let market = market_read(&market);
 
         // Add token C to graph but not to market (A->B->C)
@@ -1390,12 +1426,16 @@ mod tests {
 
         let graph = manager.graph();
         let paths =
-            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_c.address, 2, 2)
+            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_c.address, 2, 2, None)
                 .unwrap();
         let path = paths.into_iter().next().unwrap();
 
-        let result =
-            MostLiquidAlgorithm::simulate_path(&path, &market, None, BigUint::from(100u64));
+        let result = MostLiquidAlgorithm::simulate_path(
+            &path,
+            market.base_market_state(),
+            None,
+            BigUint::from(100u64),
+        );
         assert!(matches!(result, Err(AlgorithmError::DataNotFound { kind: "token", .. })));
     }
 
@@ -1404,7 +1444,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // Remove the component but keep tokens and graph
         let mut market_write = market.try_write().unwrap();
@@ -1413,17 +1453,65 @@ mod tests {
 
         let graph = manager.graph();
         let paths =
-            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_b.address, 1, 1)
+            MostLiquidAlgorithm::find_paths(graph, &token_a.address, &token_b.address, 1, 1, None)
                 .unwrap();
         let path = paths.into_iter().next().unwrap();
 
         let result = MostLiquidAlgorithm::simulate_path(
             &path,
-            &market_read(&market),
+            market_read(&market).base_market_state(),
             None,
             BigUint::from(100u64),
         );
         assert!(matches!(result, Err(AlgorithmError::DataNotFound { kind: "component", .. })));
+    }
+
+    // ==================== connector_tokens Tests ====================
+
+    #[test]
+    fn test_connector_tokens_blocks_disallowed_intermediate() {
+        // Diamond: A->B->D, A->C->D. Only C in allowlist → only A->C->D survives.
+        let (a, b, c, d) = addrs();
+        let m = diamond_graph();
+        let g = m.graph();
+        let allowed: HashSet<Address> = [c.clone()].into();
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, Some(&allowed)).unwrap();
+        let intermediates: HashSet<&Address> = paths
+            .iter()
+            .flat_map(|p| p.iter().map(|(node, _, _)| node))
+            .filter(|addr| *addr != &a && *addr != &d)
+            .collect();
+        // B must not appear; C must appear
+        assert!(!intermediates.contains(&b), "B should be blocked");
+        assert!(intermediates.contains(&c), "C should be allowed");
+    }
+
+    #[test]
+    fn test_connector_tokens_allows_endpoints_even_if_not_listed() {
+        // Allowlist contains neither token_in nor token_out, but a 1-hop route should still work.
+        let (a, b, _, _) = addrs();
+        let m = linear_graph();
+        let g = m.graph();
+        let allowed: HashSet<Address> = HashSet::new(); // empty — no intermediates
+                                                        // 1-hop A->B: destination is reached directly, no intermediate check
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &b, 1, 1, Some(&allowed)).unwrap();
+        assert!(!paths.is_empty(), "1-hop direct route should survive empty allowlist");
+    }
+
+    #[test]
+    fn test_connector_tokens_none_is_unrestricted() {
+        // None allowlist → both paths in diamond graph returned
+        let (a, b, c, d) = addrs();
+        let m = diamond_graph();
+        let g = m.graph();
+        let paths = MostLiquidAlgorithm::find_paths(g, &a, &d, 1, 2, None).unwrap();
+        let intermediates: HashSet<&Address> = paths
+            .iter()
+            .flat_map(|p| p.iter().map(|(node, _, _)| node))
+            .filter(|addr| *addr != &a && *addr != &d)
+            .collect();
+        assert!(intermediates.contains(&b), "B should appear with no restriction");
+        assert!(intermediates.contains(&c), "C should appear with no restriction");
     }
 
     // ==================== find_best_route Tests ====================
@@ -1434,7 +1522,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let algorithm = MostLiquidAlgorithm::with_config(
             AlgorithmConfig::new(1, 1, Duration::from_millis(100), None).unwrap(),
@@ -1442,7 +1530,7 @@ mod tests {
         .unwrap();
         let order = order(&token_a, &token_b, ONE_ETH, OrderSide::Sell);
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 
@@ -1456,7 +1544,7 @@ mod tests {
         // Tests that route selection is based on net_amount_out (output - gas cost),
         // not just gross output. Three parallel pools with different spot_price/gas combos:
         //
-        // Gas price = 100 wei/gas (set by setup_market)
+        // Gas price = 100 wei/gas (set by setup_market_weighted)
         //
         // | Pool      | spot_price | gas | Output (1000 in) | Gas Cost (gas*100) | Net   |
         // |-----------|------------|-----|------------------|-------------------|-------|
@@ -1466,7 +1554,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("best", &token_a, &token_b, MockProtocolSim::new(3.0).with_gas(10)),
             ("low_out", &token_a, &token_b, MockProtocolSim::new(2.0).with_gas(5)),
             ("high_gas", &token_a, &token_b, MockProtocolSim::new(4.0).with_gas(30)),
@@ -1482,7 +1570,7 @@ mod tests {
         let derived = setup_derived_with_token_prices(std::slice::from_ref(&token_b.address));
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, Some(derived), &order)
+            .find_best_route(manager.graph(), market, None, Some(derived), &order)
             .await
             .unwrap();
 
@@ -1500,13 +1588,13 @@ mod tests {
         let token_c = token(0x03, "C"); // Disconnected
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         let algorithm = MostLiquidAlgorithm::new();
         let order = order(&token_a, &token_c, ONE_ETH, OrderSide::Sell);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
         assert!(matches!(result, Err(AlgorithmError::NoPath { .. })));
     }
@@ -1517,7 +1605,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool2", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1529,7 +1617,7 @@ mod tests {
         let order = order(&token_a, &token_c, ONE_ETH, OrderSide::Sell);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 
@@ -1548,7 +1636,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         // Set up market with both pools using new API
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         let pool1_state = MockProtocolSim::new(2.0);
         let pool2_state = MockProtocolSim::new(3.0); // Higher multiplier but no edge weight
 
@@ -1599,7 +1687,7 @@ mod tests {
         let order = order(&token_a, &token_b, ONE_ETH, OrderSide::Sell);
         let market = wrap_market(market);
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 
@@ -1615,7 +1703,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         let pool_state = MockProtocolSim::new(2.0);
         let pool_comp = component("pool1", &[token_a.clone(), token_b.clone()]);
 
@@ -1646,7 +1734,7 @@ mod tests {
         let market = wrap_market(market);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
         assert!(matches!(
             result,
@@ -1660,7 +1748,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
         let mut market_write = market.try_write().unwrap();
 
         // Set a non-zero gas price so gas cost exceeds tiny output
@@ -1684,7 +1772,7 @@ mod tests {
 
         // Route should still be returned, but with negative net_amount_out
         let result = algorithm
-            .find_best_route(manager.graph(), market, Some(derived), &order)
+            .find_best_route(manager.graph(), market, None, Some(derived), &order)
             .await
             .expect("should return route even with negative net_amount_out");
 
@@ -1703,7 +1791,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![(
+        let (market, manager) = setup_market_weighted(vec![(
             "pool1",
             &token_a,
             &token_b,
@@ -1714,7 +1802,7 @@ mod tests {
         let order = order(&token_a, &token_b, ONE_ETH, OrderSide::Sell); // More than 1000 wei liquidity
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
         assert!(matches!(result, Err(AlgorithmError::InsufficientLiquidity)));
     }
@@ -1725,7 +1813,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let mut market = SharedMarketData::new();
+        let mut market = MarketState::new();
         let pool_state = MockProtocolSim::new(2.0);
         let pool_comp = component("pool1", &[token_a.clone(), token_b.clone()]);
 
@@ -1756,7 +1844,7 @@ mod tests {
         let market = wrap_market(market);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
 
         // Should get DataNotFound for gas price, not InsufficientLiquidity
@@ -1771,7 +1859,7 @@ mod tests {
         // MockProtocolSim::get_amount_out multiplies by spot_price when token_in < token_out.
         // After the first swap, spot_price increments to 3.
         let (market, manager) =
-            setup_market(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
 
         // Use min_hops=2 to require at least 2 hops (circular)
         let algorithm = MostLiquidAlgorithm::with_config(
@@ -1783,7 +1871,7 @@ mod tests {
         let order = order(&token_a, &token_a, 100, OrderSide::Sell);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 
@@ -1812,7 +1900,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool_ab", &token_a, &token_b, MockProtocolSim::new(10.0)), /* Direct: 1-hop, high
                                                                           * output */
             ("pool_ac", &token_a, &token_c, MockProtocolSim::new(2.0)), // 2-hop path
@@ -1831,7 +1919,7 @@ mod tests {
         let derived = setup_derived_with_token_prices(std::slice::from_ref(&token_b.address));
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, Some(derived), &order)
+            .find_best_route(manager.graph(), market, None, Some(derived), &order)
             .await
             .unwrap();
 
@@ -1849,7 +1937,7 @@ mod tests {
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool_ab", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool_bc", &token_b, &token_c, MockProtocolSim::new(3.0)),
         ]);
@@ -1862,7 +1950,7 @@ mod tests {
         let order = order(&token_a, &token_c, 100, OrderSide::Sell);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
         assert!(
             matches!(result, Err(AlgorithmError::NoPath { .. })),
@@ -1879,7 +1967,7 @@ mod tests {
         let token_b = token(0x02, "B");
 
         // Create many parallel pools to ensure multiple paths need processing
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(1.0)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(2.0)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(3.0)),
@@ -1895,7 +1983,7 @@ mod tests {
         let order = order(&token_a, &token_b, 100, OrderSide::Sell);
 
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await;
 
         // With 0ms timeout, we either get:
@@ -1970,7 +2058,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(4.0).with_liquidity(1_000_000)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(3.0).with_liquidity(2_000_000)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(2.0).with_liquidity(3_000_000)),
@@ -1984,7 +2072,7 @@ mod tests {
         .unwrap();
         let order = order(&token_a, &token_b, 1000, OrderSide::Sell);
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 
@@ -2002,7 +2090,7 @@ mod tests {
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
-        let (market, manager) = setup_market(vec![
+        let (market, manager) = setup_market_weighted(vec![
             ("pool1", &token_a, &token_b, MockProtocolSim::new(4.0).with_liquidity(1_000_000)),
             ("pool2", &token_a, &token_b, MockProtocolSim::new(3.0).with_liquidity(2_000_000)),
             ("pool3", &token_a, &token_b, MockProtocolSim::new(2.0).with_liquidity(3_000_000)),
@@ -2015,7 +2103,7 @@ mod tests {
         .unwrap();
         let order = order(&token_a, &token_b, 1000, OrderSide::Sell);
         let result = algorithm
-            .find_best_route(manager.graph(), market, None, &order)
+            .find_best_route(manager.graph(), market, None, None, &order)
             .await
             .unwrap();
 

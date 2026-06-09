@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 env:
@@ -243,26 +244,34 @@ jobs:
               ].join('\n');
             }
 
-            const { data: comments } = await github.rest.issues.listComments({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                comment_id: existing.id,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                body,
               });
+              const existing = comments.find(c => c.body.includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  comment_id: existing.id,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body,
+                });
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                core.warning('PR comments API unavailable; skipping semver comment.');
+              } else {
+                throw error;
+              }
             }
 
       - name: Delete stale semver comment
@@ -273,18 +282,26 @@ jobs:
         with:
           script: |
             const marker = '<!-- semver-check -->';
-            const { data: comments } = await github.rest.issues.listComments({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.deleteComment({
-                comment_id: existing.id,
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
+                issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
               });
+              const existing = comments.find(c => c.body.includes(marker));
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  comment_id: existing.id,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                });
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                core.warning('PR comments API unavailable; skipping stale semver comment cleanup.');
+              } else {
+                throw error;
+              }
             }
 
       - name: Fail on undeclared breaking changes

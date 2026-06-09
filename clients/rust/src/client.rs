@@ -197,6 +197,8 @@ impl SigningHints {
 pub struct StorageOverrides {
     /// address (20 bytes) → { slot (32 bytes) → value (32 bytes) }
     slots: HashMap<Bytes, HashMap<Bytes, Bytes>>,
+    /// address (20 bytes) → native balance in wei
+    balances: HashMap<Bytes, BigUint>,
 }
 
 impl StorageOverrides {
@@ -212,12 +214,23 @@ impl StorageOverrides {
             .insert(slot, value);
     }
 
-    /// Merge all slot overrides from `other` into `self`.
+    /// Override the native (ETH) balance of an account for dry-run simulation.
+    ///
+    /// Useful when simulating transactions from a synthetic sender that has no real ETH —
+    /// many nodes (e.g. reth) reject `eth_estimateGas` if the sender cannot afford
+    /// `gas_limit * max_fee_per_gas`.
+    pub fn set_native_balance(&mut self, address: Bytes, wei: BigUint) {
+        self.balances.insert(address, wei);
+    }
+
+    /// Merge all slot and balance overrides from `other` into `self`. Balances in `other`
+    /// take precedence on conflict.
     pub fn merge(&mut self, other: StorageOverrides) {
         for (address, slots) in other.slots {
             let entry = self.slots.entry(address).or_default();
             entry.extend(slots);
         }
+        self.balances.extend(other.balances);
     }
 }
 
@@ -230,6 +243,13 @@ fn storage_overrides_to_alloy(so: &StorageOverrides) -> Result<StateOverride, Fy
             .map(|(slot, val)| Ok((bytes_to_b256(slot)?, bytes_to_b256(val)?)))
             .collect::<Result<alloy::primitives::map::B256HashMap<B256>, FyndError>>()?;
         result.insert(addr, AccountOverride { state_diff: Some(state_diff), ..Default::default() });
+    }
+    for (addr_bytes, wei) in &so.balances {
+        let addr = mapping::bytes_to_alloy_address(addr_bytes)?;
+        let entry = result
+            .entry(addr)
+            .or_insert_with(AccountOverride::default);
+        entry.balance = Some(mapping::biguint_to_u256(wei));
     }
     Ok(result)
 }
@@ -344,16 +364,16 @@ mod erc20 {
 
 /// Builder for [`FyndClient`].
 ///
-/// Call [`FyndClientBuilder::new`] with the Fynd RPC URL and an Ethereum JSON-RPC URL, configure
-/// optional settings, then call [`build`](Self::build) to connect and return a ready client.
+/// Call [`FyndClientBuilder::new`] with the Fynd base URL, configure optional settings, then
+/// call [`build`](Self::build) or [`build_quote_only`](Self::build_quote_only).
 ///
-/// `build` performs two network calls: one to validate the RPC URL (fetching `chain_id`) and one
-/// to construct the HTTP provider. It does **not** connect to the Fynd API.
+/// `build` validates the RPC URL and fetches `chain_id` from the Ethereum node. It does **not**
+/// connect to the Fynd API.
 pub struct FyndClientBuilder {
     base_url: String,
     timeout: Duration,
     retry: RetryConfig,
-    rpc_url: String,
+    rpc_url: Option<String>,
     submit_url: Option<String>,
     sender: Option<Address>,
 }
@@ -363,16 +383,28 @@ impl FyndClientBuilder {
     ///
     /// - `base_url`: Base URL of the Fynd RPC server (e.g. `"https://rpc.fynd.exchange"`). Must use
     ///   `http` or `https` scheme.
-    /// - `rpc_url`: Ethereum JSON-RPC endpoint for nonce/fee queries and receipt polling.
-    pub fn new(base_url: impl Into<String>, rpc_url: impl Into<String>) -> Self {
+    ///
+    /// Call [`with_rpc_url`](Self::with_rpc_url) before [`build`](Self::build) to enable
+    /// on-chain operations (`swap_payload`, `execute_swap`, `approval`). For quote-only use,
+    /// call [`build_quote_only`](Self::build_quote_only) directly — no RPC URL required.
+    pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
             timeout: Duration::from_secs(30),
             retry: RetryConfig::default(),
-            rpc_url: rpc_url.into(),
+            rpc_url: None,
             submit_url: None,
             sender: None,
         }
+    }
+
+    /// Set the Ethereum JSON-RPC endpoint for nonce/fee queries and receipt polling.
+    ///
+    /// Required before calling [`build`](Self::build). Not needed for
+    /// [`build_quote_only`](Self::build_quote_only).
+    pub fn with_rpc_url(mut self, rpc_url: impl Into<String>) -> Self {
+        self.rpc_url = Some(rpc_url.into());
+        self
     }
 
     /// Set the HTTP request timeout for Fynd API calls (default: 30 s).
@@ -389,7 +421,7 @@ impl FyndClientBuilder {
 
     /// Use a separate RPC URL for transaction submission and receipt polling.
     ///
-    /// If not set, the `rpc_url` passed to [`new`](Self::new) is used for both.
+    /// If not set, the URL from [`with_rpc_url`](Self::with_rpc_url) is used for both.
     pub fn with_submit_url(mut self, url: impl Into<String>) -> Self {
         self.submit_url = Some(url.into());
         self
@@ -444,8 +476,9 @@ impl FyndClientBuilder {
 
     /// Connect to the Ethereum RPC node and build the [`FyndClient`].
     ///
+    /// Requires [`with_rpc_url`](Self::with_rpc_url) to have been called.
     /// Validates the URLs and fetches the chain ID. Returns [`FyndError::Config`] if any URL is
-    /// invalid or the chain ID cannot be fetched.
+    /// invalid, `rpc_url` was not set, or the chain ID cannot be fetched.
     pub async fn build(self) -> Result<FyndClient, FyndError> {
         // Validate base_url scheme.
         let parsed_base = self
@@ -460,8 +493,10 @@ impl FyndClientBuilder {
         }
 
         // Build HTTP providers.
-        let rpc_url = self
+        let rpc_url_str = self
             .rpc_url
+            .ok_or_else(|| FyndError::Config("rpc_url is required: call with_rpc_url()".into()))?;
+        let rpc_url = rpc_url_str
             .parse::<reqwest::Url>()
             .map_err(|e| FyndError::Config(format!("invalid RPC URL: {e}")))?;
         let provider = ProviderBuilder::default().connect_http(rpc_url);
@@ -469,7 +504,7 @@ impl FyndClientBuilder {
         let submit_url_str = self
             .submit_url
             .as_deref()
-            .unwrap_or(&self.rpc_url);
+            .unwrap_or(&rpc_url_str);
         let submit_url = submit_url_str
             .parse::<reqwest::Url>()
             .map_err(|e| FyndError::Config(format!("invalid submit URL: {e}")))?;

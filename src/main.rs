@@ -19,7 +19,8 @@
 //!            --protocols uniswap_v2,uniswap_v3
 //! ```
 //!
-//! `--rpc-url` defaults to `https://eth.llamarpc.com`. For production, provide a dedicated endpoint:
+//! `--rpc-url` defaults to a chain-specific public endpoint. For production, provide a dedicated
+//! one:
 //!
 //! ```bash
 //! fynd serve --tycho-url tycho-fynd-ethereum.propellerheads.xyz \
@@ -30,6 +31,7 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "metrics")]
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anyhow::anyhow;
 use clap::Parser;
@@ -40,7 +42,9 @@ use fynd_rpc::{
     protocols::fetch_protocol_systems,
 };
 mod cli;
+mod commands;
 use cli::{Cli, Commands};
+#[cfg(feature = "metrics")]
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
@@ -52,7 +56,10 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tycho_simulation::utils::default_blocklist;
+use tycho_simulation::{
+    tycho_common::models::{Chain, TvlThresholdTier},
+    utils::default_blocklist,
+};
 
 fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
@@ -70,6 +77,9 @@ fn main() -> Result<(), anyhow::Error> {
             run_solver(*serve_args).map_err(|e| anyhow!("{}", e))?;
             Ok(())
         }
+        Commands::DeriveConnectorTokens(args) => tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime")
+            .block_on(commands::derive_connector_tokens::run(args)),
     }
 }
 
@@ -144,8 +154,10 @@ fn create_tracing_subscriber() -> Option<TracerProvider> {
 
 /// Creates and runs the Prometheus metrics exporter using Actix Web.
 ///
-/// This exposes the metrics on the '/metrics' endpoint on a separate HTTP server on port 9898.
-fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
+/// Exposes `/metrics` on a dedicated HTTP server bound to `port`.
+/// Compiled only when the `metrics` feature is enabled.
+#[cfg(feature = "metrics")]
+fn create_metrics_exporter(port: u16) -> tokio::task::JoinHandle<()> {
     let exporter_builder = PrometheusBuilder::new();
     let handle = exporter_builder
         .install_recorder()
@@ -168,7 +180,7 @@ fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
                 }),
             )
         })
-        .bind(("0.0.0.0", 9898))
+        .bind(("0.0.0.0", port))
         .expect("Failed to bind metrics server")
         .run()
         .await
@@ -176,6 +188,78 @@ fn create_metrics_exporter() -> tokio::task::JoinHandle<()> {
             error!("Metrics server failed: {}", e);
         }
     })
+}
+
+/// Resolves the Tycho WebSocket URL: uses the override if provided, otherwise looks up the
+/// chain-specific Fynd default endpoint.
+fn resolve_tycho_url(chain: &str, override_url: Option<&str>) -> Result<String, SolverError> {
+    match override_url {
+        Some(url) => Ok(url.to_string()),
+        None => {
+            let default = defaults::default_tycho_url(chain).map_err(SolverError::SetupError)?;
+            info!("No --tycho-url provided. Using default for {}: {}", chain, default);
+            Ok(default.to_string())
+        }
+    }
+}
+
+/// Resolves the JSON-RPC URL: uses the override if provided, otherwise falls back to the
+/// chain-specific public endpoint with a warning.
+fn resolve_rpc_url(chain: &str, override_url: Option<&str>) -> Result<String, SolverError> {
+    match override_url {
+        Some(url) => Ok(url.to_string()),
+        None => {
+            let default = defaults::default_rpc_url(chain).map_err(SolverError::SetupError)?;
+            warn!(
+                "No --rpc-url provided. Using public endpoint for {}: {}. \
+                For production use, provide a dedicated RPC endpoint.",
+                chain, default
+            );
+            Ok(default.to_string())
+        }
+    }
+}
+
+/// Resolves the protocol list from `--protocols`.
+///
+/// - Empty → fetch all on-chain protocols from Tycho RPC.
+/// - Contains `"all_onchain"` → fetch all on-chain, then append any other explicit entries.
+/// - Otherwise → use as given (no network call).
+///
+/// Returns an error if the resolved list is empty.
+async fn resolve_protocols(
+    tycho_url: &str,
+    api_key: Option<&str>,
+    use_tls: bool,
+    chain: Chain,
+    requested: &[String],
+) -> Result<Vec<String>, SolverError> {
+    let needs_fetch = requested.is_empty() ||
+        requested
+            .iter()
+            .any(|p| p == "all_onchain");
+    let protocols = if needs_fetch {
+        let mut fetched = fetch_protocol_systems(tycho_url, api_key, use_tls, chain)
+            .await
+            .map_err(|e| {
+                SolverError::SetupError(format!("failed to fetch protocol systems: {e}"))
+            })?;
+        for p in requested {
+            if p != "all_onchain" && !fetched.contains(p) {
+                fetched.push(p.clone());
+            }
+        }
+        fetched
+    } else {
+        requested.to_vec()
+    };
+    if protocols.is_empty() {
+        return Err(SolverError::SetupError(
+            "no supported protocols found. Provide --protocols or check Tycho connectivity."
+                .to_string(),
+        ));
+    }
+    Ok(protocols)
 }
 
 /// Sets up the solver (loads config, parses chain, builds solver).
@@ -201,70 +285,30 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
     let chain = parse_chain(&args.chain)
         .map_err(|e| SolverError::SetupError(format!("failed to parse chain: {}", e)))?;
 
-    // Resolve Tycho URL, falling back to chain-specific Fynd endpoint
-    let tycho_url = match &args.tycho_url {
-        Some(url) => url.clone(),
-        None => {
-            let default =
-                defaults::default_tycho_url(&args.chain).map_err(SolverError::SetupError)?;
-            info!("No --tycho-url provided. Using default for {}: {}", args.chain, default);
-            default.to_string()
-        }
-    };
+    let tycho_url = resolve_tycho_url(&args.chain, args.tycho_url.as_deref())?;
+    let rpc_url = resolve_rpc_url(&args.chain, args.rpc_url.as_deref())?;
+    let min_tvl = args
+        .min_tvl
+        .unwrap_or_else(|| chain.default_tvl_threshold(TvlThresholdTier::Low));
 
-    // Resolve RPC URL, falling back to public endpoint with a warning
-    let rpc_url = match &args.rpc_url {
-        Some(url) => url.clone(),
-        None => {
-            warn!(
-                "No --rpc-url provided. Using public endpoint: {}. \
-                For production use, provide a dedicated RPC endpoint.",
-                defaults::DEFAULT_RPC_URL
-            );
-            defaults::DEFAULT_RPC_URL.to_string()
-        }
-    };
-
-    // Resolve protocols: fetch from Tycho RPC if omitted or if "all_onchain" is used
-    let needs_fetch = args.protocols.is_empty() ||
-        args.protocols
-            .iter()
-            .any(|p| p == "all_onchain");
-    let protocols = if needs_fetch {
-        let mut fetched = fetch_protocol_systems(
-            &tycho_url,
-            args.tycho_api_key.as_deref(),
-            !args.disable_tls,
-            chain,
-        )
-        .await
-        .map_err(|e| SolverError::SetupError(format!("failed to fetch protocol systems: {}", e)))?;
-        // Append any explicit protocols (e.g. rfq:bebop) alongside all_onchain
-        for p in &args.protocols {
-            if p != "all_onchain" && !fetched.contains(p) {
-                fetched.push(p.clone());
-            }
-        }
-        fetched
-    } else {
-        args.protocols.clone()
-    };
-
-    if protocols.is_empty() {
-        return Err(SolverError::SetupError(
-            "no supported protocols found. Provide --protocols or check Tycho connectivity."
-                .to_string(),
-        ));
-    }
+    let protocols = resolve_protocols(
+        &tycho_url,
+        args.tycho_api_key.as_deref(),
+        !args.disable_tls,
+        chain,
+        &args.protocols,
+    )
+    .await?;
 
     info!(?protocols, "starting with {} protocol(s)", protocols.len());
 
     // Build solver with all fields from CLI
     let mut builder =
         FyndRPCBuilder::new(chain, pools_config.into_pools(), tycho_url, rpc_url, protocols)
+            .map_err(|e| SolverError::SetupError(format!("invalid pool configuration: {e}")))?
             .http_host(args.http_host.clone())
             .http_port(args.http_port)
-            .min_tvl(args.min_tvl)
+            .min_tvl(min_tvl)
             .min_token_quality(args.min_token_quality)
             .traded_n_days_ago(args.traded_n_days_ago)
             .tvl_buffer_ratio(args.tvl_buffer_ratio)
@@ -293,6 +337,7 @@ async fn setup_solver(args: &cli::ServeArgs) -> Result<fynd_rpc::builder::FyndRP
     };
 
     builder = builder.blocklist(blocklist);
+    builder = builder.partial_blocks(args.partial_blocks);
     builder = builder.price_guard_enabled(args.enable_price_guard);
 
     // Build and start solver
@@ -308,7 +353,8 @@ async fn run_solver(args: cli::ServeArgs) -> Result<(), SolverError> {
     let provider = create_tracing_subscriber();
     info!("Starting Fynd");
 
-    let _metrics_task = create_metrics_exporter();
+    #[cfg(feature = "metrics")]
+    let _metrics_task = create_metrics_exporter(args.metrics_port);
 
     // Setup solver, but allow SIGINT to cancel it for fast exit during startup
     let solver = tokio::select! {

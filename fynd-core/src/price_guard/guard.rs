@@ -209,7 +209,7 @@ impl PriceGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::HashMap, str::FromStr};
 
     use num_bigint::BigUint;
     use rstest::rstest;
@@ -223,7 +223,7 @@ mod tests {
     use super::{PriceGuard, PriceGuardError};
     use crate::{
         algorithm::test_utils::{component, MockProtocolSim},
-        feed::market_data::SharedMarketDataRef,
+        feed::market_data::MarketData,
         price_guard::{
             config::PriceGuardConfig,
             provider::{ExternalPrice, PriceProvider, PriceProviderError},
@@ -238,7 +238,7 @@ mod tests {
     }
 
     impl PriceProvider for MockProvider {
-        fn start(&mut self, _market_data: SharedMarketDataRef) -> JoinHandle<()> {
+        fn start(&mut self, _market_data: MarketData) -> JoinHandle<()> {
             tokio::spawn(std::future::ready(()))
         }
 
@@ -255,7 +255,7 @@ mod tests {
     struct FailingProvider;
 
     impl PriceProvider for FailingProvider {
-        fn start(&mut self, _market_data: SharedMarketDataRef) -> JoinHandle<()> {
+        fn start(&mut self, _market_data: MarketData) -> JoinHandle<()> {
             tokio::spawn(std::future::ready(()))
         }
 
@@ -272,7 +272,7 @@ mod tests {
     struct PriceNotFoundProvider;
 
     impl PriceProvider for PriceNotFoundProvider {
-        fn start(&mut self, _market_data: SharedMarketDataRef) -> JoinHandle<()> {
+        fn start(&mut self, _market_data: MarketData) -> JoinHandle<()> {
             tokio::spawn(std::future::ready(()))
         }
 
@@ -331,8 +331,9 @@ mod tests {
             "test".to_string(),
             Bytes::from([0xAA; 20].as_slice()),
             Bytes::from([0xBB; 20].as_slice()),
+            "1".to_string(),
         )
-        .with_route(Route::new(vec![weth_usdc_swap()]))
+        .with_route(Route::new(vec![weth_usdc_swap()], HashMap::new()))
     }
 
     fn price_guard(providers: Vec<Box<dyn PriceProvider>>) -> PriceGuard {

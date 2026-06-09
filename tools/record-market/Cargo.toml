@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 fynd-core = { workspace = true, features = ["test-utils"] }
+fynd-rpc.workspace = true
 fynd-test-fixtures.workspace = true
 tycho-simulation.workspace = true
 tokio = { workspace = true, features = ["full"] }
@@ -14,7 +15,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber.workspace = true
 anyhow.workspace = true
 tokio-stream.workspace = true
 num-bigint.workspace = true

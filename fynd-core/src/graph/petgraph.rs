@@ -20,7 +20,7 @@ use super::GraphManager;
 use crate::{
     feed::{
         events::{EventError, MarketEvent, MarketEventHandler},
-        market_data::SharedMarketData,
+        market_data::MarketDataView,
     },
     graph::GraphError,
     types::ComponentId,
@@ -327,13 +327,15 @@ impl<D: Clone + super::EdgeWeightFromSimAndDerived> PetgraphStableDiGraphManager
     /// The number of edges successfully updated.
     pub fn update_edge_weights_with_derived(
         &mut self,
-        market: &SharedMarketData,
+        market: MarketDataView<'_>,
         derived: &crate::derived::DerivedData,
     ) -> usize {
         let tokens = market.token_registry_ref();
 
-        // First pass: collect edge info and compute weights (immutable borrow)
-        let updates: Vec<_> = self
+        // First pass: collect edge info and compute weights (immutable borrow).
+        // `None` in the inner Option means derived data is unavailable — the edge weight will be
+        // cleared to prevent stale data from influencing routing scores.
+        let updates: Vec<(EdgeIndex, Option<D>)> = self
             .graph
             .edge_indices()
             .filter_map(|edge_idx| {
@@ -349,17 +351,21 @@ impl<D: Clone + super::EdgeWeightFromSimAndDerived> PetgraphStableDiGraphManager
                 let token_in = tokens.get(source_addr)?;
                 let token_out = tokens.get(target_addr)?;
 
-                let weight =
-                    D::from_sim_and_derived(sim_state, component_id, token_in, token_out, derived)?;
-                Some((edge_idx, weight))
+                Some((
+                    edge_idx,
+                    D::from_sim_and_derived(sim_state, component_id, token_in, token_out, derived),
+                ))
             })
             .collect();
 
-        // Second pass: apply updates (mutable borrow)
-        let updated = updates.len();
+        // Second pass: apply updates and clears (mutable borrow).
+        let updated = updates
+            .iter()
+            .filter(|(_, w)| w.is_some())
+            .count();
         for (edge_idx, weight) in updates {
             if let Some(edge_data) = self.graph.edge_weight_mut(edge_idx) {
-                edge_data.data = Some(weight);
+                edge_data.data = weight;
             }
         }
 
@@ -372,7 +378,7 @@ impl<D: Clone + super::EdgeWeightFromSimAndDerived> super::EdgeWeightUpdaterWith
 {
     fn update_edge_weights_with_derived(
         &mut self,
-        market: &SharedMarketData,
+        market: MarketDataView<'_>,
         derived: &crate::derived::DerivedData,
     ) -> usize {
         self.update_edge_weights_with_derived(market, derived)
@@ -392,9 +398,10 @@ impl<D: Clone + Send + Sync> GraphManager<StableDiGraph<D>> for PetgraphStableDi
         self.edge_map.clear();
         self.node_map.clear();
 
-        // Sort tokens for deterministic NodeIndex assignment across processes.
-        // HashMap/HashSet iteration order varies per process (random SipHash
-        // seeds), which would otherwise give different graph structure each run.
+        // Sort tokens for deterministic NodeIndex assignment across processes
+        // given the same input. HashMap/HashSet iteration order varies per
+        // process (random SipHash seeds), which would otherwise give different
+        // graph structure each run.
         let mut unique_tokens: Vec<Address> = component_topology
             .values()
             .flat_map(|v| v.iter())
@@ -827,6 +834,65 @@ mod tests {
         assert_eq!(
             edge_count_after_first, edge_count_after_second,
             "Edge count should not change when re-adding the same component"
+        );
+    }
+
+    #[test]
+    fn edge_weight_cleared_on_spot_price_miss() {
+        // Regression: when spot price computation fails, stale edge weights must be cleared so the
+        // pool is excluded from path scoring rather than routed with an outdated price.
+        use num_bigint::BigUint;
+        use num_traits::One;
+        use tycho_simulation::tycho_core::simulation::protocol_sim::Price;
+
+        use crate::{
+            algorithm::test_utils::{market_read, setup_market_weighted, token, MockProtocolSim},
+            derived::{types::TokenGasPrices, DerivedData},
+        };
+
+        let token_a = token(0x01, "A");
+        let token_b = token(0x02, "B");
+        let (market, mut manager) =
+            setup_market_weighted(vec![("pool1", &token_a, &token_b, MockProtocolSim::new(2.0))]);
+
+        assert!(
+            manager
+                .graph()
+                .edge_indices()
+                .all(|e| manager
+                    .graph()
+                    .edge_weight(e)
+                    .unwrap()
+                    .data
+                    .is_some()),
+            "edges should have weight data after setup"
+        );
+
+        let mut token_prices = TokenGasPrices::new();
+        for addr in [&token_a.address, &token_b.address] {
+            token_prices.insert(
+                addr.clone(),
+                Price { numerator: BigUint::one(), denominator: BigUint::one() },
+            );
+        }
+        let mut derived = DerivedData::new();
+        derived.set_spot_prices(Default::default(), vec![], 10, true);
+        derived.set_pool_depths(Default::default(), vec![], 10, true);
+        derived.set_token_prices(token_prices, vec![], 10, true);
+
+        manager.update_edge_weights_with_derived(market_read(&market), &derived);
+
+        assert!(
+            manager
+                .graph()
+                .edge_indices()
+                .all(|e| manager
+                    .graph()
+                    .edge_weight(e)
+                    .unwrap()
+                    .data
+                    .is_none()),
+            "stale edge weights must be cleared when spot price is unavailable"
         );
     }
 }

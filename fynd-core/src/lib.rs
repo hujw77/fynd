@@ -20,7 +20,8 @@
 //! instance, or the [custom algorithm guide](https://docs.fynd.xyz/guides/custom-algorithm)
 //! to implement your own routing strategy.
 
-/// Route-finding algorithms. Includes [`MostLiquidAlgorithm`] and the
+/// Route-finding algorithms. Includes [`MostLiquidAlgorithm`],
+/// [`algorithm::BellmanFordAlgorithm`], [`PathFrankWolfeAlgorithm`], and the
 /// pluggable [`Algorithm`] trait.
 pub mod algorithm;
 /// Derived data computations: spot prices, pool depths, and gas prices.
@@ -46,19 +47,33 @@ pub mod worker_pool;
 pub mod worker_pool_router;
 
 // Re-export commonly used types for convenience
-pub use algorithm::{Algorithm, AlgorithmConfig, AlgorithmError, MostLiquidAlgorithm};
+pub use algorithm::{
+    Algorithm, AlgorithmConfig, AlgorithmError, MostLiquidAlgorithm, PathFrankWolfeAlgorithm,
+};
 // Required for implementing the Algorithm trait externally
 pub use derived::computation::ComputationRequirements;
+pub use feed::{events::MarketEvent, market_data::StateLabel};
 pub use price_guard::{
     config::PriceGuardConfig,
     provider::{ExternalPrice, PriceProvider, PriceProviderError},
 };
 pub use solver::{FyndBuilder, PoolConfig, Solver, SolverBuildError, SolverParts, WaitReadyError};
+/// Processes ephemeral pending bundles against live Tycho market state. Obtained by calling
+/// [`FyndBuilder::build_with_pending`](solver::FyndBuilder::build_with_pending).
+pub use tycho_simulation::evm::pending::PendingBlockProcessor;
+/// Error type produced by [`PendingBlockProcessor`] when simulating a pending bundle.
+pub use tycho_simulation::evm::pending::PendingError;
+/// A pending transaction bundle passed to [`PendingBlockProcessor`] for simulation.
+pub use tycho_simulation::evm::pending::PendingUpdate;
+/// Implement this trait and register it via
+/// [`FyndBuilder::with_pending_indexer`](solver::FyndBuilder::with_pending_indexer)
+/// to receive raw transaction deltas during pending-block simulation.
+pub use tycho_simulation::tycho_common::traits::TxDeltaIndexer;
 pub use types::{
     BlockInfo, ClientFeeParams, ComponentId, EncodingOptions, FeeBreakdown, Order, OrderQuote,
     OrderSide, OrderValidationError, PermitDetails, PermitSingle, Quote, QuoteOptions,
     QuoteRequest, QuoteStatus, Route, RouteValidationError, SingleOrderQuote, SolveError,
-    SolveResult, Swap, TaskId, Transaction, UserTransferType,
+    SolveParams, SolveResult, Swap, TaskId, Transaction, UserTransferType,
 };
 pub use worker_pool::{
     pool::{WorkerPool, WorkerPoolBuilder, WorkerPoolConfig},

@@ -1,10 +1,11 @@
 //! Shared test utilities for algorithm tests.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use chrono::NaiveDateTime;
 use num_bigint::BigUint;
-use tokio::sync::RwLock;
+use num_rational::BigRational;
+use num_traits::{ToPrimitive, Zero};
 use tycho_simulation::{
     tycho_core::{
         dto::ProtocolStateDelta,
@@ -23,7 +24,7 @@ use tycho_simulation::{
 
 use crate::{
     algorithm::most_liquid::DepthAndPrice,
-    feed::market_data::SharedMarketData,
+    feed::market_data::{MarketData, MarketState},
     graph::{petgraph::PetgraphStableDiGraphManager, GraphManager},
     types::{quote::OrderSide, BlockInfo, Order},
 };
@@ -250,6 +251,128 @@ impl ProtocolSim for MockProtocolSim {
     }
 }
 
+// ==================== ConstantProductSim ====================
+
+/// xy=k AMM simulator for testing. Uses pure `BigUint` arithmetic; No fees — pure constant-product
+/// math.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConstantProductSim {
+    /// Reserve of token 0 (lower-address token)
+    pub reserve_0: BigUint,
+    /// Reserve of token 1 (higher-address token)
+    pub reserve_1: BigUint,
+    /// Gas units per swap
+    pub gas: u64,
+}
+
+impl ConstantProductSim {
+    fn reserves_for(&self, token_a: &Token, token_b: &Token) -> (&BigUint, &BigUint) {
+        if token_a.address < token_b.address {
+            (&self.reserve_0, &self.reserve_1)
+        } else {
+            (&self.reserve_1, &self.reserve_0)
+        }
+    }
+}
+
+#[typetag::serde]
+impl ProtocolSim for ConstantProductSim {
+    fn fee(&self) -> f64 {
+        // No fees for simplicity in tests
+        0.0
+    }
+
+    fn spot_price(&self, base: &Token, quote: &Token) -> Result<f64, SimulationError> {
+        let (reserve_in, reserve_out) = self.reserves_for(base, quote);
+        if reserve_in.is_zero() {
+            return Err(SimulationError::FatalError("reserve_in is zero".to_string()));
+        }
+        let price = BigRational::new(reserve_out.clone().into(), reserve_in.clone().into());
+        price
+            .to_f64()
+            .ok_or_else(|| SimulationError::FatalError("price ratio too large for f64".to_string()))
+    }
+
+    fn get_amount_out(
+        &self,
+        amount_in: BigUint,
+        token_in: &Token,
+        token_out: &Token,
+    ) -> Result<GetAmountOutResult, SimulationError> {
+        let (reserve_in, reserve_out) = self.reserves_for(token_in, token_out);
+
+        if &amount_in >= reserve_in {
+            return Err(SimulationError::InvalidInput(
+                "amount_in must be less than reserve_in".to_string(),
+                None,
+            ));
+        }
+
+        let amount_out = &amount_in * reserve_out / (reserve_in + &amount_in);
+
+        let (new_reserve_0, new_reserve_1) = if token_in.address < token_out.address {
+            (reserve_in + &amount_in, reserve_out - &amount_out)
+        } else {
+            (reserve_out - &amount_out, reserve_in + &amount_in)
+        };
+
+        let new_state = Box::new(ConstantProductSim {
+            reserve_0: new_reserve_0,
+            reserve_1: new_reserve_1,
+            gas: self.gas,
+        });
+
+        Ok(GetAmountOutResult::new(amount_out, BigUint::from(self.gas), new_state))
+    }
+
+    fn get_limits(
+        &self,
+        sell_token: Bytes,
+        buy_token: Bytes,
+    ) -> Result<(BigUint, BigUint), SimulationError> {
+        let (reserve_in, reserve_out) = if sell_token < buy_token {
+            (&self.reserve_0, &self.reserve_1)
+        } else {
+            (&self.reserve_1, &self.reserve_0)
+        };
+        // Half of the reserves for simplicity in tests
+        Ok((reserve_in / BigUint::from(2u64), reserve_out / BigUint::from(2u64)))
+    }
+
+    fn query_pool_swap(&self, _params: &QueryPoolSwapParams) -> Result<PoolSwap, SimulationError> {
+        unimplemented!("query_pool_swap not implemented in ConstantProductSim")
+    }
+
+    fn delta_transition(
+        &mut self,
+        _delta: ProtocolStateDelta,
+        _tokens: &HashMap<Bytes, Token>,
+        _balances: &Balances,
+    ) -> Result<(), TransitionError> {
+        unimplemented!("delta_transition not implemented in ConstantProductSim")
+    }
+
+    fn clone_box(&self) -> Box<dyn ProtocolSim> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn eq(&self, other: &dyn ProtocolSim) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .map(|o| o.reserve_0 == self.reserve_0 && o.reserve_1 == self.reserve_1)
+            .unwrap_or(false)
+    }
+}
+
 // ==================== Test Fixtures ====================
 
 /// Creates an address from a single byte (fills all 20 bytes with that value).
@@ -311,14 +434,13 @@ pub fn order(token_in: &Token, token_out: &Token, amount: u128, side: OrderSide)
     .with_id("test-order".to_string())
 }
 
-/// Sets up market with components and a graph. Returns (market_lock, graph_manager).
+/// Sets up market with components and a graph. Returns (market_ref, graph_manager).
 ///
-/// The market is wrapped in `Arc<RwLock<...>>` for use with `find_best_route`.
-/// Use `market_read(&market_lock)` to get a `SharedMarketData` for other tests.
-pub fn setup_market(
+/// Use `market_read(&market_ref)` to get a `MarketState` reference for other tests.
+pub fn setup_market_weighted(
     pools: Vec<(&str, &Token, &Token, MockProtocolSim)>,
-) -> (Arc<RwLock<SharedMarketData>>, PetgraphStableDiGraphManager<DepthAndPrice>) {
-    let mut market = SharedMarketData::new();
+) -> (MarketData, PetgraphStableDiGraphManager<DepthAndPrice>) {
+    let mut market = MarketState::new();
     let mut component_weights = HashMap::new();
 
     // Set gas_price = 1 wei/gas for simple calculations
@@ -368,15 +490,41 @@ pub fn setup_market(
             .unwrap();
     }
 
-    (Arc::new(RwLock::new(market)), graph_manager)
+    (MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market))), graph_manager)
 }
 
-/// Helper to get a read guard for `simulate_path` tests that need `&SharedMarketData`.
-/// Returns the guard which derefs to `&SharedMarketData`.
-pub fn market_read(
-    lock: &Arc<RwLock<SharedMarketData>>,
-) -> tokio::sync::RwLockReadGuard<'_, SharedMarketData> {
-    lock.try_read()
+/// Setup helper for algorithms that do not use pre-computed edge weights
+pub fn setup_market_unweighted(
+    pools: Vec<(&str, &Token, &Token, Box<dyn ProtocolSim>)>,
+) -> (MarketData, PetgraphStableDiGraphManager<()>) {
+    let mut market = MarketState::new();
+
+    market.update_gas_price(BlockGasPrice {
+        block_number: 1,
+        block_hash: Default::default(),
+        block_timestamp: 0,
+        pricing: GasPrice::Legacy { gas_price: BigUint::from(100u64) },
+    });
+    market.update_last_updated(BlockInfo::new(1, "0x00".into(), 0));
+
+    for (pool_id, token_in, token_out, state) in pools {
+        let tokens = vec![token_in.clone(), token_out.clone()];
+        let comp = component(pool_id, &tokens);
+        market.upsert_components(std::iter::once(comp));
+        market.update_states([(pool_id.to_string(), state)]);
+        market.upsert_tokens(tokens);
+    }
+
+    let mut graph_manager = PetgraphStableDiGraphManager::<()>::default();
+    graph_manager.initialize_graph(&market.component_topology());
+
+    (MarketData::new(std::sync::Arc::new(tokio::sync::RwLock::new(market))), graph_manager)
+}
+
+/// Returns a `MarketDataView` for tests that need to access market data synchronously.
+pub fn market_read(market: &MarketData) -> crate::feed::market_data::MarketDataView<'_> {
+    market
+        .try_read_blocking()
         .expect("lock should not be contested in test")
 }
 
@@ -819,6 +967,129 @@ mod tests {
 
         assert_eq!(buy_limit, BigUint::from(8_000u64));
         assert_eq!(sell_limit, BigUint::from(32_000u64)); // 8000 * 4
+    }
+
+    // ==================== ConstantProductSim Tests ====================
+
+    fn cp_pool(reserve_0: u64, reserve_1: u64) -> ConstantProductSim {
+        ConstantProductSim {
+            reserve_0: BigUint::from(reserve_0),
+            reserve_1: BigUint::from(reserve_1),
+            gas: 50_000,
+        }
+    }
+
+    #[test]
+    fn test_constant_product_get_amount_out() {
+        // reserve_in=1000, reserve_out=2000, amount_in=100
+        // amount_out = 100 * 2000 / (1000 + 100) = 200_000 / 1100 = 181
+        let sim = cp_pool(1000, 2000);
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        let result = sim
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+
+        assert_eq!(result.amount, BigUint::from(181u64));
+        let new_state = result
+            .new_state
+            .as_any()
+            .downcast_ref::<ConstantProductSim>()
+            .unwrap();
+        assert_eq!(new_state.reserve_0, BigUint::from(1100u64));
+        assert_eq!(new_state.reserve_1, BigUint::from(1819u64));
+    }
+
+    #[test]
+    fn test_constant_product_split_beats_single() {
+        // Concavity of xy=k: splitting across two identical pools yields more output.
+        // Single: 200 * 2000 / (1000 + 200) = 333
+        // Split 100+100: (181) + (181) = 362 > 333
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        let single = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(200u64), &t_in, &t_out)
+            .unwrap();
+
+        let half1 = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+        let half2 = cp_pool(1000, 2000)
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .unwrap();
+        let split_total = half1.amount + half2.amount;
+
+        assert!(
+            split_total > single.amount,
+            "split {split_total} should beat single {}",
+            single.amount
+        );
+    }
+
+    #[test]
+    fn test_constant_product_spot_price_direction() {
+        // reserve_0=1000 (token 0x01), reserve_1=2000 (token 0x02)
+        // forward: 2000/1000 = 2.0; reverse: 1000/2000 = 0.5; product = 1.0
+        let sim = cp_pool(1000, 2000);
+        let token_low = token(0x01, "T0");
+        let token_high = token(0x02, "T1");
+
+        let forward = sim
+            .spot_price(&token_low, &token_high)
+            .unwrap();
+        let reverse = sim
+            .spot_price(&token_high, &token_low)
+            .unwrap();
+
+        assert!(
+            (forward * reverse - 1.0).abs() < 1e-9,
+            "prices must be inverses: {forward} * {reverse} = {}",
+            forward * reverse
+        );
+    }
+
+    #[test]
+    fn test_constant_product_empties_pool_error() {
+        let sim = cp_pool(1000, 2000);
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+
+        // amount_in == reserve_in should be rejected
+        let result = sim.get_amount_out(BigUint::from(1000u64), &t_in, &t_out);
+
+        match result {
+            Err(SimulationError::InvalidInput(msg, _)) => {
+                assert!(msg.contains("reserve_in"), "unexpected error: {msg}");
+            }
+            _ => panic!("expected InvalidInput error, got {result:?}"),
+        }
+    }
+
+    // ==================== setup_market_unweighted Tests ====================
+
+    #[test]
+    fn test_setup_market_unweighted_with_const_product() {
+        let t_in = token(0x01, "T0");
+        let t_out = token(0x02, "T1");
+        let sim = ConstantProductSim {
+            reserve_0: BigUint::from(1000u64),
+            reserve_1: BigUint::from(2000u64),
+            gas: 50_000,
+        };
+
+        let (market, _graph) =
+            setup_market_unweighted(vec![("pool1", &t_in, &t_out, Box::new(sim))]);
+
+        let view = market_read(&market);
+        let state = view
+            .get_simulation_state("pool1")
+            .expect("pool1 should be in market");
+        let result = state
+            .get_amount_out(BigUint::from(100u64), &t_in, &t_out)
+            .expect("swap should succeed");
+        assert_eq!(result.amount, BigUint::from(181u64));
     }
 
     // ==================== Mock vs UniV2 Comparison Test ====================

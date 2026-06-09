@@ -20,9 +20,12 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::{
-    algorithm::{AlgorithmConfig, BellmanFordAlgorithm, MostLiquidAlgorithm},
+    algorithm::{
+        path_frank_wolfe::PathFrankWolfeConfig, AlgorithmConfig, BellmanFordAlgorithm,
+        MostLiquidAlgorithm, PathFrankWolfeAlgorithm,
+    },
     derived::{events::DerivedDataEvent, SharedDerivedDataRef},
-    feed::{events::MarketEvent, market_data::SharedMarketDataRef},
+    feed::{events::MarketEvent, market_data::MarketData},
     types::internal::SolveTask,
     worker_pool::worker::SolverWorker,
 };
@@ -44,7 +47,7 @@ pub(crate) struct SpawnWorkersParams {
     /// Receiver for solve tasks.
     pub task_rx: async_channel::Receiver<SolveTask>,
     /// Shared market data reference.
-    pub market_data: SharedMarketDataRef,
+    pub market_data: MarketData,
     /// Shared derived data reference (pool depths, token prices).
     pub derived_data: SharedDerivedDataRef,
     /// Broadcast receiver for market events.
@@ -109,6 +112,7 @@ impl AlgorithmSpawner {
             Self::Registry { algorithm } => match algorithm.as_str() {
                 "most_liquid" => Ok(spawn_most_liquid_workers(params)),
                 "bellman_ford" => Ok(spawn_bellman_ford_workers(params)),
+                "path_frank_wolfe" => Ok(spawn_path_frank_wolfe_workers(params)),
                 _ => Err(UnknownAlgorithmError { name: algorithm }),
             },
             Self::Custom { spawner, .. } => Ok(spawner(params)),
@@ -147,7 +151,7 @@ where
 
     for worker_id in 0..params.num_workers {
         let task_rx = params.task_rx.clone();
-        let market_data = Arc::clone(&params.market_data);
+        let market_data = params.market_data.clone();
         let derived_data = Arc::clone(&params.derived_data);
         let event_rx = params.event_rx.resubscribe();
         let derived_event_rx = params.derived_event_rx.resubscribe();
@@ -201,9 +205,14 @@ fn spawn_most_liquid_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> 
 
 /// Spawns workers for the BellmanFord algorithm.
 fn spawn_bellman_ford_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> {
+    let factory = |config: AlgorithmConfig| BellmanFordAlgorithm::with_config(config);
+    spawn_workers_generic(params, &factory)
+}
+
+/// Spawns workers for the PathFrankWolfe split-routing algorithm.
+fn spawn_path_frank_wolfe_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>> {
     let factory = |config: AlgorithmConfig| {
-        BellmanFordAlgorithm::with_config(config)
-            .expect("invalid worker configuration for BellmanFordAlgorithm")
+        PathFrankWolfeAlgorithm::new(config, PathFrankWolfeConfig::default())
     };
     spawn_workers_generic(params, &factory)
 }
@@ -212,15 +221,13 @@ fn spawn_bellman_ford_workers(params: SpawnWorkersParams) -> Vec<JoinHandle<()>>
 mod tests {
     use std::time::Duration;
 
-    use tokio::sync::RwLock;
-
     use super::*;
-    use crate::{derived::DerivedData, feed::market_data::SharedMarketData};
+    use crate::{derived::DerivedData, feed::market_data::MarketData};
 
     fn make_params(algorithm: &str, num_workers: usize) -> SpawnWorkersParams {
         let (_task_tx, task_rx) = async_channel::bounded(10);
-        let market_data = Arc::new(RwLock::new(SharedMarketData::new()));
-        let derived_data = Arc::new(RwLock::new(DerivedData::new()));
+        let market_data = MarketData::new_shared();
+        let derived_data = Arc::new(tokio::sync::RwLock::new(DerivedData::new()));
         let (_event_tx, event_rx) = broadcast::channel(10);
         let (_derived_event_tx, derived_event_rx) = broadcast::channel(10);
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -256,8 +263,8 @@ mod tests {
     fn test_registry_spawns_correct_number_of_workers() {
         let (shutdown_tx, _) = broadcast::channel(1);
         let (_task_tx, task_rx) = async_channel::bounded(10);
-        let market_data = Arc::new(RwLock::new(SharedMarketData::new()));
-        let derived_data = Arc::new(RwLock::new(DerivedData::new()));
+        let market_data = MarketData::new_shared();
+        let derived_data = Arc::new(tokio::sync::RwLock::new(DerivedData::new()));
         let (event_tx, event_rx) = broadcast::channel(10);
         let (_derived_event_tx, derived_event_rx) = broadcast::channel(10);
 
@@ -295,8 +302,8 @@ mod tests {
         // The Custom spawner bypasses the registry and uses the factory directly.
         let (shutdown_tx, _) = broadcast::channel(1);
         let (_task_tx, task_rx) = async_channel::bounded(10);
-        let market_data = Arc::new(RwLock::new(SharedMarketData::new()));
-        let derived_data = Arc::new(RwLock::new(DerivedData::new()));
+        let market_data = MarketData::new_shared();
+        let derived_data = Arc::new(tokio::sync::RwLock::new(DerivedData::new()));
         let (event_tx, _) = broadcast::channel::<MarketEvent>(10);
         let (derived_event_tx, _) = broadcast::channel(10);
 
@@ -306,7 +313,7 @@ mod tests {
                 num_workers: 1,
                 algorithm_config: AlgorithmConfig::default(),
                 task_rx: task_rx.clone(),
-                market_data: Arc::clone(&market_data),
+                market_data: market_data.clone(),
                 derived_data: Arc::clone(&derived_data),
                 event_rx: event_tx.subscribe(),
                 derived_event_rx: derived_event_tx.subscribe(),

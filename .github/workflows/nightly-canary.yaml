@@ -49,5 +49,15 @@ jobs:
 
       - name: Notify on failure
         if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           echo "::error::Nightly canary failed — Tycho data format or solver behavior may have changed"
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not set; skipping Slack notification"
+            exit 0
+          fi
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\":red_circle: Nightly canary failed — Tycho data format or solver behavior may have changed. <${RUN_URL}|View run>\"}" \
+            "$SLACK_WEBHOOK_URL"

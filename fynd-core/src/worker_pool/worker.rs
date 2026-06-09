@@ -25,11 +25,11 @@ use crate::{
     },
     feed::{
         events::{MarketEvent, MarketEventHandler},
-        market_data::SharedMarketDataRef,
+        market_data::MarketData,
     },
     graph::{EdgeWeightUpdaterWithDerived, GraphManager},
     types::internal::SolveTask,
-    BlockInfo, Order, OrderQuote, QuoteStatus, SingleOrderQuote, SolveError,
+    BlockInfo, Order, OrderQuote, QuoteStatus, SingleOrderQuote, SolveError, SolveParams,
 };
 
 /// A solver worker instance that maintains a market graph and processes solve requests.
@@ -43,7 +43,7 @@ where
     /// Graph manager that maintains the graph.
     graph_manager: A::GraphManager,
     /// Reference to shared market data.
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     /// Reference to shared derived data (pool depths, token prices).
     derived_data: SharedDerivedDataRef,
     /// Algorithm's computation requirements (which derived data to react to).
@@ -75,7 +75,7 @@ where
     /// * `algorithm` - The algorithm to use for route finding
     /// * `worker_id` - Identifier for this worker (for logging)
     pub fn new(
-        market_data: SharedMarketDataRef,
+        market_data: MarketData,
         derived_data: SharedDerivedDataRef,
         algorithm: A,
         worker_id: usize,
@@ -94,10 +94,10 @@ where
         }
     }
 
-    /// Initializes the graph from SharedMarketData.
+    /// Initializes the graph from MarketState.
     ///
     /// Call this on startup or to recreate the graph from the latest market topology.
-    /// Gets the market topology from SharedMarketData and uses it to build the graph.
+    /// Gets the market topology from MarketState and uses it to build the graph.
     pub async fn initialize_graph(&mut self) {
         let topology = {
             // read lock on market data
@@ -127,8 +127,12 @@ where
         }
     }
 
-    /// Returns a quote for an order.
-    pub async fn quote(&mut self, order: &Order) -> Result<SingleOrderQuote, SolveError> {
+    /// Returns a quote for an order, optionally solved against a named state overlay.
+    pub async fn quote(
+        &mut self,
+        order: &Order,
+        params: SolveParams,
+    ) -> Result<SingleOrderQuote, SolveError> {
         let start_time = Instant::now();
 
         // Log order details once at entry
@@ -161,19 +165,35 @@ where
         // Get the graph from the graph manager
         let graph = self.graph_manager.graph();
 
-        // Get block info
+        // Get block info and resolve the effective state label.
         // TODO: maybe the algorithm should return the block info with the route? The block might
         // update while solving and the route returned might be for the newer block.
-        let block_info = {
-            let market = self.market_data.read().await;
-            let last_block = market
+        let (block_info, solved_against) = {
+            // Read briefly to capture block info; drop the lock before solving so it is not held
+            // across the algorithm's own read call.
+            let view = match params.state_label() {
+                Some(l) => self
+                    .market_data
+                    .read_labeled(l)
+                    .await
+                    .map_err(|e| SolveError::NotReady(e.to_string()))?,
+                None => self.market_data.read().await,
+            };
+            let last_block = view
                 .last_updated()
                 .ok_or(SolveError::NotReady("No block info".to_string()))?;
-            BlockInfo::new(
+            let block_info = BlockInfo::new(
                 last_block.number(),
                 last_block.hash().to_string(),
                 last_block.timestamp(),
-            )
+            );
+            // When no overlay was requested, record the block number so callers always know which
+            // state the quote was computed against.
+            let solved_against = view
+                .state_label()
+                .cloned()
+                .unwrap_or_else(|| last_block.number().to_string());
+            (block_info, solved_against)
         };
 
         let result = self
@@ -181,6 +201,7 @@ where
             .find_best_route(
                 graph,
                 self.market_data.clone(),
+                params.state_label().cloned(),
                 Some(self.derived_data.clone()),
                 order,
             )
@@ -196,6 +217,8 @@ where
                 let gas_price = result.gas_price().clone();
                 let route = result.into_route();
 
+                // This is a first naive approach to getting the total gas of this quote
+                // A finer estimation is done during encoding
                 let gas_estimate = route.total_gas();
                 let amount_in = if order.is_sell() {
                     order.amount().clone()
@@ -239,6 +262,7 @@ where
                     self.algorithm.name().to_string(),
                     Bytes::from(order.sender().as_ref()),
                     Bytes::from(order.effective_receiver().as_ref()),
+                    solved_against,
                 )
                 .with_route(route)
                 .with_gas_price(gas_price)
@@ -419,7 +443,7 @@ where
                                 if self.requirements.is_required(computation_id) {
                                     let market = self.market_data.read().await;
                                     let derived = self.derived_data.read().await;
-                                    let updated = self.graph_manager.update_edge_weights_with_derived(&market, &derived);
+                                    let updated = self.graph_manager.update_edge_weights_with_derived(market, &derived);
                                     debug!(
                                         self.worker_id,
                                         computation_id,
@@ -444,7 +468,7 @@ where
                             // Recover by updating with whatever derived data is available.
                             let market = self.market_data.read().await;
                             let derived = self.derived_data.read().await;
-                            let updated = self.graph_manager.update_edge_weights_with_derived(&market, &derived);
+                            let updated = self.graph_manager.update_edge_weights_with_derived(market, &derived);
                             debug!(
                                 self.worker_id,
                                 updated,
@@ -476,8 +500,9 @@ where
 
                             // Process the task
                             let result = {
+                                let params = task.params().clone();
                                 let order = task.order();
-                                self.quote(order).await
+                                self.quote(order, params).await
                             };
 
                             if let Err(ref e) = result {
@@ -510,7 +535,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::{most_liquid::DepthAndPrice, test_utils::setup_market},
+        algorithm::{most_liquid::DepthAndPrice, test_utils::setup_market_weighted},
         derived::{
             computation::DerivedComputation,
             computations::{SpotPriceComputation, TokenGasPriceComputation},
@@ -548,7 +573,8 @@ mod tests {
         async fn find_best_route(
             &self,
             _graph: &Self::GraphType,
-            _market: SharedMarketDataRef,
+            _market: MarketData,
+            _label: Option<crate::feed::market_data::StateLabel>,
             _derived: Option<SharedDerivedDataRef>,
             _order: &Order,
         ) -> Result<crate::types::RouteResult, crate::AlgorithmError> {
@@ -568,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_when_no_requirements() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let algorithm = MockAlgorithm::new();
@@ -583,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_when_already_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -610,7 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_times_out_when_not_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -636,7 +662,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_wakes_up_on_notify() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -668,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_succeeds_when_notified_and_ready() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -711,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_pattern_handles_multiple_waiters() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -756,7 +782,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_immediately_on_blocked_state() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -804,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_ready_returns_blocked_when_failure_already_processed() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()
@@ -846,7 +872,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_updates_tracker_and_notifies_on_derived_event() {
-        let (market, _) = setup_market(vec![]);
+        let (market, _) = setup_market_weighted(vec![]);
         let derived = DerivedData::new_shared();
 
         let requirements = ComputationRequirements::none()

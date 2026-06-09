@@ -3,12 +3,6 @@
 A high-performance DeFi route-finding engine built on [Tycho](https://www.propellerheads.xyz/tycho). Finds optimal swap
 routes across multiple DeFi protocols in real-time.
 
-> [!CAUTION]
-  > **Alpha Software — Unaudited Contracts**
-  >
-  > Fynd's smart contracts ([TychoRouter V3](https://docs.propellerheads.xyz/tycho/for-solvers/execution#security-and-audits), Vault, Executors) are still undergoing a security audit. Funds stored in the router (including vault deposits) may be lost. Use at your own
-   discretion.
-
 ## Features
 
 - **Multi-protocol routing** - Routes through your favorite on-chain liquidity protocol, like Uniswap, Balancer, Curve,
@@ -66,6 +60,24 @@ cargo run --release serve --chain base
 ```
 
 See the [full quickstart](https://docs.fynd.xyz/get-started/quickstart) for Docker, build-from-source, and client SDK examples (Rust & TypeScript).
+
+## Build features
+
+The `fynd` binary exposes the following Cargo features:
+
+| Feature   | Default | What it enables                                                                            |
+| --------- | ------- | ------------------------------------------------------------------------------------------ |
+| `metrics` | on      | Prometheus `/metrics` endpoint on a separate HTTP server (port 9898). Pulls in Actix-Web.  |
+
+```bash
+# Default build (metrics on)
+cargo install fynd
+cargo build --release
+
+# Build without the metrics exporter (smaller binary, no /metrics endpoint)
+cargo install fynd --no-default-features
+cargo build --release --no-default-features
+```
 
 ## Documentation
 

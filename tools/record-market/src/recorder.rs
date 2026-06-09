@@ -1,18 +1,13 @@
 use std::time::{Duration, Instant};
 
+use fynd_rpc::protocols::fetch_protocol_systems;
 use fynd_test_fixtures::{MarketRecording, RecordingMetadata};
 use tokio_stream::StreamExt;
 use tycho_simulation::{
     evm::stream::ProtocolStreamBuilder,
     protocol::models::Update,
-    tycho_client::{
-        feed::component_tracker::ComponentFilter,
-        rpc::{HttpRPCClient, HttpRPCClientOptions, RPCClient},
-    },
-    tycho_common::{
-        dto::{PaginationParams, ProtocolSystemsRequestBody},
-        models::Chain,
-    },
+    tycho_client::feed::component_tracker::ComponentFilter,
+    tycho_common::models::Chain,
     tycho_core::traits::FeePriceGetter,
     tycho_ethereum::rpc::EthereumRpcClient,
     utils::load_all_tokens,
@@ -41,7 +36,8 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
         }
         _ => {
             let discovered =
-                fetch_protocol_systems(&opts.tycho_url, Some(&opts.tycho_api_key), chain).await?;
+                fetch_protocol_systems(&opts.tycho_url, Some(&opts.tycho_api_key), true, chain)
+                    .await?;
             tracing::info!(count = discovered.len(), ?discovered, "discovered protocols");
             discovered
         }
@@ -76,17 +72,22 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
     let tvl_filter = ComponentFilter::with_tvl_range(opts.min_tvl, opts.min_tvl);
     let builder = ProtocolStreamBuilder::new(&opts.tycho_url, chain);
 
-    let builder =
-        fynd_core::feed::protocol_registry::register_exchanges(builder, tvl_filter, &protocols)
-            .map_err(|e| anyhow::anyhow!("failed to register exchanges: {e}"))?;
+    let builder = fynd_core::feed::protocol_registry::register_exchanges_for_recording(
+        builder,
+        tvl_filter,
+        &protocols,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to register exchanges: {e}"))?;
 
-    let mut stream = builder
-        .auth_key(Some(opts.tycho_api_key.clone()))
-        .skip_state_decode_failures(true)
-        .set_tokens(all_tokens)
-        .await
-        .build()
-        .await?;
+    let mut stream = Box::pin(
+        builder
+            .auth_key(Some(opts.tycho_api_key.clone()))
+            .skip_state_decode_failures(true)
+            .set_tokens(all_tokens)
+            .await
+            .build()
+            .await?,
+    );
 
     let mut updates: Vec<Update> = Vec::new();
     let start = Instant::now();
@@ -161,34 +162,3 @@ async fn fetch_gas_price_wei(rpc_url: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
-async fn fetch_protocol_systems(
-    tycho_url: &str,
-    auth_key: Option<&str>,
-    chain: Chain,
-) -> anyhow::Result<Vec<String>> {
-    let rpc_url = format!("https://{tycho_url}");
-    let rpc_options = HttpRPCClientOptions::new().with_auth_key(auth_key.map(|s| s.to_string()));
-    let rpc_client = HttpRPCClient::new(&rpc_url, rpc_options)?;
-
-    const PAGE_SIZE: i64 = 100;
-    let mut all_protocols = Vec::new();
-    let mut page = 0;
-
-    loop {
-        let request = ProtocolSystemsRequestBody {
-            chain: chain.into(),
-            pagination: PaginationParams { page, page_size: PAGE_SIZE },
-        };
-        let response = rpc_client
-            .get_protocol_systems(&request)
-            .await?;
-        let count = response.protocol_systems.len();
-        all_protocols.extend(response.protocol_systems);
-        if (count as i64) < PAGE_SIZE {
-            break;
-        }
-        page += 1;
-    }
-
-    Ok(all_protocols)
-}

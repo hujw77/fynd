@@ -69,6 +69,35 @@ fynd serve
 {% endtab %}
 {% endtabs %}
 
+### Select a chain
+
+Each Fynd instance serves a single chain. `fynd serve` defaults to **Ethereum**; pass `--chain` to target another one:
+
+```bash
+fynd serve --chain base
+```
+
+For Docker, append the flag after `serve`:
+
+```bash
+docker run \
+  -e TYCHO_API_KEY=your-api-key \
+  -e RUST_LOG=fynd=info \
+  -p 3000:3000 -p 9898:9898 \
+  ghcr.io/propeller-heads/fynd serve --chain base
+```
+
+These chains ship with built-in Tycho and RPC endpoints (names are case-insensitive): `ethereum`, `base`, `unichain`, `bsc`, `arbitrum`, `polygon`. For any other chain, also pass `--tycho-url` and `--rpc-url` explicitly.
+
+Your client must target the same chain. If you use the TypeScript client (Step 1), set `chainId` and the viem chain to match the server:
+
+```typescript
+import { base } from 'viem/chains';
+
+const publicClient = createPublicClient({ chain: base, transport: http(rpcUrl) });
+const client = new FyndClient({ baseUrl: FYND_URL, chainId: base.id, /* ... */ });
+```
+
 ## Step 1 — Execute a swap
 
 {% hint style="info" %}
@@ -88,7 +117,6 @@ npm install @kayibal/fynd-client
 ```typescript
 const client = new FyndClient({
   baseUrl: FYND_URL,
-  chainId: mainnet.id,
   sender: account.address,
   provider: viemProvider(publicClient, account.address),
   fetchRevertReason: true,
@@ -126,7 +154,8 @@ cargo add fynd-client
 ```
 
 ```rust
-let client = FyndClientBuilder::new(FYND_URL, RPC_URL)
+let client = FyndClientBuilder::new(FYND_URL)
+    .with_rpc_url(RPC_URL)
     .with_sender(sender)
     .build()
     .await?;
@@ -209,10 +238,15 @@ This quotes 1000 USDC (6 decimals → 1 000 000 000 atomic units) for WETH.
 {% endtab %}
 {% endtabs %}
 
+## Native ETH swaps
+
+To swap native ETH, use `0x0000...0000` as the `token_in` or `token_out` address in your order.
+
 ## Next steps
 
-* [Encoding options](../../guides/encoding-options.md) — encode quotes into ready-to-submit transactions
-* [Client fees](../../guides/client-fees.md) — charge integrator fees on swaps
+* [Encoding options](../../guides/encoding-options.md) - encode quotes into ready-to-submit transactions
+* [Fynd Fees](../../guides/router-fees.md) - understand Fynd fees on executed swaps
+* [Charge Fees on your Swaps](../../guides/client-fees.md) - charge integrator fees on swaps
 * [Server configuration](../../guides/server-configuration.md)
 * [Custom algorithm](../../guides/custom-algorithm.md)
 * [Benchmarking](../../guides/benchmarking.md)

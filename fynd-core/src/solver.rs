@@ -10,29 +10,30 @@
 //!     .algorithm("most_liquid")
 //!     .build()?;
 //! ```
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use num_cpus;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
 #[cfg(feature = "test-utils")]
+#[cfg(feature = "test-utils")]
 use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
 use tycho_simulation::{
-    tycho_common::{models::Chain, Bytes},
+    evm::pending::PendingBlockProcessor,
+    tycho_common::{models::Chain, traits::TxDeltaIndexer, Bytes},
+    tycho_core::models::Address,
     tycho_ethereum::rpc::EthereumRpcClient,
 };
 
-#[cfg(feature = "test-utils")]
-use crate::feed::events::MarketEvent;
 use crate::{
     algorithm::{AlgorithmConfig, AlgorithmError},
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
     encoding::encoder::Encoder,
     feed::{
-        events::MarketEventHandler,
+        events::{MarketEvent, MarketEventHandler},
         gas::GasPriceFetcher,
-        market_data::{SharedMarketData, SharedMarketDataRef},
+        market_data::MarketData,
         tycho_feed::TychoFeed,
         TychoFeedConfig,
     },
@@ -105,6 +106,22 @@ fn default_algo_timeout_ms() -> u64 {
     defaults::POOL_TIMEOUT_MS
 }
 
+fn parse_connector_tokens(
+    raw: Option<&[String]>,
+) -> Result<Option<HashSet<Address>>, SolverBuildError> {
+    let Some(strings) = raw else {
+        return Ok(None);
+    };
+    let mut set = HashSet::with_capacity(strings.len());
+    for s in strings {
+        let addr = Address::from_str(s).map_err(|e| AlgorithmError::InvalidConfiguration {
+            reason: format!("connector_tokens: invalid address {s:?}: {e}"),
+        })?;
+        set.insert(addr);
+    }
+    Ok(Some(set))
+}
+
 /// Per-pool configuration for [`FyndBuilder::add_pool`].
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +146,10 @@ pub struct PoolConfig {
     /// Maximum number of paths to simulate per solve. `None` simulates all scored paths.
     #[serde(default)]
     max_routes: Option<usize>,
+    /// Lowercase hex addresses (e.g. `"0xc02aaa…"`) allowed as intermediate routing hops.
+    /// Absent = no restriction. Typically 3–10 entries (e.g. WETH, USDC, USDT, DAI).
+    #[serde(default)]
+    connector_tokens: Option<Vec<String>>,
 }
 
 impl PoolConfig {
@@ -142,6 +163,7 @@ impl PoolConfig {
             max_hops: defaults::POOL_MAX_HOPS,
             timeout_ms: defaults::POOL_TIMEOUT_MS,
             max_routes: None,
+            connector_tokens: None,
         }
     }
 
@@ -215,6 +237,18 @@ impl PoolConfig {
     pub fn max_routes(&self) -> Option<usize> {
         self.max_routes
     }
+
+    /// Restricts intermediate hops to the given token addresses (hex strings with or without `0x`
+    /// prefix). Absent = no restriction.
+    pub fn with_connector_tokens(mut self, tokens: Vec<String>) -> Self {
+        self.connector_tokens = Some(tokens);
+        self
+    }
+
+    /// Returns the raw connector token address strings, or `None` if unrestricted.
+    pub fn connector_tokens(&self) -> Option<&[String]> {
+        self.connector_tokens.as_deref()
+    }
 }
 
 /// Error returned by [`Solver::wait_until_ready`].
@@ -224,7 +258,7 @@ pub struct WaitReadyError {
     timeout_ms: u64,
 }
 
-/// Error returned by [`FyndBuilder::build`].
+/// Error returned by [`FyndBuilder::build`] and [`FyndBuilder::build_with_pending`].
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SolverBuildError {
@@ -253,6 +287,16 @@ pub enum SolverBuildError {
     #[cfg(feature = "test-utils")]
     #[error("replay failed: {0}")]
     Replay(String),
+    /// The feed task failed before delivering the [`PendingBlockProcessor`].
+    ///
+    /// The inner string is the `DataFeedError` message from `TychoFeed::run_with_pending`
+    /// (e.g. "failed to load tokens: connection refused").
+    #[error("feed setup failed before delivering pending processor: {0}")]
+    FeedSetup(String),
+    /// The pending-processor oneshot closed without delivering a value, meaning the feed task
+    /// panicked rather than returning an error through the channel.
+    #[error("pending processor channel closed before processor was delivered")]
+    PendingChannelClosed,
 }
 
 /// Internal pool entry — either a built-in algorithm (by name) or a custom one.
@@ -266,6 +310,7 @@ enum PoolEntry {
         max_hops: usize,
         timeout_ms: u64,
         max_routes: Option<usize>,
+        connector_tokens: Option<HashSet<Address>>,
     },
     Custom(CustomPoolEntry),
 }
@@ -283,10 +328,30 @@ struct CustomPoolEntry {
     configure: Box<dyn FnOnce(WorkerPoolBuilder) -> WorkerPoolBuilder + Send>,
 }
 
+/// All components produced by [`FyndBuilder::assemble_components`], consumed by
+/// [`FyndBuilder::build`] and [`FyndBuilder::build_with_pending`].
+struct BuiltComponents {
+    tycho_feed: TychoFeed,
+    gas_price_fetcher: GasPriceFetcher<EthereumRpcClient>,
+    computation_manager: ComputationManager,
+    computation_event_rx: broadcast::Receiver<MarketEvent>,
+    computation_shutdown_tx: broadcast::Sender<()>,
+    computation_shutdown_rx: broadcast::Receiver<()>,
+    router: WorkerPoolRouter,
+    worker_pools: Vec<WorkerPool>,
+    market_data: MarketData,
+    derived_data: SharedDerivedDataRef,
+    chain: Chain,
+    router_address: Bytes,
+    pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
+    market_event_tx: broadcast::Sender<MarketEvent>,
+}
+
 /// Builder for assembling the full solver pipeline.
-#[must_use = "a builder does nothing until .build() is called"]
+///
 /// Configures the Tycho market-data feed, gas price fetcher, derived-data
 /// computation manager, one or more worker pools, encoder, and router.
+#[must_use = "a builder does nothing until .build() is called"]
 pub struct FyndBuilder {
     chain: Chain,
     tycho_url: String,
@@ -301,12 +366,14 @@ pub struct FyndBuilder {
     gas_refresh_interval: Duration,
     reconnect_delay: Duration,
     blocklisted_components: HashSet<String>,
+    partial_blocks: bool,
     router_timeout: Duration,
     router_min_responses: usize,
     encoder: Option<Encoder>,
     pools: Vec<PoolEntry>,
     price_guard_enabled: bool,
     price_providers: Vec<Box<dyn PriceProvider>>,
+    pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
 }
 
 impl FyndBuilder {
@@ -332,12 +399,14 @@ impl FyndBuilder {
             gas_refresh_interval: defaults::GAS_REFRESH_INTERVAL,
             reconnect_delay: defaults::RECONNECT_DELAY,
             blocklisted_components: HashSet::new(),
+            partial_blocks: false,
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
             router_min_responses: defaults::ROUTER_MIN_RESPONSES,
             encoder: None,
             pools: Vec::new(),
             price_guard_enabled: false,
             price_providers: Vec::new(),
+            pending_indexers: Vec::new(),
         }
     }
 
@@ -401,6 +470,16 @@ impl FyndBuilder {
         self
     }
 
+    /// Enables partial block (flashblock) updates from the Tycho stream (default: `false`).
+    ///
+    /// When enabled, the stream delivers pool state updates mid-block rather than only at
+    /// finalization, reducing latency. Only supported for on-chain protocols; RFQ streams are
+    /// unaffected.
+    pub fn partial_blocks(mut self, enabled: bool) -> Self {
+        self.partial_blocks = enabled;
+        self
+    }
+
     /// Sets the worker router timeout (default: 10s).
     pub fn worker_router_timeout(mut self, timeout: Duration) -> Self {
         self.router_timeout = timeout;
@@ -430,6 +509,7 @@ impl FyndBuilder {
             max_hops: defaults::POOL_MAX_HOPS,
             timeout_ms: defaults::POOL_TIMEOUT_MS,
             max_routes: None,
+            connector_tokens: None,
         });
         self
     }
@@ -485,6 +565,21 @@ impl FyndBuilder {
         self
     }
 
+    /// Registers a [`TxDeltaIndexer`] for ephemeral pending-block simulation.
+    ///
+    /// `extractor` is the protocol synchronizer name (e.g. `"uniswap_v3"`). Only has effect
+    /// when calling [`build_with_pending`](Self::build_with_pending). VM protocols (prefix
+    /// `"vm:"`) are rejected by the underlying stream builder at build time.
+    pub fn with_pending_indexer(
+        mut self,
+        extractor: impl Into<String>,
+        indexer: Box<dyn TxDeltaIndexer>,
+    ) -> Self {
+        self.pending_indexers
+            .push((extractor.into(), indexer));
+        self
+    }
+
     /// Enables or disables the price guard.
     ///
     /// When enabled, providers are started and caches stay warm. Validation
@@ -497,7 +592,17 @@ impl FyndBuilder {
     }
 
     /// Adds a named pool using the given [`PoolConfig`].
-    pub fn add_pool(mut self, name: impl Into<String>, config: &PoolConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError::AlgorithmConfig`] if any address in `connector_tokens` is not
+    /// valid hex.
+    pub fn add_pool(
+        mut self,
+        name: impl Into<String>,
+        config: &PoolConfig,
+    ) -> Result<Self, SolverBuildError> {
+        let connector_tokens = parse_connector_tokens(config.connector_tokens())?;
         self.pools.push(PoolEntry::BuiltIn {
             name: name.into(),
             algorithm: config.algorithm().to_string(),
@@ -507,16 +612,14 @@ impl FyndBuilder {
             max_hops: config.max_hops(),
             timeout_ms: config.timeout_ms(),
             max_routes: config.max_routes(),
+            connector_tokens,
         });
-        self
+        Ok(self)
     }
 
-    /// Assembles and starts all solver components.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SolverBuildError`] if any component fails to initialize.
-    pub fn build(mut self) -> Result<Solver, SolverBuildError> {
+    /// Constructs all components shared between [`build`](Self::build) and
+    /// [`build_with_pending`](Self::build_with_pending).
+    fn assemble_components(mut self) -> Result<BuiltComponents, SolverBuildError> {
         if self.pools.is_empty() {
             return Err(SolverBuildError::NoPools);
         }
@@ -526,7 +629,7 @@ impl FyndBuilder {
             self = self.add_default_price_providers();
         }
 
-        let market_data = Arc::new(tokio::sync::RwLock::new(SharedMarketData::new()));
+        let market_data = MarketData::new_shared();
 
         let tycho_feed_config = TychoFeedConfig::new(
             self.tycho_url,
@@ -537,20 +640,20 @@ impl FyndBuilder {
             self.min_tvl,
         )
         .tvl_buffer_ratio(self.tvl_buffer_ratio)
-        .gas_refresh_interval(self.gas_refresh_interval)
         .reconnect_delay(self.reconnect_delay)
         .min_token_quality(self.min_token_quality)
         .traded_n_days_ago(self.traded_n_days_ago)
-        .blocklisted_components(self.blocklisted_components);
+        .blocklisted_components(self.blocklisted_components)
+        .partial_blocks(self.partial_blocks);
 
         let ethereum_client = EthereumRpcClient::new(self.rpc_url.as_str())
             .map_err(|e| SolverBuildError::RpcClient(e.to_string()))?;
 
-        let (mut gas_price_fetcher, gas_price_worker_signal_tx) =
-            GasPriceFetcher::new(ethereum_client, Arc::clone(&market_data));
+        let gas_price_fetcher =
+            GasPriceFetcher::new(ethereum_client, market_data.clone(), self.gas_refresh_interval);
 
-        let mut tycho_feed = TychoFeed::new(tycho_feed_config, Arc::clone(&market_data));
-        tycho_feed = tycho_feed.with_gas_price_worker_signal_tx(gas_price_worker_signal_tx);
+        let tycho_feed = TychoFeed::new(tycho_feed_config, market_data.clone());
+        let market_event_tx = tycho_feed.event_sender();
 
         let gas_token = native_token(&self.chain).map_err(|_| SolverBuildError::GasToken)?;
         let computation_config = ComputationManagerConfig::new()
@@ -559,7 +662,7 @@ impl FyndBuilder {
         // ComputationManager::new returns a broadcast receiver that we don't need here —
         // workers subscribe via computation_manager.event_sender() below.
         let (computation_manager, _) =
-            ComputationManager::new(computation_config, Arc::clone(&market_data))
+            ComputationManager::new(computation_config, market_data.clone())
                 .map_err(|e| SolverBuildError::ComputationManager(e.to_string()))?;
 
         let derived_data: SharedDerivedDataRef = computation_manager.store();
@@ -586,13 +689,17 @@ impl FyndBuilder {
                     max_hops,
                     timeout_ms,
                     max_routes,
+                    connector_tokens,
                 } => {
-                    let algo_cfg = AlgorithmConfig::new(
+                    let mut algo_cfg = AlgorithmConfig::new(
                         min_hops,
                         max_hops,
                         Duration::from_millis(timeout_ms),
                         max_routes,
                     )?;
+                    if let Some(tokens) = connector_tokens {
+                        algo_cfg = algo_cfg.with_connector_tokens(tokens);
+                    }
                     WorkerPoolBuilder::new()
                         .name(name)
                         .algorithm(algorithm)
@@ -600,7 +707,7 @@ impl FyndBuilder {
                         .num_workers(num_workers)
                         .task_queue_capacity(task_queue_capacity)
                         .build(
-                            Arc::clone(&market_data),
+                            market_data.clone(),
                             Arc::clone(&derived_data),
                             pool_event_rx,
                             derived_rx,
@@ -620,7 +727,7 @@ impl FyndBuilder {
                         .task_queue_capacity(custom.task_queue_capacity);
                     let builder = (custom.configure)(builder);
                     builder.build(
-                        Arc::clone(&market_data),
+                        market_data.clone(),
                         Arc::clone(&derived_data),
                         pool_event_rx,
                         derived_rx,
@@ -657,43 +764,127 @@ impl FyndBuilder {
             let mut registry = PriceProviderRegistry::new();
             let mut worker_handles = Vec::new();
             for mut provider in self.price_providers {
-                worker_handles.push(provider.start(Arc::clone(&market_data)));
+                worker_handles.push(provider.start(market_data.clone()));
                 registry = registry.register(provider);
             }
             let price_guard = PriceGuard::new(registry, worker_handles);
             router = router.with_price_guard(price_guard);
         }
 
-        let feed_handle = tokio::spawn(async move {
-            if let Err(e) = tycho_feed.run().await {
-                tracing::error!(error = %e, "tycho feed error");
-            }
-        });
-
-        let gas_price_handle = tokio::spawn(async move {
-            if let Err(e) = gas_price_fetcher.run().await {
-                tracing::error!(error = %e, "gas price fetcher error");
-            }
-        });
-
-        let computation_handle = tokio::spawn(async move {
-            computation_manager
-                .run(computation_event_rx, computation_shutdown_rx)
-                .await;
-        });
-
-        Ok(Solver {
+        Ok(BuiltComponents {
+            tycho_feed,
+            gas_price_fetcher,
+            computation_manager,
+            computation_event_rx,
+            computation_shutdown_tx,
+            computation_shutdown_rx,
             router,
             worker_pools,
             market_data,
             derived_data,
+            chain,
+            router_address,
+            pending_indexers: self.pending_indexers,
+            market_event_tx,
+        })
+    }
+
+    /// Assembles and starts all solver components.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError`] if any component fails to initialize.
+    pub fn build(self) -> Result<Solver, SolverBuildError> {
+        let mut c = self.assemble_components()?;
+
+        let feed_handle = tokio::spawn(async move {
+            if let Err(e) = c.tycho_feed.run().await {
+                tracing::error!(error = %e, "tycho feed error");
+            }
+        });
+        let gas_price_handle = tokio::spawn(async move {
+            c.gas_price_fetcher.run().await;
+        });
+        let computation_handle = tokio::spawn(async move {
+            c.computation_manager
+                .run(c.computation_event_rx, c.computation_shutdown_rx)
+                .await;
+        });
+
+        Ok(Solver {
+            router: c.router,
+            worker_pools: c.worker_pools,
+            market_data: c.market_data,
+            derived_data: c.derived_data,
             feed_handle,
             gas_price_handle,
             computation_handle,
-            computation_shutdown_tx,
-            chain,
-            router_address,
+            computation_shutdown_tx: c.computation_shutdown_tx,
+            chain: c.chain,
+            router_address: c.router_address,
+            market_event_tx: c.market_event_tx,
         })
+    }
+
+    /// Assembles and starts all solver components, also returning a [`PendingBlockProcessor`]
+    /// for ephemeral bundle simulation against the live Tycho market state.
+    ///
+    /// Identical to [`build`](Self::build) except the feed task runs via
+    /// `TychoFeed::run_with_pending`. The `PendingBlockProcessor` is delivered after
+    /// token loading, before the first block is processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverBuildError`] if any component fails to initialize or the pending
+    /// channel closes before delivering the processor (e.g. token loading failed).
+    pub async fn build_with_pending(
+        self,
+    ) -> Result<(Solver, PendingBlockProcessor), SolverBuildError> {
+        let mut c = self.assemble_components()?;
+
+        let (pending_tx, pending_rx) =
+            tokio::sync::oneshot::channel::<Result<PendingBlockProcessor, String>>();
+
+        let pending_indexers = c.pending_indexers;
+        let feed_handle = tokio::spawn(async move {
+            if let Err(e) = c
+                .tycho_feed
+                .run_with_pending(pending_tx, pending_indexers)
+                .await
+            {
+                tracing::error!(error = %e, "tycho feed error");
+            }
+        });
+        let gas_price_handle = tokio::spawn(async move {
+            c.gas_price_fetcher.run().await;
+        });
+        let computation_handle = tokio::spawn(async move {
+            c.computation_manager
+                .run(c.computation_event_rx, c.computation_shutdown_rx)
+                .await;
+        });
+
+        let pending = pending_rx
+            .await
+            .map_err(|_| SolverBuildError::PendingChannelClosed)?
+            .map_err(SolverBuildError::FeedSetup)?;
+
+        Ok((
+            Solver {
+                router: c.router,
+                worker_pools: c.worker_pools,
+                market_data: c.market_data,
+                derived_data: c.derived_data,
+                feed_handle,
+                gas_price_handle,
+                computation_handle,
+                computation_shutdown_tx: c.computation_shutdown_tx,
+                chain: c.chain,
+                router_address: c.router_address,
+                market_event_tx: c.market_event_tx,
+            },
+            pending,
+        ))
     }
 }
 
@@ -701,7 +892,7 @@ impl FyndBuilder {
 pub struct Solver {
     router: WorkerPoolRouter,
     worker_pools: Vec<WorkerPool>,
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     derived_data: SharedDerivedDataRef,
     feed_handle: JoinHandle<()>,
     gas_price_handle: JoinHandle<()>,
@@ -709,17 +900,26 @@ pub struct Solver {
     computation_shutdown_tx: broadcast::Sender<()>,
     chain: Chain,
     router_address: Bytes,
+    market_event_tx: broadcast::Sender<MarketEvent>,
 }
 
 impl Solver {
     /// Returns a clone of the shared market data reference.
-    pub fn market_data(&self) -> SharedMarketDataRef {
-        Arc::clone(&self.market_data)
+    pub fn market_data(&self) -> MarketData {
+        self.market_data.clone()
     }
 
     /// Returns a clone of the shared derived data reference.
     pub fn derived_data(&self) -> SharedDerivedDataRef {
         Arc::clone(&self.derived_data)
+    }
+
+    /// Returns a new receiver for [`MarketEvent`]s broadcast by the Tycho feed.
+    ///
+    /// Each call returns an independent receiver. Events are broadcast on every block update.
+    /// Receivers created after a block has been processed will miss that block's event.
+    pub fn subscribe_market_events(&self) -> broadcast::Receiver<crate::feed::events::MarketEvent> {
+        self.market_event_tx.subscribe()
     }
 
     /// Submits a [`QuoteRequest`] to the worker pools and returns the best [`Quote`].
@@ -799,13 +999,13 @@ impl Solver {
             return Err(SolverBuildError::NoPools);
         }
 
-        let market_data: SharedMarketDataRef =
-            Arc::new(tokio::sync::RwLock::new(SharedMarketData::new()));
+        let market_data = MarketData::new_shared();
 
         // Replay updates through TychoFeed (stays pub(crate))
         let feed_config =
             TychoFeedConfig::new("ws://replay".to_string(), chain, None, false, vec![], 0.0);
-        let feed = TychoFeed::new(feed_config, Arc::clone(&market_data));
+        let feed = TychoFeed::new(feed_config, market_data.clone());
+        let market_event_tx = feed.event_sender();
         let _feed_rx = feed.subscribe();
 
         for update in updates {
@@ -845,19 +1045,18 @@ impl Solver {
             .with_gas_token(gas_token)
             .with_depth_slippage_threshold(DEFAULT_DEPTH_SLIPPAGE_THRESHOLD);
         let (computation_manager, _) =
-            ComputationManager::new(computation_config, Arc::clone(&market_data))
+            ComputationManager::new(computation_config, market_data.clone())
                 .map_err(|e| SolverBuildError::ComputationManager(e.to_string()))?;
 
         let derived_data: SharedDerivedDataRef = computation_manager.store();
         let derived_event_tx = computation_manager.event_sender();
 
-        // Market event channel — must be kept alive for workers
-        let (market_tx, market_rx) = broadcast::channel(64);
+        let computation_event_rx = feed.subscribe();
         let (computation_shutdown_tx, computation_shutdown_rx) = broadcast::channel(1);
 
         let computation_handle = tokio::spawn(async move {
             computation_manager
-                .run(market_rx, computation_shutdown_rx)
+                .run(computation_event_rx, computation_shutdown_rx)
                 .await;
         });
 
@@ -874,7 +1073,7 @@ impl Solver {
                 pool_cfg.max_routes(),
             )?;
 
-            let pool_event_rx = market_tx.subscribe();
+            let pool_event_rx = feed.subscribe();
             let derived_rx = derived_event_tx.subscribe();
 
             let (worker_pool, task_handle) = WorkerPoolBuilder::new()
@@ -884,7 +1083,7 @@ impl Solver {
                 .num_workers(pool_cfg.num_workers())
                 .task_queue_capacity(pool_cfg.task_queue_capacity())
                 .build(
-                    Arc::clone(&market_data),
+                    market_data.clone(),
                     Arc::clone(&derived_data),
                     pool_event_rx,
                     derived_rx,
@@ -914,7 +1113,7 @@ impl Solver {
         let added = market_read.component_topology();
         drop(market_read);
 
-        if market_tx
+        if market_event_tx
             .send(MarketEvent::MarketUpdated {
                 added_components: added,
                 removed_components: vec![],
@@ -925,12 +1124,9 @@ impl Solver {
             tracing::warn!("no receivers for initial MarketUpdated broadcast");
         }
 
-        // Dummy handles for feed/gas (not running in replay mode)
-        let feed_handle = tokio::spawn(async {
-            // Keep market_tx alive so workers don't exit
-            let _tx = market_tx;
-            futures::future::pending::<()>().await;
-        });
+        // Dummy handles for feed/gas (not running in replay mode). The market event
+        // channel stays alive through the `market_event_tx` field on `Solver`.
+        let feed_handle = tokio::spawn(futures::future::pending::<()>());
         let gas_price_handle = tokio::spawn(async { /* no-op */ });
 
         Ok(Solver {
@@ -944,6 +1140,7 @@ impl Solver {
             computation_shutdown_tx,
             chain,
             router_address,
+            market_event_tx,
         })
     }
 
@@ -983,7 +1180,7 @@ pub struct SolverParts {
     /// One [`WorkerPool`] per configured algorithm pool.
     worker_pools: Vec<WorkerPool>,
     /// Live market snapshot shared across all components.
-    market_data: SharedMarketDataRef,
+    market_data: MarketData,
     /// Derived on-chain data (spot prices, depths, gas costs) shared across all components.
     derived_data: SharedDerivedDataRef,
     /// Background task running the Tycho market-data feed.
@@ -1017,7 +1214,7 @@ impl SolverParts {
     }
 
     /// Returns a reference to the shared market data.
-    pub fn market_data(&self) -> &SharedMarketDataRef {
+    pub fn market_data(&self) -> &MarketData {
         &self.market_data
     }
 
@@ -1038,7 +1235,7 @@ impl SolverParts {
     ) -> (
         WorkerPoolRouter,
         Vec<WorkerPool>,
-        SharedMarketDataRef,
+        MarketData,
         SharedDerivedDataRef,
         JoinHandle<()>,
         JoinHandle<()>,

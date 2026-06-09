@@ -174,10 +174,12 @@ fn build_solver(
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
-    let rpc_url = args
-        .rpc_url
-        .clone()
-        .unwrap_or_else(|| fynd_rpc::config::defaults::DEFAULT_RPC_URL.to_string());
+    let rpc_url = match args.rpc_url.clone() {
+        Some(url) => url,
+        None => fynd_rpc::config::defaults::default_rpc_url(&args.chain)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .to_string(),
+    };
 
     let pool = pool_config
         .clone()
@@ -185,8 +187,9 @@ fn build_solver(
 
     let pools = HashMap::from([(pool_name.to_string(), pool)]);
 
-    let mut builder = FyndRPCBuilder::new(chain, pools, args.tycho_url.clone(), rpc_url, protocols)
-        .http_port(args.http_port);
+    let mut builder =
+        FyndRPCBuilder::new(chain, pools, args.tycho_url.clone(), rpc_url, protocols)?
+            .http_port(args.http_port);
 
     if let Some(ref key) = args.tycho_api_key {
         builder = builder.tycho_api_key(key.clone());
@@ -199,7 +202,7 @@ fn build_solver(
 }
 
 async fn wait_for_health(url: &str, timeout: Duration) -> Result<()> {
-    let client = FyndClientBuilder::new(url, "")
+    let client = FyndClientBuilder::new(url)
         .build_quote_only()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -362,7 +365,7 @@ async fn run_iteration(
     tokio::time::sleep(Duration::from_secs(args.warmup_secs)).await;
 
     let client = Arc::new(
-        FyndClientBuilder::new(solver_url, "")
+        FyndClientBuilder::new(solver_url)
             .build_quote_only()
             .map_err(|e| anyhow::anyhow!("{e}"))?,
     );

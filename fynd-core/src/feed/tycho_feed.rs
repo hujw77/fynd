@@ -2,22 +2,23 @@
 //!
 //! The TychoFeed connects to Tycho's WebSocket API and:
 //! - Receives component/state updates
-//! - Updates SharedMarketData (exclusive write access)
+//! - Updates MarketState (exclusive write access)
 //! - Broadcasts MarketEvents to Solvers
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, RwLock},
+    sync::{broadcast, oneshot},
     task::JoinHandle,
 };
 use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, span, trace, Instrument, Level};
 use tycho_simulation::{
-    evm::stream::ProtocolStreamBuilder,
+    evm::{pending::PendingBlockProcessor, stream::ProtocolStreamBuilder},
     protocol::models::Update,
     rfq::stream::RFQStreamBuilder,
     tycho_client::feed::{component_tracker::ComponentFilter, SynchronizerState},
+    tycho_common::traits::TxDeltaIndexer,
     tycho_core::Bytes,
     utils::load_all_tokens,
 };
@@ -25,7 +26,7 @@ use tycho_simulation::{
 use crate::{
     feed::{
         events::MarketEvent,
-        market_data::{SharedMarketData, SharedMarketDataRef},
+        market_data::MarketData,
         protocol_registry::{register_exchanges, register_rfq},
         DataFeedError, TychoFeedConfig,
     },
@@ -38,18 +39,16 @@ use crate::{
 ///
 /// - Connect to Tycho WebSocket and maintain connection
 /// - Process incoming component/state updates
-/// - Update SharedMarketData (holds exclusive write access)
+/// - Update MarketState (holds exclusive write access)
 /// - Broadcast MarketEvents to all subscribed Solvers
 /// - Periodically refresh gas prices from RPC
 pub(crate) struct TychoFeed {
     /// Configuration.
     config: TychoFeedConfig,
     /// Shared market data (we have write access).
-    market_data: Arc<RwLock<SharedMarketData>>,
+    market_data: MarketData,
     /// Event broadcaster.
     event_tx: broadcast::Sender<MarketEvent>,
-    /// Signal channel to notify the gas price worker to refresh gas price.
-    gas_price_worker_signal_tx: Option<mpsc::Sender<oneshot::Sender<()>>>,
 }
 
 impl TychoFeed {
@@ -59,10 +58,10 @@ impl TychoFeed {
     ///
     /// * `config` - Indexer configuration
     /// * `market_data` - Shared market data reference
-    pub(crate) fn new(config: TychoFeedConfig, market_data: SharedMarketDataRef) -> Self {
+    pub(crate) fn new(config: TychoFeedConfig, market_data: MarketData) -> Self {
         let (event_tx, _event_rx) = broadcast::channel(1024);
 
-        Self { config, market_data, event_tx, gas_price_worker_signal_tx: None }
+        Self { config, market_data, event_tx }
     }
 
     /// Returns a new subscriber for market events.
@@ -70,18 +69,8 @@ impl TychoFeed {
         self.event_tx.subscribe()
     }
 
-    /// Sets the signal channel to notify the gas price worker to refresh gas price.
-    /// If not set, gas price refresh will not be triggered by the TychoFeed.
-    pub(crate) fn with_gas_price_worker_signal_tx(
-        self,
-        gas_price_worker_signal_tx: mpsc::Sender<oneshot::Sender<()>>,
-    ) -> Self {
-        Self { gas_price_worker_signal_tx: Some(gas_price_worker_signal_tx), ..self }
-    }
-
-    /// Returns an additional event sender. Currently only used for testing.
-    #[cfg(test)]
-    pub fn event_sender_clone(&self) -> broadcast::Sender<MarketEvent> {
+    /// Returns a clone of the event sender.
+    pub(crate) fn event_sender(&self) -> broadcast::Sender<MarketEvent> {
         self.event_tx.clone()
     }
 
@@ -122,31 +111,39 @@ impl TychoFeed {
             .iter()
             .all(|p| p.starts_with("rfq:"))
         {
-            // Spawn protocol stream
-            Some(
-                register_exchanges(
-                    ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
-                        .skip_state_decode_failures(true),
-                    ComponentFilter::with_tvl_range(
-                        self.config.min_tvl / self.config.tvl_buffer_ratio,
-                        self.config.min_tvl,
-                    )
-                    .blocklist(
-                        self.config
-                            .blocklisted_components
-                            .clone(),
-                    ),
-                    &self.config.protocols,
-                )?
-                .auth_key(self.config.tycho_api_key.clone())
-                .skip_state_decode_failures(true)
-                .min_token_quality(self.config.min_token_quality as u32)
-                .set_tokens(all_tokens.clone())
-                .await
-                .build()
-                .await
-                .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
+            let tvl_filter = ComponentFilter::with_tvl_range(
+                self.config.min_tvl / self.config.tvl_buffer_ratio,
+                self.config.min_tvl,
             )
+            .blocklist(
+                self.config
+                    .blocklisted_components
+                    .clone(),
+            );
+
+            let mut stream_builder = register_exchanges(
+                ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
+                    .skip_state_decode_failures(true),
+                tvl_filter,
+                &self.config.protocols,
+            )?
+            .auth_key(self.config.tycho_api_key.clone())
+            .no_tls(!self.config.use_tls)
+            .skip_state_decode_failures(true)
+            .min_token_quality(self.config.min_token_quality as u32);
+
+            if self.config.partial_blocks {
+                stream_builder = stream_builder.enable_partial_blocks();
+            }
+
+            Some(Box::pin(
+                stream_builder
+                    .set_tokens(all_tokens.clone())
+                    .await
+                    .build()
+                    .await
+                    .map_err(|e| DataFeedError::StreamError(e.to_string()))?,
+            ))
         } else {
             None
         };
@@ -199,9 +196,6 @@ impl TychoFeed {
                         Some(msg) => {
                             trace!("Received message from protocol stream: {:?}", msg);
                             let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
-                            // Refresh gas price before broadcasting the event so that
-                            // ComputationManager has gas price available when it starts computing.
-                            self.refresh_gas_price().await?;
                             self.handle_tycho_message(msg).await?;
                         }
                         None => {
@@ -255,6 +249,196 @@ impl TychoFeed {
         Ok(())
     }
 
+    /// Like [`run`](Self::run) but calls [`ProtocolStreamBuilder::build_with_pending`]
+    /// and delivers the [`PendingBlockProcessor`] (or a setup error) via `pending_tx`
+    /// before entering the stream loop.
+    ///
+    /// If setup fails before the processor can be created, the error message is sent
+    /// through the channel so the caller can surface the root cause instead of seeing
+    /// only "channel closed". If the receiver has already been dropped the processor is
+    /// discarded and the feed continues normally.
+    ///
+    /// RFQ protocols are handled alongside the EVM stream, identical to [`run`](Self::run).
+    /// The `PendingBlockProcessor` only covers EVM on-chain state.
+    pub(crate) async fn run_with_pending(
+        self,
+        pending_tx: oneshot::Sender<Result<PendingBlockProcessor, String>>,
+        pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
+    ) -> Result<(), DataFeedError> {
+        info!(
+            tycho_url = %self.config.tycho_url,
+            protocols = ?self.config.protocols,
+            "Starting Data Feed (with pending)..."
+        );
+
+        let tycho_api_key = self
+            .config
+            .tycho_api_key
+            .clone()
+            .or_else(|| std::env::var("TYCHO_API_KEY").ok());
+
+        let all_tokens = match load_all_tokens(
+            self.config.tycho_url.as_str(),
+            !self.config.use_tls,
+            tycho_api_key.as_deref(),
+            true,
+            self.config.chain,
+            Some(self.config.min_token_quality),
+            self.config.traded_n_days_ago,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                let e = DataFeedError::StreamError(e.to_string());
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        };
+
+        debug!("Loaded {} tokens from Tycho", all_tokens.len());
+
+        let mut stream_builder = match register_exchanges(
+            ProtocolStreamBuilder::new(&self.config.tycho_url, self.config.chain)
+                .skip_state_decode_failures(true),
+            ComponentFilter::with_tvl_range(
+                self.config.min_tvl / self.config.tvl_buffer_ratio,
+                self.config.min_tvl,
+            )
+            .blocklist(
+                self.config
+                    .blocklisted_components
+                    .clone(),
+            ),
+            &self.config.protocols,
+        ) {
+            Ok(sb) => sb,
+            Err(e) => {
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        }
+        .auth_key(self.config.tycho_api_key.clone())
+        .skip_state_decode_failures(true)
+        .min_token_quality(self.config.min_token_quality as u32)
+        .set_tokens(all_tokens.clone())
+        .await;
+
+        for (extractor, indexer) in pending_indexers {
+            stream_builder = match stream_builder.with_pending_indexer(&extractor, indexer) {
+                Ok(sb) => sb,
+                Err(e) => {
+                    let e = DataFeedError::StreamError(e.to_string());
+                    let _ = pending_tx.send(Err(e.to_string()));
+                    return Err(e);
+                }
+            };
+        }
+
+        let (protocol_stream, pending) = match stream_builder
+            .build_with_pending()
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                let e = DataFeedError::StreamError(e.to_string());
+                let _ = pending_tx.send(Err(e.to_string()));
+                return Err(e);
+            }
+        };
+        let mut protocol_stream = Box::pin(protocol_stream);
+
+        if pending_tx.send(Ok(pending)).is_err() {
+            tracing::warn!(
+                "PendingBlockProcessor receiver dropped before send; continuing without pending \
+                 updates"
+            );
+        }
+
+        // Spawn RFQ stream (same as run()) — runs alongside the EVM pending stream.
+        let (mut rfq_rx, mut rfq_handle) = if self
+            .config
+            .protocols
+            .iter()
+            .any(|p| p.starts_with("rfq:"))
+        {
+            let rfq_tokens: HashSet<Bytes> = all_tokens.keys().cloned().collect();
+            let rfq_stream_builder = register_rfq(
+                RFQStreamBuilder::new()
+                    .set_tokens(all_tokens)
+                    .await,
+                self.config.chain,
+                self.config.min_tvl,
+                &self.config.protocols,
+                rfq_tokens,
+            )?;
+            let (rfq_tx, rfq_rx) = tokio::sync::mpsc::channel(64);
+            let rfq_handle: JoinHandle<Result<(), DataFeedError>> = tokio::spawn(async move {
+                rfq_stream_builder
+                    .build(rfq_tx)
+                    .await
+                    .map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+                Ok(())
+            });
+            (Some(rfq_rx), Some(rfq_handle))
+        } else {
+            (None, None)
+        };
+
+        loop {
+            tokio::select! {
+                msg = protocol_stream.next() => {
+                    match msg {
+                        Some(msg) => {
+                            trace!("Received message from protocol stream: {:?}", msg);
+                            let msg = msg.map_err(|e| DataFeedError::StreamError(e.to_string()))?;
+                            self.handle_tycho_message(msg).await?;
+                        }
+                        None => {
+                            info!("Protocol stream ended");
+                            break;
+                        }
+                    }
+                }
+                msg = async {
+                    if let Some(rx) = &mut rfq_rx { rx.recv().await }
+                    else { std::future::pending().await }
+                } => {
+                    match msg {
+                        Some(msg) => {
+                            trace!("Received message from RFQ stream: {:?}", msg);
+                            self.handle_tycho_message(msg).await?;
+                        }
+                        None => {
+                            info!("RFQ stream ended");
+                            break;
+                        }
+                    }
+                }
+                rfq_result = async {
+                    if let Some(handle) = &mut rfq_handle { handle.await }
+                    else { std::future::pending().await }
+                } => {
+                    match rfq_result {
+                        Ok(Ok(())) => {
+                            return Err(DataFeedError::StreamError(
+                                "RFQ stream task ended unexpectedly".to_string(),
+                            ));
+                        }
+                        Ok(Err(e)) => {
+                            return Err(DataFeedError::StreamError(format!("RFQ stream error: {e}")));
+                        }
+                        Err(e) => {
+                            return Err(DataFeedError::StreamError(format!("RFQ task panicked: {e}")));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handles a message from Tycho stream.
     #[instrument(skip(self, msg))]
     pub(crate) async fn handle_tycho_message(&self, msg: Update) -> Result<(), DataFeedError> {
@@ -297,49 +481,47 @@ impl TychoFeed {
             updated_or_new_states.len()
         );
         trace!("Updating market data");
-        // Update market data. We should only hold the write lock inside this code block.
-        {
-            let mut market_data = self
-                .market_data
-                .write()
-                .instrument(span!(Level::DEBUG, "data_feed_write_lock"))
-                .await;
+        let new_block_number = msg.block_number_or_timestamp;
+        self.market_data
+            .apply_block_update(new_block_number, |market_data| {
+                market_data.upsert_components(
+                    added_components
+                        .clone()
+                        .into_values()
+                        .map(|component| {
+                            // We can't use From<ProtocolComponent> because it removes "0x" prefix
+                            // from the id
+                            tycho_simulation::tycho_common::models::protocol::ProtocolComponent {
+                                id: component.id.to_string(),
+                                protocol_system: component.protocol_system,
+                                protocol_type_name: component.protocol_type_name,
+                                chain: component.chain,
+                                tokens: component
+                                    .tokens
+                                    .into_iter()
+                                    .map(|t| t.address)
+                                    .collect(),
+                                static_attributes: component.static_attributes,
+                                change: Default::default(),
+                                creation_tx: component.creation_tx,
+                                created_at: component.created_at,
+                                contract_addresses: component.contract_ids,
+                            }
+                        }),
+                );
+                market_data.remove_components(removed_components.keys());
+                market_data.upsert_tokens(maybe_new_tokens);
+                market_data.update_states(updated_or_new_states);
+                market_data.update_protocol_sync_status(sync_states);
 
-            market_data.upsert_components(
-                added_components
-                    .clone()
-                    .into_values()
-                    .map(|component| {
-                        // We can't use From<ProtocolComponent> because it removes "0x" prefix from
-                        // the id
-                        tycho_simulation::tycho_common::models::protocol::ProtocolComponent {
-                            id: component.id.to_string(),
-                            protocol_system: component.protocol_system,
-                            protocol_type_name: component.protocol_type_name,
-                            chain: component.chain,
-                            tokens: component
-                                .tokens
-                                .into_iter()
-                                .map(|t| t.address)
-                                .collect(),
-                            static_attributes: component.static_attributes,
-                            change: Default::default(),
-                            creation_tx: component.creation_tx,
-                            created_at: component.created_at,
-                            contract_addresses: component.contract_ids,
-                        }
-                    }),
-            );
-            market_data.remove_components(removed_components.keys());
-            market_data.upsert_tokens(maybe_new_tokens);
-            market_data.update_states(updated_or_new_states);
-            market_data.update_protocol_sync_status(sync_states);
-
-            // Update the last updated block info if one of the protocols reported "Ready" status.
-            if let Some(block_info) = latest_block_info {
-                market_data.update_last_updated(block_info);
-            }
-        }
+                // Update the last updated block info if one of the protocols reported "Ready"
+                // status.
+                if let Some(block_info) = latest_block_info {
+                    market_data.update_last_updated(block_info);
+                }
+            })
+            .instrument(span!(Level::DEBUG, "data_feed_write_lock"))
+            .await;
         trace!("Market data updated");
 
         // Only broadcast event if there are actual changes
@@ -374,39 +556,13 @@ impl TychoFeed {
 
         Ok(())
     }
-
-    /// Updates gas price from RPC.
-    async fn refresh_gas_price(&self) -> Result<(), DataFeedError> {
-        if let Some(gas_price_worker_signal_tx) = &self.gas_price_worker_signal_tx {
-            let (signal_tx, signal_rx) = oneshot::channel();
-
-            gas_price_worker_signal_tx
-                .send(signal_tx)
-                .await
-                .map_err(|e| {
-                    DataFeedError::GasPriceFetcherError(format!(
-                        "Failed to send gas price refresh signal: {}",
-                        e
-                    ))
-                })?;
-
-            signal_rx.await.map_err(|e| {
-                DataFeedError::GasPriceFetcherError(format!(
-                    "Failed to receive gas price refresh confirmation: {}",
-                    e
-                ))
-            })?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, env, sync::Arc};
+    use std::{collections::HashMap, env};
 
     use num_bigint::BigUint;
-    use tokio::sync::RwLock;
     use tycho_simulation::{
         protocol::models::{ProtocolComponent, Update},
         tycho_common::{
@@ -420,14 +576,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::feed::{
-        market_data::{SharedMarketData, SharedMarketDataRef},
-        TychoFeedConfig,
-    };
+    use crate::feed::{market_data::MarketData, TychoFeedConfig};
 
-    /// Creates a new shared market data instance wrapped in Arc<RwLock<>>.
-    fn new_shared_market_data() -> SharedMarketDataRef {
-        Arc::new(RwLock::new(SharedMarketData::new()))
+    /// Creates a new shared market data instance.
+    fn new_shared_market_data() -> MarketData {
+        MarketData::new_shared()
     }
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -556,7 +709,7 @@ mod tests {
         let mut sub2 = feed.subscribe();
 
         // Get event sender
-        let sender = feed.event_sender_clone();
+        let sender = feed.event_sender();
 
         sender
             .send(MarketEvent::MarketUpdated {

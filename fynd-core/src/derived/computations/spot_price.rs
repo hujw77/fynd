@@ -21,7 +21,7 @@ use crate::{
         manager::{ChangedComponents, SharedDerivedDataRef},
         types::SpotPrices,
     },
-    feed::market_data::SharedMarketDataRef,
+    feed::market_data::MarketData,
 };
 
 /// Computes spot prices for all pools.
@@ -49,7 +49,7 @@ impl DerivedComputation for SpotPriceComputation {
     #[instrument(level = "debug", skip(market, store, changed), fields(computation_id = Self::ID, updated_spot_prices))]
     async fn compute(
         &self,
-        market: &SharedMarketDataRef,
+        market: &MarketData,
         store: &SharedDerivedDataRef,
         changed: &ChangedComponents,
     ) -> Result<ComputationOutput<Self::Output>, ComputationError> {
@@ -190,9 +190,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{component, setup_market, token, MockProtocolSim},
+        algorithm::test_utils::{component, setup_market_weighted, token, MockProtocolSim},
         derived::store::DerivedData,
-        feed::market_data::SharedMarketData,
+        feed::market_data::MarketData,
     };
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_empty_market() {
-        let market_ref = SharedMarketData::new_shared();
+        let market_ref = MarketData::new_shared();
         let derived_ref = DerivedData::new_shared();
         let changed = ChangedComponents::default();
 
@@ -222,7 +222,8 @@ mod tests {
         let usdc = token(0x02, "USDC");
         let dai = token(0x03, "DAI");
 
-        let (market, _) = setup_market(vec![("pool1", &eth, &usdc, MockProtocolSim::new(2000.0))]);
+        let (market, _) =
+            setup_market_weighted(vec![("pool1", &eth, &usdc, MockProtocolSim::new(2000.0))]);
 
         // Add pool2 without sim state
         {

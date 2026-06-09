@@ -167,12 +167,26 @@ pub mod defaults {
     /// Default HTTP port (`3000`).
     pub const HTTP_PORT: u16 = 3000;
 
-    /// Default Ethereum JSON-RPC URL used when none is provided.
-    pub const DEFAULT_RPC_URL: &str = "https://eth.llamarpc.com";
-
-    /// Minimum TVL a pool must have to be included in routing, denominated in the chain's native
-    /// token.
-    pub const MIN_TVL: f64 = 10.0;
+    /// Returns the default public JSON-RPC URL for the given chain, used when none is provided.
+    ///
+    /// Free, keyless, rate-limited endpoints for local development. Provide a dedicated
+    /// `--rpc-url` for production.
+    ///
+    /// Returns an error if the chain is not recognized.
+    pub fn default_rpc_url(chain: &str) -> Result<&str, String> {
+        match chain.to_lowercase().as_str() {
+            "ethereum" => Ok("https://eth.drpc.org"),
+            "base" => Ok("https://base.drpc.org"),
+            "unichain" => Ok("https://unichain.drpc.org"),
+            "bsc" => Ok("https://bsc-dataseed.bnbchain.org"),
+            "arbitrum" => Ok("https://arbitrum.drpc.org"),
+            "polygon" => Ok("https://polygon.drpc.org"),
+            other => Err(format!(
+                "no default RPC URL for chain '{}'. Please provide --rpc-url explicitly.",
+                other
+            )),
+        }
+    }
 
     /// Worker-router timeout in milliseconds.
     ///
@@ -188,6 +202,9 @@ pub mod defaults {
             "ethereum" => Ok("tycho-fynd-ethereum.propellerheads.xyz"),
             "base" => Ok("tycho-fynd-base.propellerheads.xyz"),
             "unichain" => Ok("tycho-fynd-unichain.propellerheads.xyz"),
+            "bsc" => Ok("tycho-bsc-beta.propellerheads.xyz"),
+            "arbitrum" => Ok("tycho-arbitrum-beta.propellerheads.xyz"),
+            "polygon" => Ok("tycho-polygon-beta.propellerheads.xyz"),
             other => Err(format!(
                 "no default Tycho URL for chain '{}'. Please provide --tycho-url explicitly.",
                 other

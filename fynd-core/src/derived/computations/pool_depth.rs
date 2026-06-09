@@ -34,7 +34,7 @@ use crate::{
         manager::{ChangedComponents, SharedDerivedDataRef},
         types::PoolDepths,
     },
-    feed::market_data::{SharedMarketData, SharedMarketDataRef},
+    feed::market_data::{MarketData, MarketState},
     types::ComponentId,
 };
 
@@ -81,7 +81,7 @@ impl DerivedComputation for PoolDepthComputation {
     #[instrument(level = "debug", skip(market, store, changed), fields(computation_id = Self::ID, updated_pool_depths))]
     async fn compute(
         &self,
-        market: &SharedMarketDataRef,
+        market: &MarketData,
         store: &SharedDerivedDataRef,
         changed: &ChangedComponents,
     ) -> Result<ComputationOutput<Self::Output>, ComputationError> {
@@ -131,7 +131,7 @@ impl DerivedComputation for PoolDepthComputation {
                 .iter()
                 .cloned()
                 .collect();
-            let snapshot: SharedMarketData = market_guard.extract_subset(&component_ids);
+            let snapshot: MarketState = market_guard.extract_subset(&component_ids);
 
             (snapshot, components_to_compute)
         };
@@ -346,13 +346,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{setup_market, token, token_with_decimals, MockProtocolSim},
+        algorithm::test_utils::{
+            setup_market_weighted, token, token_with_decimals, MockProtocolSim,
+        },
         derived::{
             computation::FailedItemError,
             store::DerivedData,
             types::{PoolDepthKey, SpotPrices},
         },
-        feed::market_data::SharedMarketData,
+        feed::market_data::MarketData,
     };
 
     #[test]
@@ -393,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compute_handles_empty_market() {
-        let market = SharedMarketData::new_shared();
+        let market = MarketData::new_shared();
         let derived = DerivedData::new_shared();
         derived
             .try_write()
@@ -414,7 +416,8 @@ mod tests {
         let eth = token(0, "ETH");
         let usdc = token(1, "USDC");
 
-        let (market, _) = setup_market(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
+        let (market, _) =
+            setup_market_weighted(vec![("pool", &eth, &usdc, MockProtocolSim::new(2000.0))]);
         let derived = DerivedData::new_shared(); // No spot prices
         let changed = ChangedComponents::default();
 
@@ -444,7 +447,7 @@ mod tests {
         let eth = token_with_decimals(0, "ETH", decimals_in);
         let usdc = token_with_decimals(1, "USDC", decimals_out);
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &eth,
             &usdc,
@@ -732,7 +735,7 @@ mod tests {
         let eth = token(0x01, "ETH");
         let usdc = token(0x02, "USDC");
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &eth,
             &usdc,
@@ -790,7 +793,7 @@ mod tests {
         let usdc = token(0x02, "USDC");
 
         // Empty market — no simulation state
-        let market = SharedMarketData::new_shared();
+        let market = MarketData::new_shared();
         let derived = DerivedData::new_shared();
         derived
             .try_write()
@@ -841,7 +844,7 @@ mod tests {
         let token_in = token_with_decimals(0x01, "A", 6);
         let token_out = token_with_decimals(0x02, "B", 18);
 
-        let (market, _) = setup_market(vec![(
+        let (market, _) = setup_market_weighted(vec![(
             "pool",
             &token_in,
             &token_out,

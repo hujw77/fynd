@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use clap::Parser;
 use fynd_rpc::config::defaults;
 
+#[cfg(feature = "metrics")]
+pub(crate) const METRICS_PORT: u16 = 9898;
+
+use crate::commands::derive_connector_tokens::DeriveConnectorTokensArgs;
+
 /// Fynd - High-performance DEX solver built on Tycho
 ///
 /// Finds optimal swap routes across multiple protocols using real-time market data.
@@ -20,6 +25,8 @@ pub enum Commands {
     Serve(Box<ServeArgs>),
     /// Print the OpenAPI spec as JSON to stdout
     Openapi,
+    /// Analyze live Tycho market data and suggest connector tokens for routing
+    DeriveConnectorTokens(DeriveConnectorTokensArgs),
 }
 
 /// Arguments for the `serve` subcommand.
@@ -61,9 +68,9 @@ pub struct ServeArgs {
     pub protocols: Vec<String>,
 
     /// Minimum TVL threshold in native token (e.g. ETH). Components below this threshold will be
-    /// removed from the market data.
-    #[arg(long, default_value_t = defaults::MIN_TVL)]
-    pub min_tvl: f64,
+    /// removed from the market data. Defaults to a chain-specific value if not set.
+    #[arg(long)]
+    pub min_tvl: Option<f64>,
 
     /// TVL buffer ratio.
     /// Used to avoid fluctuations caused by components hovering around a single threshold.
@@ -110,10 +117,21 @@ pub struct ServeArgs {
     #[arg(long)]
     pub gas_price_stale_threshold_secs: Option<u64>,
 
+    /// Enable partial block (flashblock) updates from the Tycho stream.
+    /// When enabled, pool state updates arrive mid-block rather than only at finalization,
+    /// reducing latency. Only applies to on-chain protocols.
+    #[arg(long)]
+    pub partial_blocks: bool,
+
     /// Enable price guard validation against external price sources.
     /// Disabled by default.
     #[arg(long)]
     pub enable_price_guard: bool,
+
+    /// Port for the Prometheus metrics HTTP server (requires `metrics` feature).
+    #[cfg(feature = "metrics")]
+    #[arg(long, default_value_t = METRICS_PORT, env)]
+    pub metrics_port: u16,
 }
 
 #[cfg(test)]
@@ -156,7 +174,7 @@ mod cli_tests {
         assert_eq!(args.rpc_url, Some("https://rpc.example.com".to_string()));
         assert_eq!(args.tycho_url, Some("wss://custom.tycho.url".to_string()));
         assert_eq!(args.protocols, vec!["uniswap_v2", "uniswap_v3"]);
-        assert_eq!(args.min_tvl, 20.0);
+        assert_eq!(args.min_tvl, Some(20.0));
         assert_eq!(args.worker_pools_config, PathBuf::from("new_worker_pools.toml"));
         assert_eq!(args.blocklist_config, None);
     }
@@ -181,13 +199,16 @@ mod cli_tests {
         assert_eq!(args.rpc_url, None);
         assert_eq!(args.tycho_url, None);
         assert!(args.protocols.is_empty());
-        assert_eq!(args.min_tvl, 10.0);
+        assert_eq!(args.min_tvl, None);
         assert_eq!(args.tvl_buffer_ratio, 1.1);
         assert_eq!(args.gas_refresh_interval_secs, 30);
         assert_eq!(args.reconnect_delay_secs, 5);
         assert_eq!(args.worker_router_timeout_ms, 100);
         assert_eq!(args.worker_router_min_responses, 0);
         assert_eq!(args.blocklist_config, None);
+        assert!(!args.partial_blocks);
+        #[cfg(feature = "metrics")]
+        assert_eq!(args.metrics_port, METRICS_PORT);
     }
 
     #[test]
