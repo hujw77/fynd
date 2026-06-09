@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinHandle};
 use tycho_execution::encoding::evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry;
 #[cfg(feature = "test-utils")]
-#[cfg(feature = "test-utils")]
 use tycho_simulation::tycho_ethereum::gas::{BlockGasPrice, GasPrice};
 use tycho_simulation::{
     evm::pending::PendingBlockProcessor,
@@ -1082,12 +1081,7 @@ impl Solver {
                 .algorithm_config(algo_cfg)
                 .num_workers(pool_cfg.num_workers())
                 .task_queue_capacity(pool_cfg.task_queue_capacity())
-                .build(
-                    market_data.clone(),
-                    Arc::clone(&derived_data),
-                    pool_event_rx,
-                    derived_rx,
-                )?;
+                .build(market_data.clone(), Arc::clone(&derived_data), pool_event_rx, derived_rx)?;
 
             solver_pool_handles.push(SolverPoolHandle::new(worker_pool.name(), task_handle));
             max_timeout_ms = max_timeout_ms.max(pool_cfg.timeout_ms());

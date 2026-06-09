@@ -4,12 +4,9 @@ use fynd_rpc::protocols::fetch_protocol_systems;
 use fynd_test_fixtures::{MarketRecording, RecordingMetadata};
 use tokio_stream::StreamExt;
 use tycho_simulation::{
-    evm::stream::ProtocolStreamBuilder,
-    protocol::models::Update,
-    tycho_client::feed::component_tracker::ComponentFilter,
-    tycho_common::models::Chain,
-    tycho_core::traits::FeePriceGetter,
-    tycho_ethereum::rpc::EthereumRpcClient,
+    evm::stream::ProtocolStreamBuilder, protocol::models::Update,
+    tycho_client::feed::component_tracker::ComponentFilter, tycho_common::models::Chain,
+    tycho_core::traits::FeePriceGetter, tycho_ethereum::rpc::EthereumRpcClient,
     utils::load_all_tokens,
 };
 
@@ -73,9 +70,7 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
     let builder = ProtocolStreamBuilder::new(&opts.tycho_url, chain);
 
     let builder = fynd_core::feed::protocol_registry::register_exchanges_for_recording(
-        builder,
-        tvl_filter,
-        &protocols,
+        builder, tvl_filter, &protocols,
     )
     .map_err(|e| anyhow::anyhow!("failed to register exchanges: {e}"))?;
 
@@ -161,4 +156,3 @@ async fn fetch_gas_price_wei(rpc_url: &str) -> anyhow::Result<String> {
         .effective_gas_price()
         .to_string())
 }
-
