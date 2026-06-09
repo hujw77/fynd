@@ -836,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pi_exit_criterion_stops_loop_early() {
+    async fn test_pi_exit_criterion_with_high_gas() {
         // Three distinct pools so BF can always find a new (non-duplicate) path.
         // High gas costs relative to trade size mean that after the first split
         // lowers PI, `compute_probe_amount` returns None before iteration 2 can
@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_split_beats_single_route() {
+    async fn test_split_vs_single_route() {
         // Large trade through two parallel pools should produce more output than
         // routing everything through just one.
         let token_a = token(0x01, "A");
@@ -1529,7 +1529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_timeout_returns_partial_result() {
+    async fn test_timeout_mid_iteration() {
         // With a generous timeout the algo splits across all pools.
         // With a near-zero timeout it returns fewer paths, proving the FW loop
         // was cut short while still producing a valid result.
