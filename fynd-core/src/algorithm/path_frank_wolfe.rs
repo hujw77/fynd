@@ -24,7 +24,7 @@ use crate::{
     derived::{computation::ComputationRequirements, SharedDerivedDataRef},
     feed::market_data::{MarketData, StateLabel},
     graph::{petgraph::StableDiGraph, PetgraphStableDiGraphManager},
-    types::{quote::Order, OrderSide, RouteResult},
+    types::{quote::Order, OrderSide, Route, RouteResult},
 };
 
 /// Tuning parameters for the path-based Frank-Wolfe split-routing loop.
@@ -227,8 +227,7 @@ impl PathFrankWolfeAlgorithm {
 
     /// Computes the gas cost of a route in output-token units as `f64`.
     ///
-    /// Returns `0.0` when gas price or token prices are unavailable
-    fn gas_cost_output_tokens(route: &crate::types::Route, ctx: &BellmanFordContext) -> f64 {
+    fn gas_cost_output_tokens(route: &Route, ctx: &BellmanFordContext) -> f64 {
         let gas_price = match &ctx.gas_price_wei {
             Some(gp) if !gp.is_zero() => gp,
             _ => return 0.0,
@@ -252,7 +251,7 @@ impl PathFrankWolfeAlgorithm {
 
     /// Converts a `Route` (from BF's initial solve) into a single `PathAllocation`.
     fn route_to_allocation(
-        route: &crate::types::Route,
+        route: &Route,
         order: &Order,
         ctx: &BellmanFordContext,
     ) -> Result<PathAllocation, AlgorithmError> {
@@ -418,7 +417,7 @@ impl PathFrankWolfeAlgorithm {
     /// Computes `net_amount_out` for a split route, mirroring
     /// `BellmanFordAlgorithm::compute_net_amount_out`.
     fn compute_split_net_amount_out(
-        route: &crate::types::Route,
+        route: &Route,
         ctx: &BellmanFordContext,
     ) -> BigInt {
         let Some(last_swap) = route.swaps().last() else {
