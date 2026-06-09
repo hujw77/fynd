@@ -308,11 +308,11 @@ impl PathFrankWolfeAlgorithm {
         })
     }
 
-    /// Golden-section search over the split fraction `gamma ∈ [0, 1]`.
+    /// Golden-section search over the step size `∈ [0, 1]`.
     ///
     /// At each probe point, builds trial fractions (existing paths scaled by
-    /// `1 − gamma`, candidate at `gamma`) and evaluates the combined output via
-    /// `evaluate_total_output`.
+    /// `1 − step_size`, candidate at `step_size`) and evaluates the combined
+    /// output via `evaluate_total_output`.
     fn optimize_step_size(
         &self,
         current_allocations: &[PathAllocation],
@@ -335,12 +335,12 @@ impl PathFrankWolfeAlgorithm {
             .collect();
         let overrides = MarketOverrides::empty();
 
-        let evaluate_split = |gamma: f64| -> f64 {
+        let evaluate_split = |step_size: f64| -> f64 {
             let mut trial_fractions: Vec<f64> = current_allocations
                 .iter()
-                .map(|a| a.flow_fraction * (1.0 - gamma))
+                .map(|a| a.flow_fraction * (1.0 - step_size))
                 .collect();
-            trial_fractions.push(gamma);
+            trial_fractions.push(step_size);
 
             let mut trial_paths: Vec<&[HopDescriptor]> = existing_descriptors
                 .iter()
@@ -363,23 +363,23 @@ impl PathFrankWolfeAlgorithm {
         golden_section_search(evaluate_split, 0.0, 1.0, self.config.line_search_evals)
     }
 
-    /// Applies a Frank-Wolfe step: shifts `gamma` fraction of flow to the
+    /// Applies a Frank-Wolfe step: shifts `step_size` fraction of flow to the
     /// candidate path, re-simulates all paths, and prunes negligible allocations.
     fn apply_step(
         &self,
         allocations: &mut Vec<PathAllocation>,
         candidate: &[SimulatedHop],
-        gamma: f64,
+        step_size: f64,
         total_amount: &BigUint,
         ctx: &BellmanFordContext,
     ) -> Result<(), AlgorithmError> {
         for alloc in allocations.iter_mut() {
-            alloc.flow_fraction *= 1.0 - gamma;
+            alloc.flow_fraction *= 1.0 - step_size;
         }
 
         allocations.push(PathAllocation {
             hops: candidate.to_vec(),
-            flow_fraction: gamma,
+            flow_fraction: step_size,
             amount_in: BigUint::zero(),
             amount_out: BigUint::zero(),
             marginal_price_product: 0.0,
@@ -550,16 +550,16 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             }
 
             // golden-section line search for optimal step size.
-            let gamma = self.optimize_step_size(&allocations, &candidate, total_amount, &ctx);
+            let step_size = self.optimize_step_size(&allocations, &candidate, total_amount, &ctx);
 
             // step too small → no benefit.
-            if gamma < self.config.min_split {
-                debug!(iteration, gamma, "step size below min_split, stopping");
+            if step_size < self.config.min_split {
+                debug!(iteration, step_size, "step size below min_split, stopping");
                 break;
             }
 
-            self.apply_step(&mut allocations, &candidate, gamma, total_amount, &ctx)?;
-            debug!(iteration, paths = allocations.len(), gamma, "pfw iteration complete");
+            self.apply_step(&mut allocations, &candidate, step_size, total_amount, &ctx)?;
+            debug!(iteration, paths = allocations.len(), step_size, "pfw iteration complete");
         }
 
         // Step 3: if we only have one path, the initial result is already optimal.
