@@ -503,7 +503,7 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             return Ok(single_path_result);
         }
 
-        // Frank-Wolfe loop — discover up to max_paths - 1 additional paths.
+        // Step 2: Frank-Wolfe loop — discover up to max_paths - 1 additional paths.
         for iteration in 1..self.config.max_paths {
             if start.elapsed() >= self.timeout() {
                 debug!(iteration, "pfw timeout, returning partial result");
