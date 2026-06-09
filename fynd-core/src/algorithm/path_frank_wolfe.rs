@@ -837,7 +837,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_pi_exit_criterion_with_high_gas() {
-        // Three distinct pools so BF can always find a new (non-duplicate) path.
+        // Three parallel pools, each A→B:
+        //
+        //        ┌──[P1]──┐
+        //   A ───┼──[P2]──┼─── B
+        //        └──[P3]──┘
+        //
         // High gas costs relative to trade size mean that after the first split
         // lowers PI, `compute_probe_amount` returns None before iteration 2 can
         // discover the third pool → the loop exits via PI criterion at 2 swaps
@@ -939,6 +944,10 @@ mod tests {
 
     #[test]
     fn test_is_duplicate_path_shared_prefix() {
+        // Existing: A──[P1]──B──[P2]──C
+        // Candidate: A──[P1]──B──[P3]──C
+        //
+        // Shared first hop (P1) but divergent second hop → not a duplicate.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
@@ -969,11 +978,13 @@ mod tests {
 
     #[test]
     fn test_is_duplicate_path_same_pool_different_tokens() {
+        // Existing:  A──[P1]──B
+        // Candidate: A──[P1]──C
+        //
+        // Same pool but different output tokens → not a duplicate.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
-
-        // Same pool "P1" but with different token pairs — not a duplicate.
         let zero = BigUint::from(0u64);
         let alloc = PathAllocation {
             hops: vec![HopDescriptor::new("P1".to_string(), token_a.clone(), token_b.clone())
@@ -990,9 +1001,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_shared_first_pool_two_outputs() {
-        // Two paths share pool P1 (A→B) and diverge at B→C via P2 vs P3.
+        // Diamond topology — two paths share the entry pool:
         //
-        // P2 has higher initial rate but degrades after one allocation; BF then discovers P3.
+        //                ┌──[P2]──┐
+        //   A ──[P1]── B ┤        ├ C
+        //                └──[P3]──┘
+        //
+        // Path 1: A─[P1]─B─[P2]─C  (1.5× rate, degrades after first allocation)
+        // Path 2: A─[P1]─B─[P3]─C  (1.0× rate, discovered second)
+        //
         // Verifies: `is_duplicate_path` returns false, `build_split_route` emits 3 swaps,
         // P1 gas counted once.
         let token_a = token(0x01, "A");
@@ -1215,7 +1232,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_parallel_pools_symmetric() {
-        // Two identical A→B pools → should split ~50/50.
+        //        ┌──[P1]──┐
+        //   A ───┤        ├─── B
+        //        └──[P2]──┘
+        //
+        // Two identical pools → should split ~50/50.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
@@ -1272,8 +1293,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_parallel_pools_asymmetric() {
-        // One deep pool (200k reserves) and one shallow pool (50k reserves).
-        // Large trade should favor the deep pool but still route some through the shallow one.
+        //        ┌──[deep: 200k]───┐
+        //   A ───┤                  ├─── B
+        //        └──[shallow: 50k]──┘
+        //
+        // Large trade should favor the deep pool but still use the shallow one.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
@@ -1329,8 +1353,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_split_vs_single_route() {
-        // Large trade through two parallel pools should produce more output than
-        // routing everything through just one.
+        //        ┌──[P1: 100k]──┐
+        //   A ───┤              ├─── B
+        //        └──[P2: 100k]──┘
+        //
+        // Large trade (50k) through two parallel pools should produce more
+        // output than routing everything through just one.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
@@ -1389,8 +1417,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_three_paths_discovered() {
-        // Diamond graph: A→B via P1, P2, P3 — three parallel routes.
-        // With enough max_paths the algorithm should discover all three.
+        //        ┌──[P1: 100k]──┐
+        //   A ───┼──[P2:  80k]──┼─── B
+        //        └──[P3:  60k]──┘
+        //
+        // Three parallel routes — with enough max_paths the algorithm
+        // should discover all three.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
 
@@ -1438,9 +1470,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_shared_pool_degradation() {
-        // Two routes share an interior pool: A→B via P1, then B→C via P_shared.
-        // A second route: A→B via P2, then B→C via P_shared.
-        // Sequential simulation through P_shared must degrade state correctly.
+        //        ┌──[P1]──┐
+        //   A ───┤        ├─── B ──[P_shared]── C
+        //        └──[P2]──┘
+        //
+        // Path 1: A─[P1]─B─[P_shared]─C
+        // Path 2: A─[P2]─B─[P_shared]─C
+        //
+        // Both routes share the interior pool P_shared. Sequential simulation
+        // through P_shared must degrade state correctly.
         let token_a = token(0x01, "A");
         let token_b = token(0x02, "B");
         let token_c = token(0x03, "C");
@@ -1530,6 +1568,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_mid_iteration() {
+        //        ┌──[P0]──┐
+        //        ├──[P1]──┤
+        //   A ───┼──[P2]──┼─── B     (8 identical parallel pools)
+        //        ├── ⋯  ──┤
+        //        └──[P7]──┘
+        //
         // With a generous timeout the algo splits across all pools.
         // With a near-zero timeout it returns fewer paths, proving the FW loop
         // was cut short while still producing a valid result.
