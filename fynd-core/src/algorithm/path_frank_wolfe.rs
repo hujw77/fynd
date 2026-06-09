@@ -226,7 +226,6 @@ impl PathFrankWolfeAlgorithm {
     }
 
     /// Computes the gas cost of a route in output-token units as `f64`.
-    ///
     fn gas_cost_output_tokens(route: &Route, ctx: &BellmanFordContext) -> f64 {
         let gas_price = match &ctx.gas_price_wei {
             Some(gp) if !gp.is_zero() => gp,
@@ -417,10 +416,7 @@ impl PathFrankWolfeAlgorithm {
 
     /// Computes `net_amount_out` for a split route, mirroring
     /// `BellmanFordAlgorithm::compute_net_amount_out`.
-    fn compute_split_net_amount_out(
-        route: &Route,
-        ctx: &BellmanFordContext,
-    ) -> BigInt {
+    fn compute_split_net_amount_out(route: &Route, ctx: &BellmanFordContext) -> BigInt {
         let Some(last_swap) = route.swaps().last() else {
             return BigInt::zero();
         };
@@ -432,21 +428,8 @@ impl PathFrankWolfeAlgorithm {
             .map(|s| s.amount_out().clone())
             .fold(BigUint::zero(), |acc, x| acc + x);
 
-        let gas_price = match &ctx.gas_price_wei {
-            Some(gp) if !gp.is_zero() => gp,
-            _ => return BigInt::from(total_out),
-        };
-        let price = match ctx
-            .token_prices
-            .as_ref()
-            .and_then(|tp| tp.get(output_token))
-        {
-            Some(p) if !p.denominator.is_zero() => p,
-            _ => return BigInt::from(total_out),
-        };
-
-        let gas_cost_wei = &route.total_gas() * gas_price;
-        let gas_cost_tokens = &gas_cost_wei * &price.numerator / &price.denominator;
+        let gas_cost = Self::gas_cost_output_tokens(route, ctx);
+        let gas_cost_tokens = BigUint::from(gas_cost.ceil() as u128);
         BigInt::from(total_out) - BigInt::from(gas_cost_tokens)
     }
 
@@ -539,7 +522,11 @@ impl Algorithm for PathFrankWolfeAlgorithm {
             let candidate = match self.find_candidate_path(&ctx, &allocations, &probe_amount) {
                 Ok(c) => c,
                 Err(e) => {
-                    debug!(iteration, ?e, "no additional candidate path found, stopping further searches");
+                    debug!(
+                        iteration,
+                        ?e,
+                        "no additional candidate path found, stopping further searches"
+                    );
                     break;
                 }
             };
