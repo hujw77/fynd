@@ -363,7 +363,8 @@ impl PathFrankWolfeAlgorithm {
     }
 
     /// Applies a Frank-Wolfe step: shifts `step_size` fraction of flow to the
-    /// candidate path, re-simulates all paths, and prunes negligible allocations.
+    /// candidate path, re-simulates all paths, and drops any path whose fraction
+    /// falls below `config.min_split` (renormalizing the remainder).
     fn apply_step(
         &self,
         allocations: &mut Vec<PathAllocation>,
