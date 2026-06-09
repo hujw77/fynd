@@ -343,6 +343,8 @@ impl PathFrankWolfeAlgorithm {
             .collect();
         let overrides = MarketOverrides::empty();
 
+        // Evaluates the total output of the split that results from shifting
+        // `step_size` fraction of flow from existing paths to the candidate.
         let evaluate_split = |step_size: f64| -> f64 {
             let mut trial_fractions: Vec<f64> = current_allocations
                 .iter()
