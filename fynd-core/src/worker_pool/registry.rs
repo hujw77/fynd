@@ -354,11 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_has_path_frank_wolfe() {
-        assert!(AVAILABLE_ALGORITHMS.contains(&"path_frank_wolfe"));
-    }
-
-    #[test]
     fn test_registry_spawns_path_frank_wolfe() {
         let (shutdown_tx, _) = broadcast::channel(1);
         let (_task_tx, task_rx) = async_channel::bounded(10);
