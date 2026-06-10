@@ -25,6 +25,8 @@ pub mod path_frank_wolfe;
 pub(crate) mod split_primitives;
 
 #[cfg(test)]
+pub(crate) mod pfw_e2e_tests;
+#[cfg(test)]
 pub mod split_test_harness;
 #[cfg(test)]
 pub mod test_utils;
