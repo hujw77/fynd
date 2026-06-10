@@ -1,3 +1,15 @@
+## [0.78.0](https://github.com/propeller-heads/fynd/compare/0.77.0...0.78.0) (2026-06-10)
+
+
+### Features
+
+* wire module declarations and registry entry ([a924f25](https://github.com/propeller-heads/fynd/commit/a924f256fba709208205c64120058b6b0ec11764))
+
+
+### Bug Fixes
+
+* remove unneeded test ([ce89b25](https://github.com/propeller-heads/fynd/commit/ce89b2558e976e1927fc3c71c200eed2a47e0ec6))
+
 ## [0.77.0](https://github.com/propeller-heads/fynd/compare/0.76.0...0.77.0) (2026-06-09)
 
 
