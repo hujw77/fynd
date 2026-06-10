@@ -564,7 +564,11 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::algorithm::{bellman_ford::BellmanFordAlgorithm, AlgorithmConfig};
+    use crate::algorithm::{
+        bellman_ford::BellmanFordAlgorithm,
+        path_frank_wolfe::{PathFrankWolfeAlgorithm, PathFrankWolfeConfig},
+        AlgorithmConfig,
+    };
 
     fn f64_eq(x: f64, y: f64) -> bool {
         (x - y).abs() < 1e-9
@@ -572,6 +576,18 @@ mod tests {
 
     fn bf_default() -> BellmanFordAlgorithm {
         BellmanFordAlgorithm::with_config(AlgorithmConfig::default())
+    }
+
+    fn pfw_default() -> PathFrankWolfeAlgorithm {
+        PathFrankWolfeAlgorithm::new(
+            AlgorithmConfig::new(1, 4, Duration::from_millis(5000), None).unwrap(),
+            PathFrankWolfeConfig {
+                max_paths: 6,
+                max_probe: 0.5,
+                min_split: 0.01,
+                line_search_evals: 16,
+            },
+        )
     }
 
     // ==================== evaluate_scenario tests ====================
@@ -682,5 +698,68 @@ mod tests {
             result.net_output, scenario.lower_bound,
             "BF on double_split should match the precomputed lower bound",
         );
+    }
+
+    // ==================== PFW scenario tests ====================
+
+    #[tokio::test]
+    async fn pfw_symmetric_split() {
+        let scenario = split_scenarios::symmetric_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_beats_lower_bound();
+        assert_eq!(result.path_count, 2, "expected 2 paths");
+        assert!(result.within_pct_of_optimum(5), "symmetric split should be within 5% of optimum");
+    }
+
+    #[tokio::test]
+    async fn pfw_asymmetric_split() {
+        // Pool 1 has 2x the reserves of pool 2; optimal split favours pool 1.
+        let scenario = split_scenarios::asymmetric_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_beats_lower_bound();
+        assert_eq!(result.path_count, 2, "expected 2 paths");
+        let primary = result.split_fractions[0];
+        assert!(
+            primary > 0.55,
+            "asymmetric pools: larger pool should get >55%, got {primary} \
+             (fractions {:?})",
+            result.split_fractions,
+        );
+    }
+
+    #[tokio::test]
+    async fn pfw_gas_dominated_split() {
+        let scenario = split_scenarios::gas_kills_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_meets_lower_bound();
+        assert_eq!(result.path_count, 1, "high gas should prevent splitting");
+    }
+
+    #[tokio::test]
+    async fn pfw_no_alternative_path() {
+        let scenario = split_scenarios::no_alternative_path();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_meets_lower_bound();
+        assert_eq!(result.path_count, 1, "single-pool scenario should produce exactly 1 path",);
+    }
+
+    #[tokio::test]
+    async fn pfw_multi_hop_bottleneck() {
+        let scenario = split_scenarios::multi_hop_bottleneck();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_beats_lower_bound();
+    }
+
+    #[tokio::test]
+    async fn pfw_double_split() {
+        let scenario = split_scenarios::double_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        result.assert_beats_lower_bound();
     }
 }
