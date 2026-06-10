@@ -13,7 +13,6 @@ pub async fn generate_expected_outputs(
     recording: MarketRecording,
     pools_toml: &str,
 ) -> anyhow::Result<ExpectedFile> {
-    let block_number = recording.last_block_number();
     let gas_price = recording
         .metadata
         .gas_price_as_biguint();
@@ -108,6 +107,12 @@ pub async fn generate_expected_outputs(
 
     let market_ref = solver.market_data();
     let market = market_ref.read().await;
+    // Single source of truth for the block number: the replayed market state,
+    // matching what Solver::from_recording injects into the gas price.
+    let block_number = market
+        .last_updated()
+        .map(|block| block.number())
+        .unwrap_or(0);
     let num_pools = market.component_topology().len();
     let num_tokens = market.token_registry_ref().len();
     drop(market);

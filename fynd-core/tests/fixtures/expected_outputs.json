@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "block_number": 0,
+    "block_number": 24838913,
     "num_pools": 2377,
     "num_tokens": 1688,
     "fynd_version": "0.77.0",
@@ -33,7 +33,7 @@
           1111933
         ],
         "num_swaps": 3,
-        "solve_time_ms": 158
+        "solve_time_ms": 162
       }
     },
     {
@@ -58,7 +58,7 @@
           515500
         ],
         "num_swaps": 2,
-        "solve_time_ms": 158
+        "solve_time_ms": 160
       }
     },
     {
@@ -84,7 +84,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 154
+        "solve_time_ms": 155
       }
     },
     {
@@ -135,7 +135,7 @@
           605500
         ],
         "num_swaps": 3,
-        "solve_time_ms": 157
+        "solve_time_ms": 165
       }
     },
     {
@@ -160,7 +160,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 133
+        "solve_time_ms": 137
       }
     },
     {
@@ -185,7 +185,7 @@
           956500
         ],
         "num_swaps": 2,
-        "solve_time_ms": 153
+        "solve_time_ms": 154
       }
     },
     {
@@ -210,7 +210,7 @@
           670933
         ],
         "num_swaps": 3,
-        "solve_time_ms": 139
+        "solve_time_ms": 138
       }
     },
     {
@@ -234,7 +234,7 @@
           336500
         ],
         "num_swaps": 1,
-        "solve_time_ms": 158
+        "solve_time_ms": 155
       }
     },
     {
@@ -258,7 +258,7 @@
           273500
         ],
         "num_swaps": 1,
-        "solve_time_ms": 163
+        "solve_time_ms": 164
       }
     },
     {
@@ -282,7 +282,7 @@
           155433
         ],
         "num_swaps": 1,
-        "solve_time_ms": 158
+        "solve_time_ms": 157
       }
     },
     {
@@ -306,7 +306,7 @@
           155433
         ],
         "num_swaps": 1,
-        "solve_time_ms": 137
+        "solve_time_ms": 139
       }
     },
     {
@@ -360,7 +360,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 67
+        "solve_time_ms": 68
       }
     },
     {
@@ -386,7 +386,7 @@
           5676933
         ],
         "num_swaps": 4,
-        "solve_time_ms": 154
+        "solve_time_ms": 153
       }
     },
     {
@@ -412,7 +412,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 79
+        "solve_time_ms": 80
       }
     },
     {
@@ -438,7 +438,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 153
+        "solve_time_ms": 155
       }
     },
     {
@@ -491,7 +491,7 @@
           2011000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 152
+        "solve_time_ms": 153
       }
     },
     {
@@ -517,7 +517,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 117
+        "solve_time_ms": 122
       }
     },
     {
@@ -543,7 +543,7 @@
           3626433
         ],
         "num_swaps": 4,
-        "solve_time_ms": 153
+        "solve_time_ms": 156
       }
     },
     {
@@ -568,7 +568,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 45
+        "solve_time_ms": 44
       }
     },
     {
@@ -594,7 +594,7 @@
           90000
         ],
         "num_swaps": 1,
-        "solve_time_ms": 154
+        "solve_time_ms": 155
       }
     },
     {
@@ -639,7 +639,7 @@
         "amount_out_net_gas": [],
         "gas_estimate": [],
         "num_swaps": 0,
-        "solve_time_ms": 153
+        "solve_time_ms": 156
       }
     },
     {
@@ -659,7 +659,7 @@
         "amount_out_net_gas": [],
         "gas_estimate": [],
         "num_swaps": 0,
-        "solve_time_ms": 17
+        "solve_time_ms": 18
       }
     },
     {
@@ -684,7 +684,7 @@
           4407500
         ],
         "num_swaps": 1,
-        "solve_time_ms": 156
+        "solve_time_ms": 159
       }
     },
     {
@@ -709,7 +709,7 @@
           1184500
         ],
         "num_swaps": 2,
-        "solve_time_ms": 156
+        "solve_time_ms": 157
       }
     },
     {
@@ -734,7 +734,7 @@
           2514500
         ],
         "num_swaps": 1,
-        "solve_time_ms": 156
+        "solve_time_ms": 159
       }
     },
     {
@@ -785,7 +785,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 66
+        "solve_time_ms": 69
       }
     },
     {
@@ -811,7 +811,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 80
+        "solve_time_ms": 79
       }
     },
     {
@@ -837,7 +837,7 @@
           2028500
         ],
         "num_swaps": 3,
-        "solve_time_ms": 119
+        "solve_time_ms": 120
       }
     },
     {
@@ -863,7 +863,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 61
+        "solve_time_ms": 45
       }
     },
     {
@@ -889,7 +889,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 34
+        "solve_time_ms": 30
       }
     },
     {
@@ -916,7 +916,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 78
+        "solve_time_ms": 69
       }
     },
     {
@@ -943,7 +943,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 50
+        "solve_time_ms": 51
       }
     },
     {
@@ -969,7 +969,7 @@
           1311500
         ],
         "num_swaps": 3,
-        "solve_time_ms": 80
+        "solve_time_ms": 82
       }
     },
     {
@@ -1021,7 +1021,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 117
+        "solve_time_ms": 118
       }
     },
     {
@@ -1074,7 +1074,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 67
+        "solve_time_ms": 68
       }
     },
     {
@@ -1094,7 +1094,7 @@
         "amount_out_net_gas": [],
         "gas_estimate": [],
         "num_swaps": 0,
-        "solve_time_ms": 17
+        "solve_time_ms": 18
       }
     },
     {
@@ -1121,7 +1121,7 @@
           180000
         ],
         "num_swaps": 2,
-        "solve_time_ms": 49
+        "solve_time_ms": 51
       }
     }
   ]

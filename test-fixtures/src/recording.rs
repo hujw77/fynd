@@ -69,16 +69,6 @@ pub struct MarketRecording {
     pub updates: Vec<Update>,
 }
 
-impl MarketRecording {
-    /// Block number from the last recorded update, or 0 if empty.
-    pub fn last_block_number(&self) -> u64 {
-        self.updates
-            .last()
-            .map(|u| u.block_number_or_timestamp)
-            .unwrap_or(0)
-    }
-}
-
 /// Write a [`MarketRecording`] to a zstd-compressed JSON file.
 pub fn write_recording(recording: &MarketRecording, path: &Path) -> anyhow::Result<()> {
     let json = serde_json::to_vec(recording)?;
@@ -136,6 +126,5 @@ mod tests {
         assert_eq!(loaded.metadata.chain, "ethereum");
         assert_eq!(loaded.updates.len(), 1);
         assert_eq!(loaded.updates[0].block_number_or_timestamp, 12345);
-        assert_eq!(loaded.last_block_number(), 12345);
     }
 }

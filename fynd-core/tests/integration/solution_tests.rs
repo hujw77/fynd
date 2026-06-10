@@ -224,13 +224,19 @@ async fn regenerate_expected_outputs() {
 
     let market_ref = harness.solver().market_data();
     let market = market_ref.read().await;
+    // Same block-number source as record-market's generate_expected_outputs:
+    // the replayed market state.
+    let block_number = market
+        .last_updated()
+        .map(|block| block.number())
+        .unwrap_or(0);
     let num_pools = market.component_topology().len();
     let num_tokens = market.token_registry_ref().len();
     drop(market);
 
     let expected_file = fynd_test_fixtures::ExpectedFile {
         metadata: fynd_test_fixtures::ExpectedMetadata {
-            block_number: 0,
+            block_number,
             num_pools,
             num_tokens,
             fynd_version: env!("CARGO_PKG_VERSION").to_string(),
