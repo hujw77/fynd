@@ -441,9 +441,6 @@ mod proptest_tests {
                 .unwrap();
             let (pfw_out, bf_out) = rt.block_on(compare_at_fraction(trade_fraction));
 
-            dbg!(pfw_out,bf_out);
-            prop_assert!(false);
-
             prop_assert!(
                 pfw_out >= bf_out,
                 "PFW output ({}) must be >= BF output ({}) at trade_fraction={:.4}",
