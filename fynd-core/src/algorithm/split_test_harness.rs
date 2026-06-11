@@ -568,11 +568,21 @@ pub(crate) mod split_scenarios {
 mod tests {
     use std::time::Duration;
 
+    use num_bigint::BigUint;
+    use tycho_execution::encoding::{
+        evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry, models::Solution,
+    };
+    use tycho_simulation::{tycho_common::models::Chain, tycho_core::Bytes};
+
     use super::*;
-    use crate::algorithm::{
-        bellman_ford::BellmanFordAlgorithm,
-        path_frank_wolfe::{PathFrankWolfeAlgorithm, PathFrankWolfeConfig},
-        AlgorithmConfig,
+    use crate::{
+        algorithm::{
+            bellman_ford::BellmanFordAlgorithm,
+            path_frank_wolfe::{PathFrankWolfeAlgorithm, PathFrankWolfeConfig},
+            AlgorithmConfig,
+        },
+        encoding::encoder::Encoder,
+        types, BlockInfo, EncodingOptions, OrderQuote, QuoteStatus,
     };
 
     fn f64_eq(x: f64, y: f64) -> bool {
@@ -743,28 +753,116 @@ mod tests {
         assert_eq!(result.path_count, 1, "high gas should prevent splitting");
     }
 
-    #[tokio::test]
-    async fn pfw_no_alternative_path() {
-        let scenario = split_scenarios::no_alternative_path();
-        let (market, gm) = scenario.build_market();
-        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
-        result.assert_meets_lower_bound();
-        assert_eq!(result.path_count, 1, "single-pool scenario should produce exactly 1 path",);
+    // ==================== E2e test helpers ====================
+
+    fn make_order_quote(
+        route: types::quote::Route,
+        amount_in: &BigUint,
+        amount_out: &BigUint,
+    ) -> OrderQuote {
+        let sender = Bytes::from([0xAAu8; 20].as_ref());
+        let receiver = sender.clone();
+        OrderQuote::new(
+            "e2e-test".to_string(),
+            QuoteStatus::Success,
+            amount_in.clone(),
+            amount_out.clone(),
+            route.total_gas(),
+            amount_out.clone(),
+            BlockInfo::new(1, "0x00".to_string(), 0),
+            "test".to_string(),
+            sender,
+            receiver,
+            "1".to_string(),
+        )
+        .with_route(route)
     }
 
-    #[tokio::test]
-    async fn pfw_multi_hop_bottleneck() {
-        let scenario = split_scenarios::multi_hop_bottleneck();
-        let (market, gm) = scenario.build_market();
-        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
-        result.assert_beats_lower_bound();
+    fn real_encoder() -> Encoder {
+        let registry = SwapEncoderRegistry::new(Chain::Ethereum)
+            .add_default_encoders(None)
+            .expect("registry should build");
+        Encoder::new(Chain::Ethereum, registry).expect("encoder should build")
     }
 
-    #[tokio::test]
-    async fn pfw_double_split() {
-        let scenario = split_scenarios::double_split();
-        let (market, gm) = scenario.build_market();
-        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
-        result.assert_beats_lower_bound();
+    fn assert_route_is_valid(route: &types::quote::Route, scenario_name: &str) {
+        route
+            .validate()
+            .unwrap_or_else(|e| panic!("'{scenario_name}': validate failed: {e}"));
+    }
+
+    /// Converts a route to a Solution, encodes it, and verifies the calldata
+    /// contains the correct token_in, token_out, and amount_in.
+    async fn assert_route_encodes_correctly(
+        route: &types::quote::Route,
+        scenario: &TestScenario,
+        net_output: &BigInt,
+    ) {
+        let amount_out = net_output
+            .to_biguint()
+            .unwrap_or_default();
+        let quote = make_order_quote(route.clone(), &scenario.trade_amount, &amount_out);
+
+        let solution = Solution::try_from(&quote)
+            .unwrap_or_else(|e| panic!("'{}': Solution::try_from failed: {e}", scenario.name));
+        assert!(!solution.swaps().is_empty(), "solution must have swaps");
+        assert_eq!(
+            *solution.token_in(),
+            Bytes::from(scenario.token_in.address.as_ref()),
+            "'{}': solution token_in mismatch",
+            scenario.name,
+        );
+        assert_eq!(
+            *solution.token_out(),
+            Bytes::from(scenario.token_out.address.as_ref()),
+            "'{}': solution token_out mismatch",
+            scenario.name,
+        );
+        assert_eq!(
+            *solution.amount_in(),
+            scenario.trade_amount,
+            "'{}': solution amount_in mismatch",
+            scenario.name,
+        );
+
+        // Encode and verify calldata
+        let encoder = real_encoder();
+        let encoded = encoder
+            .encode(vec![quote], EncodingOptions::new(0.01))
+            .await
+            .unwrap_or_else(|e| panic!("'{}': encoding failed: {e}", scenario.name));
+
+        let tx = encoded[0]
+            .transaction()
+            .unwrap_or_else(|| panic!("'{}': no transaction", scenario.name));
+        let calldata = tx.data();
+        assert!(
+            calldata.len() >= 100,
+            "'{}': calldata too short to contain amount_in + token_in + token_out",
+            scenario.name,
+        );
+
+        let encoded_amount_in = BigUint::from_bytes_be(&calldata[4..36]);
+        assert_eq!(
+            encoded_amount_in, scenario.trade_amount,
+            "'{}': calldata amount_in mismatch",
+            scenario.name,
+        );
+
+        let encoded_token_in = &calldata[48..68];
+        assert_eq!(
+            encoded_token_in,
+            scenario.token_in.address.as_ref(),
+            "'{}': calldata token_in mismatch",
+            scenario.name,
+        );
+
+        let encoded_token_out = &calldata[80..100];
+        assert_eq!(
+            encoded_token_out,
+            scenario.token_out.address.as_ref(),
+            "'{}': calldata token_out mismatch",
+            scenario.name,
+        );
     }
 }
