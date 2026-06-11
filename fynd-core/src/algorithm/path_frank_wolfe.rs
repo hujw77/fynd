@@ -433,29 +433,20 @@ impl PathFrankWolfeAlgorithm {
                 .collect();
             let sim =
                 simulate_path(&hop_descriptors, &alloc_amount_in, &ctx.market_data, &overrides)?;
-            alloc.amount_in = alloc_amount_in.clone();
+            alloc.amount_in = alloc_amount_in;
             alloc.amount_out = sim.amount_out;
             alloc.marginal_price_product = sim.marginal_price_product;
 
-            // Update per-hop amounts so build_split_route sees fresh values
-            let mut hop_input = alloc_amount_in;
-            for hop in &mut alloc.hops {
-                let pool_state = ctx
-                    .market_data
-                    .get_simulation_state(&hop.descriptor.component_id)
-                    .ok_or_else(|| AlgorithmError::DataNotFound {
-                        kind: "simulation state",
-                        id: Some(hop.descriptor.component_id.clone()),
-                    })?;
-                let swap_result = pool_state
-                    .get_amount_out(hop_input, &hop.descriptor.token_in, &hop.descriptor.token_out)
-                    .map_err(|e| AlgorithmError::SimulationFailed {
-                        component_id: hop.descriptor.component_id.clone(),
-                        error: e.to_string(),
-                    })?;
-                hop.amount_out = swap_result.amount.clone();
-                hop.gas = swap_result.gas;
-                hop_input = swap_result.amount;
+            // Sync per-hop amount_out/gas with the freshly simulated values.
+            // Without this, hops retain stale values from initial discovery,
+            // causing build_split_route to emit wrong swap amounts
+            for (hop, (amount_out, gas)) in alloc
+                .hops
+                .iter_mut()
+                .zip(sim.hop_results)
+            {
+                hop.amount_out = amount_out;
+                hop.gas = gas;
             }
         }
 

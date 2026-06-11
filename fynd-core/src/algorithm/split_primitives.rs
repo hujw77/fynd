@@ -98,6 +98,8 @@ pub(crate) struct SimResult {
     /// Raw per-hop sum; use only via `evaluate_total_output`.
     pub(crate) gas: u64,
     pub(crate) marginal_price_product: f64,
+    /// Per-hop `(amount_out, gas)` in path order.
+    pub(crate) hop_results: Vec<(BigUint, BigUint)>,
 }
 
 /// Pool state overrides for passing degraded states to `find_single_route`.
@@ -403,6 +405,7 @@ pub(crate) fn simulate_path(
 ) -> Result<SimResult, AlgorithmError> {
     let mut current_amount = amount_in.clone();
     let mut total_gas: u64 = 0;
+    let mut hop_results = Vec::with_capacity(hops.len());
 
     for hop in hops {
         let sim = overrides
@@ -422,12 +425,18 @@ pub(crate) fn simulate_path(
 
         // Cap at u64::MAX instead of panicking on overflow.
         total_gas = total_gas.saturating_add(result.gas.to_u64().unwrap_or(u64::MAX));
+        hop_results.push((result.amount.clone(), result.gas));
         current_amount = result.amount;
     }
 
     let marginal_price_product = compute_marginal_price_product(hops, market, overrides)?;
 
-    Ok(SimResult { amount_out: current_amount, gas: total_gas, marginal_price_product })
+    Ok(SimResult {
+        amount_out: current_amount,
+        gas: total_gas,
+        marginal_price_product,
+        hop_results,
+    })
 }
 
 /// Simulates all paths at their current fractions and returns

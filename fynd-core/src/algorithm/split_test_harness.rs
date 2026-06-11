@@ -803,6 +803,7 @@ mod tests {
         scenario: &TestScenario,
         net_output: &BigInt,
     ) {
+        // When net_output is negative (gas exceeds output), clamp to zero for the quote.
         let amount_out = net_output
             .to_biguint()
             .unwrap_or_default();
