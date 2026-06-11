@@ -125,6 +125,7 @@ pub(crate) struct ScenarioResult {
     /// Number of swaps consuming `token_in`. 1 for single-route, N for a split.
     pub path_count: usize,
     /// Split fraction per `token_in` swap. All-zero if the algorithm does not set `with_split`.
+    #[allow(dead_code)]
     pub split_fractions: Vec<f64>,
 }
 
