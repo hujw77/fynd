@@ -387,9 +387,8 @@ pub(crate) fn compute_marginal_price_product(
         // spot_price returns a decimal-normalized price (human units), but
         // amount_in/amount_out are in raw token units. Scale to raw so that
         // `amount_in_raw * product ≈ amount_out_raw`.
-        let decimal_correction = 10f64.powi(
-            hop.token_out.decimals as i32 - hop.token_in.decimals as i32,
-        );
+        let decimal_correction =
+            10f64.powi(hop.token_out.decimals as i32 - hop.token_in.decimals as i32);
         product *= price * decimal_correction;
     }
     Ok(product)
@@ -1079,11 +1078,7 @@ mod tests {
             Box::new(MockProtocolSim::new(2000.0)),
         )]);
 
-        let hops = [HopDescriptor::new(
-            "pool_weth_usdc".to_string(),
-            weth,
-            usdc,
-        )];
+        let hops = [HopDescriptor::new("pool_weth_usdc".to_string(), weth, usdc)];
 
         let product =
             compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
