@@ -15,7 +15,7 @@ use crate::{
     derived::{DerivedData, SharedDerivedDataRef},
     feed::market_data::MarketData,
     graph::{petgraph::PetgraphStableDiGraphManager, GraphManager},
-    types::quote::{Order, OrderSide},
+    types::quote::{Order, OrderSide, Route},
 };
 
 /// Returns `(fraction_for_pool_1, total_output)` — the theoretically optimal output when
@@ -115,6 +115,8 @@ impl TestScenario {
 pub(crate) struct ScenarioResult {
     pub scenario_name: &'static str,
     pub algorithm_name: String,
+    /// The route returned by the algorithm. `None` when routing failed.
+    pub route: Option<Route>,
     /// Gross output minus gas costs. Can be negative when gas exceeds proceeds.
     pub net_output: BigInt,
     /// Best single-route net output. `net_output` must be >= this.
@@ -195,6 +197,7 @@ where
         return ScenarioResult {
             scenario_name: scenario.name,
             algorithm_name: algo.name().to_string(),
+            route: None,
             net_output: BigInt::zero(),
             lower_bound,
             analytical_optimum,
@@ -219,10 +222,12 @@ where
         .iter()
         .map(|s| *s.split())
         .collect();
+    let route = route_result.route().clone();
 
     ScenarioResult {
         scenario_name: scenario.name,
         algorithm_name: algo.name().to_string(),
+        route: Some(route),
         net_output,
         lower_bound,
         analytical_optimum,
