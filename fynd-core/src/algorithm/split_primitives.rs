@@ -384,12 +384,7 @@ pub(crate) fn compute_marginal_price_product(
                 component_id: hop.component_id.clone(),
                 error: e.to_string(),
             })?;
-        // spot_price returns a decimal-normalized price (human units), but
-        // amount_in/amount_out are in raw token units. Scale to raw so that
-        // `amount_in_raw * product ≈ amount_out_raw`.
-        let decimal_correction =
-            10f64.powi(hop.token_out.decimals as i32 - hop.token_in.decimals as i32);
-        product *= price * decimal_correction;
+        product *= price;
     }
     Ok(product)
 }
@@ -801,9 +796,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        algorithm::test_utils::{
-            component, order, token, token_with_decimals, ConstantProductSim, MockProtocolSim,
-        },
+        algorithm::test_utils::{component, order, token, ConstantProductSim, MockProtocolSim},
         types::OrderSide,
     };
 
@@ -1063,72 +1056,6 @@ mod tests {
 
         let product = compute_marginal_price_product(&hops, &market, &overrides).unwrap();
         assert!((product - 7.0).abs() < f64::EPSILON, "expected 7.0, got {product}");
-    }
-
-    #[test]
-    fn test_compute_marginal_price_product_mixed_decimals() {
-        // WETH (18 dec) → USDC (6 dec): spot_price returns ~2000.0 (human units).
-        // The raw conversion rate is 2000 * 10^(6-18) = 2e-9.
-        // For 1 WETH (10^18 raw): ideal_out = 10^18 * 2e-9 = 2e9 = 2000 USDC raw. ✓
-        let weth = token_with_decimals(0x01, "WETH", 18);
-        let usdc = token_with_decimals(0x02, "USDC", 6);
-        let market = make_market(vec![(
-            "pool_weth_usdc",
-            vec![weth.clone(), usdc.clone()],
-            Box::new(MockProtocolSim::new(2000.0)),
-        )]);
-
-        let hops = [HopDescriptor::new("pool_weth_usdc".to_string(), weth, usdc)];
-
-        let product =
-            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
-        // 2000.0 * 10^(6-18) = 2e-9
-        let expected = 2000.0 * 10f64.powi(6 - 18);
-        assert!(
-            (product - expected).abs() / expected < 1e-10,
-            "expected {expected}, got {product}"
-        );
-    }
-
-    #[test]
-    fn test_compute_marginal_price_product_mixed_decimals_multi_hop() {
-        // USDC (6 dec) → WETH (18 dec) → DAI (18 dec)
-        // Hop 1: spot_price(USDC, WETH) = 0.0005, correction = 10^(18-6) = 10^12
-        //   raw rate = 0.0005 * 10^12 = 5e8
-        // Hop 2: spot_price(WETH, DAI) = 2000.0, correction = 10^(18-18) = 1
-        //   raw rate = 2000.0
-        // Product = 5e8 * 2000 = 1e12
-        // Check: 2000 USDC raw (2000e6) * 1e12 = 2e18 → but we expect ~1 DAI = 1e18
-        //   Actually 2000 USDC = 1 WETH = 2000 DAI → 2000e6 * product = 2000e18
-        //   product should be 1e12. ✓
-        let usdc = token_with_decimals(0x01, "USDC", 6);
-        let weth = token_with_decimals(0x02, "WETH", 18);
-        let dai = token_with_decimals(0x03, "DAI", 18);
-        let market = make_market(vec![
-            (
-                "pool_usdc_weth",
-                vec![usdc.clone(), weth.clone()],
-                Box::new(MockProtocolSim::new(0.0005)),
-            ),
-            (
-                "pool_weth_dai",
-                vec![weth.clone(), dai.clone()],
-                Box::new(MockProtocolSim::new(2000.0)),
-            ),
-        ]);
-
-        let hops = [
-            HopDescriptor::new("pool_usdc_weth".to_string(), usdc, weth.clone()),
-            HopDescriptor::new("pool_weth_dai".to_string(), weth, dai),
-        ];
-
-        let product =
-            compute_marginal_price_product(&hops, &market, &MarketOverrides::empty()).unwrap();
-        let expected = 0.0005 * 10f64.powi(18 - 6) * 2000.0 * 10f64.powi(18 - 18);
-        assert!(
-            (product - expected).abs() / expected < 1e-10,
-            "expected {expected}, got {product}"
-        );
     }
 
     #[test]

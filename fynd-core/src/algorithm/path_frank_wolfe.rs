@@ -101,6 +101,15 @@ impl PathFrankWolfeAlgorithm {
     fn compute_average_price_impact(paths: &[PathAllocation]) -> Result<f64, AlgorithmError> {
         let mut weighted_price_impact = 0.0;
         for path in paths {
+            let first_hop = path
+                .hops
+                .first()
+                .ok_or_else(|| AlgorithmError::Other("path has no hops".to_string()))?;
+            let last_hop = path
+                .hops
+                .last()
+                .ok_or_else(|| AlgorithmError::Other("path has no hops".to_string()))?;
+
             let amount_in = path.amount_in.to_f64().ok_or_else(|| {
                 AlgorithmError::Other(format!("amount_in too large for f64: {}", path.amount_in))
             })?;
@@ -123,8 +132,14 @@ impl PathFrankWolfeAlgorithm {
                 )));
             }
 
-            let ideal_out = amount_in * path.marginal_price_product;
-            let price_impact = 1.0 - amount_out / ideal_out;
+            // marginal_price_product is in human units (from spot_price), so
+            // convert raw amounts to human units before comparing.
+            let amount_in_human =
+                amount_in / 10f64.powi(first_hop.descriptor.token_in.decimals as i32);
+            let amount_out_human =
+                amount_out / 10f64.powi(last_hop.descriptor.token_out.decimals as i32);
+            let ideal_out = amount_in_human * path.marginal_price_product;
+            let price_impact = 1.0 - amount_out_human / ideal_out;
             weighted_price_impact += path.flow_fraction * price_impact;
         }
         Ok(weighted_price_impact)
@@ -625,7 +640,8 @@ mod tests {
         algorithm::{
             split_primitives::{build_split_route, MarketOverrides},
             test_utils::{
-                order, setup_market_unweighted, token, ConstantProductSim, MockProtocolSim,
+                order, setup_market_unweighted, token, token_with_decimals, ConstantProductSim,
+                MockProtocolSim,
             },
             AlgorithmConfig,
         },
@@ -633,6 +649,20 @@ mod tests {
         graph::GraphManager,
         types::OrderSide,
     };
+
+    /// Creates a single dummy hop for test PathAllocations that need token
+    /// decimal info but don't care about the actual path.
+    fn dummy_hops(decimals_in: u32, decimals_out: u32) -> Vec<SimulatedHop> {
+        vec![SimulatedHop {
+            descriptor: HopDescriptor::new(
+                "dummy".to_string(),
+                token_with_decimals(0xAA, "IN", decimals_in),
+                token_with_decimals(0xBB, "OUT", decimals_out),
+            ),
+            amount_out: BigUint::ZERO,
+            gas: BigUint::ZERO,
+        }]
+    }
 
     /// Builds a `SharedDerivedDataRef` with token prices for the given tokens.
     ///
@@ -748,8 +778,9 @@ mod tests {
         // Splitting flow across more paths should reduce average price impact.
         // Uses constant-product pool outputs (reserve_in=1M, reserve_out=2M) to construct
         // allocations at 1, 2, and 3 paths.
+        let hops = dummy_hops(18, 18);
         let iter_0 = [PathAllocation {
-            hops: vec![],
+            hops: hops.clone(),
             flow_fraction: 1.0,
             amount_in: BigUint::from(100_000u64),
             amount_out: BigUint::from(181_818u64),
@@ -758,14 +789,14 @@ mod tests {
 
         let iter_1 = [
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: 0.5,
                 amount_in: BigUint::from(50_000u64),
                 amount_out: BigUint::from(95_238u64),
                 marginal_price_product: 2.0,
             },
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: 0.5,
                 amount_in: BigUint::from(50_000u64),
                 amount_out: BigUint::from(95_238u64),
@@ -776,21 +807,21 @@ mod tests {
         let third = 1.0 / 3.0;
         let iter_2 = [
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: third,
                 amount_in: BigUint::from(33_333u64),
                 amount_out: BigUint::from(64_514u64),
                 marginal_price_product: 2.0,
             },
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: third,
                 amount_in: BigUint::from(33_333u64),
                 amount_out: BigUint::from(64_514u64),
                 marginal_price_product: 2.0,
             },
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: third,
                 amount_in: BigUint::from(33_334u64),
                 amount_out: BigUint::from(64_516u64),
@@ -817,16 +848,17 @@ mod tests {
         //   Path 1: flow=0.9, price_impact = 1 − 900/1000 = 0.10
         //   Path 2: flow=0.1, price_impact = 1 − 50/100  = 0.50
         //   Weighted = 0.9 × 0.10 + 0.1 × 0.50 = 0.14
+        let hops = dummy_hops(18, 18);
         let allocations = [
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: 0.9,
                 amount_in: BigUint::from(1000u64),
                 amount_out: BigUint::from(900u64),
                 marginal_price_product: 1.0,
             },
             PathAllocation {
-                hops: vec![],
+                hops: hops.clone(),
                 flow_fraction: 0.1,
                 amount_in: BigUint::from(100u64),
                 amount_out: BigUint::from(50u64),
@@ -836,6 +868,28 @@ mod tests {
 
         let pi = PathFrankWolfeAlgorithm::compute_average_price_impact(&allocations).unwrap();
         assert!((pi - 0.14).abs() < 1e-10, "expected 0.14, got {pi}");
+    }
+
+    #[test]
+    fn test_average_price_impact_mixed_decimals() {
+        // USDC (6 dec) → WETH (18 dec): spot_price = 0.0005 (human units).
+        // Trade: 2000 USDC → ~1 WETH with 10% price impact.
+        //   amount_in  = 2000 * 10^6  = 2_000_000_000 (raw USDC)
+        //   amount_out = 0.9 * 10^18  = 900_000_000_000_000_000 (raw WETH)
+        //   human_in   = 2000, human_out = 0.9
+        //   ideal_out  = 2000 * 0.0005 = 1.0
+        //   PI = 1 - 0.9/1.0 = 0.10
+        let hops = dummy_hops(6, 18);
+        let allocations = [PathAllocation {
+            hops,
+            flow_fraction: 1.0,
+            amount_in: BigUint::from(2_000_000_000u64),
+            amount_out: BigUint::from(900_000_000_000_000_000u64),
+            marginal_price_product: 0.0005,
+        }];
+
+        let pi = PathFrankWolfeAlgorithm::compute_average_price_impact(&allocations).unwrap();
+        assert!((pi - 0.10).abs() < 1e-10, "expected 0.10 for cross-decimal pair, got {pi}");
     }
 
     #[tokio::test]
