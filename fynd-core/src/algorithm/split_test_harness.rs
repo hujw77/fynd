@@ -733,7 +733,7 @@ mod tests {
                 .as_ref()
                 .unwrap_or_else(|| panic!("'{name}': expected a route"));
             assert!(route.validate().is_ok(), "'{name}': route validation failed");
-            assert_route_encodes_correctly(route, &scenario, &result.net_output).await;
+            assert_route_converts_to_solution(route, &scenario, &result.net_output).await;
         }
     }
 
@@ -770,9 +770,8 @@ mod tests {
         .with_route(route)
     }
 
-    /// Converts a route to a Solution, encodes it, and verifies the calldata
-    /// contains the correct token_in, token_out, and amount_in.
-    async fn assert_route_encodes_correctly(
+    /// Converts a route to a Solution and verifies token_in, token_out, and amount_in.
+    async fn assert_route_converts_to_solution(
         route: &crate::types::quote::Route,
         scenario: &TestScenario,
         net_output: &BigInt,
