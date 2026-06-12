@@ -745,7 +745,7 @@ mod tests {
                 .route
                 .as_ref()
                 .unwrap_or_else(|| panic!("'{name}': expected a route"));
-            assert_route_is_valid(route, name);
+            assert!(route.validate().is_ok(), "'{name}': route validation failed");
             assert_route_encodes_correctly(route, &scenario, &result.net_output).await;
         }
     }
@@ -788,12 +788,6 @@ mod tests {
             .add_default_encoders(None)
             .expect("registry should build");
         Encoder::new(Chain::Ethereum, registry).expect("encoder should build")
-    }
-
-    fn assert_route_is_valid(route: &types::quote::Route, scenario_name: &str) {
-        route
-            .validate()
-            .unwrap_or_else(|e| panic!("'{scenario_name}': validate failed: {e}"));
     }
 
     /// Converts a route to a Solution, encodes it, and verifies the calldata
