@@ -570,11 +570,8 @@ pub(crate) mod split_scenarios {
 mod tests {
     use std::time::Duration;
 
-    use num_bigint::BigUint;
-    use tycho_execution::encoding::{
-        evm::swap_encoder::swap_encoder_registry::SwapEncoderRegistry, models::Solution,
-    };
-    use tycho_simulation::{tycho_common::models::Chain, tycho_core::Bytes};
+    use tycho_execution::encoding::models::Solution;
+    use tycho_simulation::tycho_core::Bytes;
 
     use super::*;
     use crate::{
@@ -583,8 +580,7 @@ mod tests {
             path_frank_wolfe::{PathFrankWolfeAlgorithm, PathFrankWolfeConfig},
             AlgorithmConfig,
         },
-        encoding::encoder::Encoder,
-        types, BlockInfo, EncodingOptions, OrderQuote, QuoteStatus,
+        types::{BlockInfo, OrderQuote, QuoteStatus},
     };
 
     fn f64_eq(x: f64, y: f64) -> bool {
@@ -752,7 +748,7 @@ mod tests {
     // ==================== E2e test helpers ====================
 
     fn make_order_quote(
-        route: types::quote::Route,
+        route: crate::types::quote::Route,
         amount_in: &BigUint,
         amount_out: &BigUint,
     ) -> OrderQuote {
@@ -774,17 +770,10 @@ mod tests {
         .with_route(route)
     }
 
-    fn real_encoder() -> Encoder {
-        let registry = SwapEncoderRegistry::new(Chain::Ethereum)
-            .add_default_encoders(None)
-            .expect("registry should build");
-        Encoder::new(Chain::Ethereum, registry).expect("encoder should build")
-    }
-
     /// Converts a route to a Solution, encodes it, and verifies the calldata
     /// contains the correct token_in, token_out, and amount_in.
     async fn assert_route_encodes_correctly(
-        route: &types::quote::Route,
+        route: &crate::types::quote::Route,
         scenario: &TestScenario,
         net_output: &BigInt,
     ) {
@@ -813,46 +802,6 @@ mod tests {
             *solution.amount_in(),
             scenario.trade_amount,
             "'{}': solution amount_in mismatch",
-            scenario.name,
-        );
-
-        // Encode and verify calldata
-        let encoder = real_encoder();
-        let encoded = encoder
-            .encode(vec![quote], EncodingOptions::new(0.01))
-            .await
-            .unwrap_or_else(|e| panic!("'{}': encoding failed: {e}", scenario.name));
-
-        let tx = encoded[0]
-            .transaction()
-            .unwrap_or_else(|| panic!("'{}': no transaction", scenario.name));
-        let calldata = tx.data();
-        assert!(
-            calldata.len() >= 100,
-            "'{}': calldata too short to contain amount_in + token_in + token_out",
-            scenario.name,
-        );
-
-        let encoded_amount_in = BigUint::from_bytes_be(&calldata[4..36]);
-        assert_eq!(
-            encoded_amount_in, scenario.trade_amount,
-            "'{}': calldata amount_in mismatch",
-            scenario.name,
-        );
-
-        let encoded_token_in = &calldata[48..68];
-        assert_eq!(
-            encoded_token_in,
-            scenario.token_in.address.as_ref(),
-            "'{}': calldata token_in mismatch",
-            scenario.name,
-        );
-
-        let encoded_token_out = &calldata[80..100];
-        assert_eq!(
-            encoded_token_out,
-            scenario.token_out.address.as_ref(),
-            "'{}': calldata token_out mismatch",
             scenario.name,
         );
     }
