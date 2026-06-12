@@ -132,14 +132,14 @@ impl PathFrankWolfeAlgorithm {
                 )));
             }
 
-            // marginal_price_product is in human units (from spot_price), so
-            // convert raw amounts to human units before comparing.
-            let amount_in_human =
+            // marginal_price_product is in decimal-normalized units (from
+            // spot_price), so convert raw amounts before comparing.
+            let amount_in_decimal =
                 amount_in / 10f64.powi(first_hop.descriptor.token_in.decimals as i32);
-            let amount_out_human =
+            let amount_out_decimal =
                 amount_out / 10f64.powi(last_hop.descriptor.token_out.decimals as i32);
-            let ideal_out = amount_in_human * path.marginal_price_product;
-            let price_impact = 1.0 - amount_out_human / ideal_out;
+            let ideal_out = amount_in_decimal * path.marginal_price_product;
+            let price_impact = 1.0 - amount_out_decimal / ideal_out;
             weighted_price_impact += path.flow_fraction * price_impact;
         }
         Ok(weighted_price_impact)
