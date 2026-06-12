@@ -437,9 +437,8 @@ impl PathFrankWolfeAlgorithm {
             alloc.amount_out = sim.amount_out;
             alloc.marginal_price_product = sim.marginal_price_product;
 
-            // Sync per-hop amount_out/gas with the freshly simulated values.
-            // Without this, hops retain stale values from initial discovery,
-            // causing build_split_route to emit wrong swap amounts
+            // Sync per-hop amount_out and gas with the final optimised split values so
+            // build_split_route emits the correct swap amounts.
             for (hop, (amount_out, gas)) in alloc
                 .hops
                 .iter_mut()

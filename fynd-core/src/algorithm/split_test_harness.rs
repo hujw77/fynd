@@ -124,9 +124,6 @@ pub(crate) struct ScenarioResult {
     pub analytical_optimum: BigInt,
     /// Number of swaps consuming `token_in`. 1 for single-route, N for a split.
     pub path_count: usize,
-    /// Split fraction per `token_in` swap. All-zero if the algorithm does not set `with_split`.
-    #[allow(dead_code)]
-    pub split_fractions: Vec<f64>,
 }
 
 impl ScenarioResult {
@@ -207,7 +204,6 @@ where
             lower_bound,
             analytical_optimum,
             path_count: 0,
-            split_fractions: vec![],
         };
     };
 
@@ -223,10 +219,6 @@ where
 
     let net_output = route_result.net_amount_out().clone();
     let path_count = input_swaps.len();
-    let split_fractions = input_swaps
-        .iter()
-        .map(|s| *s.split())
-        .collect();
     let route = route_result.route().clone();
 
     ScenarioResult {
@@ -237,7 +229,6 @@ where
         lower_bound,
         analytical_optimum,
         path_count,
-        split_fractions,
     }
 }
 
