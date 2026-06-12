@@ -7,8 +7,11 @@ baseline.
 ## Running
 
 ```bash
-cargo nextest run -p fynd-core --test integration
+cargo nextest run -p fynd-core --features test-utils --test integration
 ```
+
+The `--features test-utils` flag is required — without it the test binary compiles to
+nothing and reports zero tests.
 
 ## Test Descriptions
 
@@ -44,5 +47,7 @@ CI runners may be slower — timing tests use a 3x multiplier.
 Located in `fynd-core/tests/fixtures/`:
 - `market_recording.json.zst` — recorded Tycho stream (Git LFS)
 - `expected_outputs.json` — expected quote results
+- `pairs/<chain>.json` — trading-pair scenarios per chain (currently `ethereum.json`)
 
-Generate with `cargo run -p record-market`.
+The tests read the chain from the recording's metadata and load the matching pairs file.
+Generate fixtures with `cargo run -p record-market` (`--chain` selects the chain).

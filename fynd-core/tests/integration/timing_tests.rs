@@ -1,14 +1,9 @@
-use fynd_test_fixtures::{expected::load_expected_file, load_test_scenarios};
+use fynd_test_fixtures::expected::load_expected_file;
 
 use crate::harness::TestHarness;
 
 fn expected_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/expected_outputs.json")
-}
-
-fn scenarios() -> Vec<fynd_test_fixtures::TestScenario> {
-    let pairs_json = include_str!("../../../tools/benchmark/src/pairs.json");
-    load_test_scenarios(pairs_json).expect("failed to load test scenarios")
 }
 
 fn max_pool_timeout_ms() -> u64 {
@@ -29,7 +24,7 @@ async fn test_solve_time_p95_within_threshold() {
     let expected_file = load_expected_file(&expected_path())
         .expect("I/O error")
         .expect("expected_outputs.json required");
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
 
     let mut solve_times_ms: Vec<u64> = Vec::new();
 
@@ -75,7 +70,7 @@ async fn test_solve_time_p95_within_threshold() {
 #[tokio::test]
 async fn test_no_solve_exceeds_absolute_cap() {
     let harness = TestHarness::from_fixture().await;
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
     let absolute_cap_ms = max_pool_timeout_ms() + 1000;
 
     let mut violations = Vec::new();

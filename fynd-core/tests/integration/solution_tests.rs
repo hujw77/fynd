@@ -1,15 +1,10 @@
 use fynd_core::types::QuoteStatus;
-use fynd_test_fixtures::{expected::load_expected_file, load_test_scenarios};
+use fynd_test_fixtures::expected::load_expected_file;
 
 use crate::harness::TestHarness;
 
 fn expected_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/expected_outputs.json")
-}
-
-fn scenarios() -> Vec<fynd_test_fixtures::TestScenario> {
-    let pairs_json = include_str!("../../../tools/benchmark/src/pairs.json");
-    load_test_scenarios(pairs_json).expect("failed to load test scenarios")
 }
 
 /// Scenarios that succeeded in expected baseline should also succeed in replay.
@@ -25,7 +20,7 @@ async fn test_all_expected_pairs_return_solutions() {
         .map(|es| (es.scenario.name.clone(), &es.expected))
         .collect();
 
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
     let mut failures = Vec::new();
     for scenario in &scenarios {
         let Some(expected) = expected_map.get(&scenario.name) else {
@@ -108,7 +103,7 @@ async fn test_quality_within_expected_baseline() {
         .iter()
         .map(|es| (es.scenario.name.clone(), &es.expected))
         .collect();
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
 
     let mut regressions = Vec::new();
     for scenario in &scenarios {
@@ -158,7 +153,7 @@ async fn test_quality_within_expected_baseline() {
 #[ignore]
 async fn regenerate_expected_outputs() {
     let harness = TestHarness::from_fixture().await;
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
     let mut expected_scenarios = Vec::new();
 
     for scenario in &scenarios {
@@ -254,7 +249,7 @@ async fn regenerate_expected_outputs() {
 #[tokio::test]
 async fn test_quality_invariants() {
     let harness = TestHarness::from_fixture().await;
-    let scenarios = scenarios();
+    let scenarios = harness.scenarios();
 
     for scenario in &scenarios {
         let order = scenario.to_order();

@@ -17,13 +17,19 @@ This produces two files:
 - `market_recording.json.zst` — zstd-compressed recording of Tycho stream updates
 - `expected_outputs.json` — expected quote results for canonical trading pairs
 
+The recording stores the chain in its metadata; replay (expected-output generation and the
+integration tests) reads the chain from there. Trading-pair scenarios are chain-specific and
+live in `fynd-core/tests/fixtures/pairs/<chain>.json` — recording a new chain requires adding
+a pairs file for it.
+
 ## Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tycho-url` | required | Tycho endpoint |
 | `--tycho-api-key` | required | Tycho API key |
-| `--rpc-url` | optional | Ethereum RPC for gas price capture |
+| `--rpc-url` | optional | Chain RPC for gas price capture |
+| `--chain` | `ethereum` | Chain to record (any chain Tycho supports, e.g. `base`, `unichain`) |
 | `--duration-secs` | 600 | Recording duration (30s is usually sufficient) |
 | `--output-dir` | `fynd-core/tests/fixtures` | Where to write fixtures |
 | `--protocols` | auto-discover | Comma-separated protocol filter |

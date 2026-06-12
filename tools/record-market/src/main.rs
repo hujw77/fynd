@@ -17,9 +17,13 @@ struct Cli {
     #[arg(long, env = "TYCHO_API_KEY")]
     tycho_api_key: String,
 
-    /// Ethereum RPC URL for gas price capture.
+    /// Chain RPC URL for gas price capture.
     #[arg(long, env = "RPC_URL")]
     rpc_url: Option<String>,
+
+    /// Chain to record (e.g. "ethereum", "base", "unichain").
+    #[arg(long, default_value = "ethereum")]
+    chain: String,
 
     /// Duration to record stream updates (seconds).
     #[arg(long, default_value = "600")]
@@ -54,7 +58,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    tracing::info!("connecting to Tycho at {}", cli.tycho_url);
+    let chain = fynd_core::types::parse_chain(&cli.chain)?;
+    // parse_chain lowercases its input, so a successful parse means the
+    // lowercased name is the canonical serde representation of the chain.
+    let chain_name = cli.chain.to_ascii_lowercase();
+
+    tracing::info!(chain = %chain_name, "connecting to Tycho at {}", cli.tycho_url);
 
     let recording_opts = recorder::RecordingOptions {
         tycho_url: cli.tycho_url,
@@ -65,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
         min_token_quality: cli.min_token_quality,
         traded_n_days_ago: cli.traded_n_days_ago,
         rpc_url: cli.rpc_url,
+        chain,
+        chain_name,
     };
 
     let recording = recorder::record_market(&recording_opts).await?;
@@ -90,7 +101,16 @@ async fn main() -> anyhow::Result<()> {
     let recording = fynd_test_fixtures::read_recording(&recording_path)?;
 
     let pools_toml = include_str!("../../../worker_pools.toml");
-    let expected = expected::generate_expected_outputs(recording, pools_toml).await?;
+    let pairs_path =
+        PathBuf::from(format!("fynd-core/tests/fixtures/pairs/{}.json", recording.metadata.chain));
+    let pairs_json = std::fs::read_to_string(&pairs_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read scenario pairs file {}: {e} — add a pairs file for this chain \
+             and run from the repo root",
+            pairs_path.display()
+        )
+    })?;
+    let expected = expected::generate_expected_outputs(recording, pools_toml, &pairs_json).await?;
     let expected_path = cli
         .output_dir
         .join("expected_outputs.json");

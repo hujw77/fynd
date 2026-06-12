@@ -19,12 +19,15 @@ pub struct RecordingOptions {
     pub min_token_quality: i32,
     pub traded_n_days_ago: u64,
     pub rpc_url: Option<String>,
+    pub chain: Chain,
+    /// Canonical (lowercase serde) chain name, stored in the recording metadata.
+    pub chain_name: String,
 }
 
 /// Connect to Tycho, capture raw Update messages for the configured
 /// duration, and return a MarketRecording.
 pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketRecording> {
-    let chain = Chain::Ethereum;
+    let chain = opts.chain;
 
     let protocols = match &opts.protocols {
         Some(p) if !p.is_empty() => {
@@ -122,7 +125,7 @@ pub async fn record_market(opts: &RecordingOptions) -> anyhow::Result<MarketReco
 
     Ok(MarketRecording {
         metadata: RecordingMetadata {
-            chain: "ethereum".to_string(),
+            chain: opts.chain_name.clone(),
             recorded_at_secs: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time went backwards")

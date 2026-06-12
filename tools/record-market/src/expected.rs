@@ -6,19 +6,24 @@ use fynd_test_fixtures::{
     MarketRecording,
 };
 use num_bigint::BigUint;
-use tycho_simulation::tycho_common::models::Chain;
 
 /// Generate expected outputs by replaying a recording through the full pipeline.
+///
+/// The chain is taken from the recording's metadata so expected outputs can never
+/// disagree with the fixture they were generated from.
 pub async fn generate_expected_outputs(
     recording: MarketRecording,
     pools_toml: &str,
+    pairs_json: &str,
 ) -> anyhow::Result<ExpectedFile> {
+    let chain = fynd_core::types::parse_chain(&recording.metadata.chain)
+        .map_err(|e| anyhow::anyhow!("recording has unsupported chain: {e}"))?;
     let gas_price = recording
         .metadata
         .gas_price_as_biguint();
     let pools = fynd_test_fixtures::parse_pools_toml(pools_toml)?;
 
-    let solver = Solver::from_recording(Chain::Ethereum, recording.updates, pools, gas_price)
+    let solver = Solver::from_recording(chain, recording.updates, pools, gas_price)
         .await
         .map_err(|e| anyhow::anyhow!("failed to build solver from recording: {e}"))?;
 
@@ -29,7 +34,6 @@ pub async fn generate_expected_outputs(
 
     tracing::info!("pipeline ready, running scenarios...");
 
-    let pairs_json = include_str!("../../../tools/benchmark/src/pairs.json");
     let scenarios = fynd_test_fixtures::load_test_scenarios(pairs_json)?;
     let mut expected_scenarios = Vec::new();
 
