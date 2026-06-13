@@ -3453,7 +3453,7 @@ dependencies = [
 
 [[package]]
 name = "fynd-test-fixtures"
-version = "0.78.0"
+version = "0.78.1"
 dependencies = [
  "anyhow",
  "fynd-core",
@@ -5574,7 +5574,7 @@ dependencies = [
 
 [[package]]
 name = "record-market"
-version = "0.78.0"
+version = "0.78.1"
 dependencies = [
  "anyhow",
  "clap",
