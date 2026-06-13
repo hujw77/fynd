@@ -1,3 +1,11 @@
+## [0.78.1](https://github.com/propeller-heads/fynd/compare/0.78.0...0.78.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **pfw:** normalize spot_price by token decimals in PI calc ([1cc3754](https://github.com/propeller-heads/fynd/commit/1cc375488d881fd80c94c384c6482b8258e0620e))
+* **pfw:** sum all output legs when computing amount_out for split routes ([0c379e1](https://github.com/propeller-heads/fynd/commit/0c379e1c4ce6ff42ad83b2eb9059cf15c48cbdc5))
+
 ## [0.78.0](https://github.com/propeller-heads/fynd/compare/0.77.0...0.78.0) (2026-06-10)
 
 
