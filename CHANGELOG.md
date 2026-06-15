@@ -1,3 +1,24 @@
+## [0.80.0](https://github.com/propeller-heads/fynd/compare/0.79.0...0.80.0) (2026-06-15)
+
+
+### Features
+
+* add e2e test helpers ([16d0259](https://github.com/propeller-heads/fynd/commit/16d0259243847194feac0d70248ebf02315365f0))
+* add e2e tests ([eafc370](https://github.com/propeller-heads/fynd/commit/eafc370b5d89ae37c11c687d3d96c91a6e1582e1))
+* add route to ScenarioResult to enable further validation ([9a15f65](https://github.com/propeller-heads/fynd/commit/9a15f653c063eebf0691f05d7e05fb5194d16b10))
+* allow dead code for the unused field ([0afb73a](https://github.com/propeller-heads/fynd/commit/0afb73a49d0b2cd56cf2d0bdcafd8ce5f9c2e8d9))
+* update per hop amounts ([4279a4f](https://github.com/propeller-heads/fynd/commit/4279a4f96439620e300a89b98cdb8b476d2bbe3d))
+* update pfw tests to have the same set of asserts for all scenarios ([de1d7a9](https://github.com/propeller-heads/fynd/commit/de1d7a938fc549cf0046a8dce895891e94c253c6))
+
+
+### Bug Fixes
+
+* avoid resimulating hops to get correct per hop amount out ([b74ee3b](https://github.com/propeller-heads/fynd/commit/b74ee3be386323acac76359799f4e4edce62e87a))
+* remove debug print ([f9076a7](https://github.com/propeller-heads/fynd/commit/f9076a7bc4e52d3591bd459293771aefbc81214f))
+* remove encoding tests ([7a2f2a8](https://github.com/propeller-heads/fynd/commit/7a2f2a8130bdf9664fc450f8f613cee1327c1c90))
+* remove unused field and update comment ([92494c6](https://github.com/propeller-heads/fynd/commit/92494c6619a25d7bc1e6e31a5f4c4e254210637a))
+* use existing test harness ([9000f1f](https://github.com/propeller-heads/fynd/commit/9000f1f568f1f61a61b73b52c18bce306cfcd537))
+
 ## [0.79.0](https://github.com/propeller-heads/fynd/compare/0.78.1...0.79.0) (2026-06-15)
 
 
