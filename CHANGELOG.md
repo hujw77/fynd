@@ -1,3 +1,42 @@
+## [0.79.0](https://github.com/propeller-heads/fynd/compare/0.78.1...0.79.0) (2026-06-15)
+
+
+### Features
+
+* add BLESS_GOLDEN workflow for golden output regeneration ([4175f45](https://github.com/propeller-heads/fynd/commit/4175f45e194ee58a8dd5767b7bca0303993e5157))
+* add integration test harness with Update message replay ([3ab44ad](https://github.com/propeller-heads/fynd/commit/3ab44ad7d461ec8c074dbca682bda344118c5736))
+* add record-market tool skeleton ([b7dbeb2](https://github.com/propeller-heads/fynd/commit/b7dbeb249a250876331bd605460a26b7e25432be))
+* add RecordedUpdate and MarketRecording serialization types ([1beda3d](https://github.com/propeller-heads/fynd/commit/1beda3d95fb9cb718aab759a01974230024d556c))
+* implement record-market tool and load_test_scenarios ([4e1784b](https://github.com/propeller-heads/fynd/commit/4e1784b585c84ada44eb9124b2f34aa5dd7eb4b3))
+* implement recording I/O with serde_json + zstd ([c176b02](https://github.com/propeller-heads/fynd/commit/c176b02aa8f3fb2ed69a33ed009c64886f8b7104))
+* make record-market and replay pipeline chain-agnostic ([78761e0](https://github.com/propeller-heads/fynd/commit/78761e055c213fff0cbb0ad7a6d1ea6b96a169ec))
+
+
+### Bug Fixes
+
+* add doc comments and workspace-manage tempfile dev-dependency ([6869368](https://github.com/propeller-heads/fynd/commit/686936839c195d4671c543b2defaa1942be90a13))
+* add test-fixtures and record-market stubs to Dockerfile ([ccd2c40](https://github.com/propeller-heads/fynd/commit/ccd2c40c67921ccebfd6d0bca8720708d8c0cbda))
+* address code quality review findings in test harness ([9c7a35b](https://github.com/propeller-heads/fynd/commit/9c7a35ba3fe730328c8ad00d8b98239e74ddb1a5))
+* address PR review — top-level imports, warn on fallbacks, fix readme ([3590c1c](https://github.com/propeller-heads/fynd/commit/3590c1cf94b5e6235d7c48e21bc26bb4ec46d243))
+* address review findings — remove duplicates, harden CI and test infra ([68fbdb6](https://github.com/propeller-heads/fynd/commit/68fbdb646a830b1efa937134d3670b5bf2fb5a01))
+* handle EIP1559 gas price in recorder ([31a1be5](https://github.com/propeller-heads/fynd/commit/31a1be5e4b3858181fe1f1088e9997781a3d49ca))
+* make graph construction and SPFA relaxation deterministic ([bdba9b1](https://github.com/propeller-heads/fynd/commit/bdba9b14799321c516fe6dc14e6427c2411e4f85))
+* recorder improvements from live Tycho testing ([10059a7](https://github.com/propeller-heads/fynd/commit/10059a7a123cdbaf1d6f24b3dbc4b08c4d3d2711))
+* regenerate fixtures from live Tycho, widen quality threshold ([bbfe41c](https://github.com/propeller-heads/fynd/commit/bbfe41c8eb21a8765378edc938f6aaea10b1b6e0))
+* remove stale fixtures/integration/ and rename golden to expected ([5c23d27](https://github.com/propeller-heads/fynd/commit/5c23d270028251769c95af9668e33b08cea9f32f))
+* require tycho-simulation >=0.275.0 for Update serde support ([46c0019](https://github.com/propeller-heads/fynd/commit/46c001977187c076a7e6642b830ced9917d1e725))
+* resolve rebase conflicts with main ([8c6dd60](https://github.com/propeller-heads/fynd/commit/8c6dd60d6e0cef8172aeeaaba0f09131c7b3d0d5))
+* resolve rebase conflicts with origin/main ([362b4d1](https://github.com/propeller-heads/fynd/commit/362b4d1b33d4ad2594dbc6bedba3856248a21ccb))
+* resolve worker readiness race and serialization in replay pipeline ([897d168](https://github.com/propeller-heads/fynd/commit/897d1689cfbbe6220e7971658e5427aa6194cd4a))
+* restore 1% quality threshold and add expected output regeneration ([d7f02d5](https://github.com/propeller-heads/fynd/commit/d7f02d5ba10f2d2178aaedaad0c5ea97b2f2957a))
+* sync Cargo.lock with 0.78.1 workspace version bump ([0920c90](https://github.com/propeller-heads/fynd/commit/0920c908163d101d04a5d4d85558427cbc4c5d2d))
+* unify expected-output block number, clarify canary purpose ([295e866](https://github.com/propeller-heads/fynd/commit/295e866307e333fdeafb36cdee193b8164c93c5e))
+
+
+### Reverts
+
+* restore fixtures/integration/ pending decision on removal ([db00f2a](https://github.com/propeller-heads/fynd/commit/db00f2ac7b40610edd35216d342fa5688bff0045))
+
 ## [0.78.1](https://github.com/propeller-heads/fynd/compare/0.78.0...0.78.1) (2026-06-12)
 
 
