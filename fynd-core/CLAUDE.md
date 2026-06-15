@@ -67,6 +67,14 @@ Price guard methods: `price_guard_enabled(bool)`, `register_price_provider(Box<d
 
 See `fynd-core/examples/custom_algorithm.rs` for a walkthrough.
 
+## Integration Tests
+
+`tests/integration/` replays a recorded market (`tests/fixtures/`, Git LFS) through the full
+pipeline and asserts solution availability, quality vs baseline, derived-data metrics, and timing.
+Run with `cargo nextest run -p fynd-core --features test-utils --test integration`. The
+`test-utils` feature gates `Solver::from_recording` and the recording helpers; fixtures are
+recorded with `tools/record-market`. See `tests/integration/README.md`.
+
 ## Data Flow
 
 **Market updates** (every block):

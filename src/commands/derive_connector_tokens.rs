@@ -6,7 +6,7 @@ use fynd_core::{
     feed::market_data::MarketData,
     solver::{FyndBuilder, SolverBuildError},
 };
-use fynd_rpc::builder::parse_chain;
+use fynd_rpc::parse_chain;
 use tracing::info;
 use tycho_simulation::tycho_common::models::{Address, TvlThresholdTier};
 

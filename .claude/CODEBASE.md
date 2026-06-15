@@ -28,6 +28,7 @@ Key properties:
 | [`fynd-core`](../fynd-core/CLAUDE.md) | `fynd-core/` | Pure solving logic: algorithms, worker pools, graph, feed, derived data, encoding. No HTTP deps |
 | [`fynd-rpc`](../fynd-rpc/CLAUDE.md) | `fynd-rpc/` | HTTP RPC server builder (Actix Web): API handlers, middleware, `FyndRPCBuilder` |
 | [`fynd-rpc-types`](../fynd-rpc-types/CLAUDE.md) | `fynd-rpc-types/` | Shared DTO types for the RPC API (request/response wire format) |
+| `fynd-test-fixtures` | `test-fixtures/` | Shared types for recorded-market test fixtures: `MarketRecording`, expected outputs, test scenarios. Not published |
 
 ### [Clients](../clients/CLAUDE.md)
 
@@ -44,6 +45,7 @@ Both clients wrap the same OpenAPI spec (`clients/openapi.json`, generated via `
 |---|---|---|
 | `fynd-benchmark` | `tools/benchmark/` | Load testing, solver comparison, trade dataset download |
 | `fynd-swap-cli` | `tools/fynd-swap-cli/` | Quote and execute token swaps (ERC-20 or Permit2) |
+| `record-market` | `tools/record-market/` | Record live Tycho market state and generate expected outputs for the integration tests |
 
 ## Architecture Overview
 
@@ -118,6 +120,7 @@ See `docs/ARCHITECTURE.md` for the full architecture diagram and detailed compon
 ## Testing
 
 - `cargo nextest run --workspace --all-targets --all-features` — full test suite
+- `cargo nextest run -p fynd-core --features test-utils --test integration` — replayed-market integration tests against recorded fixtures (`fynd-core/tests/fixtures/`, Git LFS). See `fynd-core/tests/integration/README.md`; regenerate baselines with the ignored `regenerate_expected_outputs` test, record fresh markets with `tools/record-market`
 - `cargo +nightly clippy --workspace --all-targets --all-features` — lint
 - `cargo +nightly fmt --all --check` — format check
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked --package fynd-core --package fynd-rpc-types --package fynd-rpc --package fynd-client` — doc build (broken links, missing docs)

@@ -382,13 +382,3 @@ impl FyndRPC {
         Ok(())
     }
 }
-
-/// Parse a chain name string into a [`Chain`] value.
-///
-/// Accepts case-insensitive names like `"Ethereum"`, `"ethereum"`.
-/// Returns an error for unrecognised chains.
-pub fn parse_chain(chain: &str) -> Result<Chain> {
-    let candidate = format!("\"{}\"", chain.to_ascii_lowercase());
-    serde_json::from_str::<Chain>(&candidate)
-        .map_err(|_| anyhow::anyhow!("unsupported chain '{}'. Try values like 'Ethereum'", chain))
-}

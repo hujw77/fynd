@@ -6,6 +6,7 @@ Developer and operational tooling for the Fynd solver.
 |---|---|---|
 | [fynd-benchmark](#fynd-benchmark) | `tools/benchmark/` | Load testing, solver comparison, trade dataset download |
 | [fynd-swap-cli](#fynd-swap-cli) | `tools/fynd-swap-cli/` | Quote and execute token swaps (ERC-20 or Permit2) |
+| [record-market](#record-market) | `tools/record-market/` | Record Tycho market state and expected outputs for integration tests |
 
 ---
 
@@ -46,3 +47,18 @@ End-to-end CLI for quoting and executing swaps. Supports both ERC-20 approval an
   `--transfer-type use-vaults-funds` (funds already in router vault)
 
 See [`docs/guides/swap-cli.md`](../docs/guides/swap-cli.md) for usage instructions.
+
+---
+
+## record-market
+
+Captures live Tycho `Update` messages for a configured duration, plus the chain gas price, into a
+zstd-compressed `MarketRecording` fixture, then replays the recording through the full solving
+pipeline (`Solver::from_recording`, `test-utils` feature) to generate `expected_outputs.json` for
+the integration tests in `fynd-core/tests/integration/`.
+
+Shared fixture types live in the `fynd-test-fixtures` crate. Worker pool configuration comes from
+the production `worker_pools.toml`; its SHA-256 is stored in the recording metadata so tests can
+detect drift. VM-backed protocol states (e.g. `vm:*` pools) cannot be serialized and are skipped.
+
+See [`tools/record-market/README.md`](record-market/README.md) for usage.

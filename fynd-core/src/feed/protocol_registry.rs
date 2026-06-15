@@ -33,6 +33,20 @@ use tycho_simulation::{
 
 use super::DataFeedError;
 
+/// Register DEX protocol decoders for test tooling (record-market).
+///
+/// Wrapper over [`register_exchanges`] so the recorder builds the same protocol stream as
+/// production without exposing the crate-private `DataFeedError`.
+#[cfg(feature = "test-utils")]
+pub fn register_exchanges_for_recording(
+    builder: ProtocolStreamBuilder,
+    tvl_filter: ComponentFilter,
+    protocols: &[String],
+) -> Result<ProtocolStreamBuilder, String> {
+    register_exchanges(builder, tvl_filter, protocols).map_err(|e| e.to_string())
+}
+
+/// Register DEX protocol decoders on a [`ProtocolStreamBuilder`].
 pub(crate) fn register_exchanges(
     mut builder: ProtocolStreamBuilder,
     tvl_filter: ComponentFilter,

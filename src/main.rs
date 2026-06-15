@@ -36,8 +36,9 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use anyhow::anyhow;
 use clap::Parser;
 use fynd_rpc::{
-    builder::{parse_chain, FyndRPCBuilder},
+    builder::FyndRPCBuilder,
     config::{defaults, BlocklistConfig, WorkerPoolsConfig},
+    parse_chain,
     protocols::fetch_protocol_systems,
 };
 mod cli;
