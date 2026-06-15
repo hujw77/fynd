@@ -15,7 +15,7 @@ use crate::{
     derived::{DerivedData, SharedDerivedDataRef},
     feed::market_data::MarketData,
     graph::{petgraph::PetgraphStableDiGraphManager, GraphManager},
-    types::quote::{Order, OrderSide},
+    types::quote::{Order, OrderSide, Route},
 };
 
 /// Returns `(fraction_for_pool_1, total_output)` — the theoretically optimal output when
@@ -58,7 +58,6 @@ pub(crate) struct ScenarioPool {
 /// Both bounds are net output amounts (gross minus gas cost), hardcoded from the scenario's fixed
 /// reserves. Gas cost uses the test market's fixed assumptions: 100 wei/gas, 1 output-token = 1
 /// ETH.
-#[allow(dead_code)]
 pub(crate) struct TestScenario {
     pub name: &'static str,
     pub description: &'static str,
@@ -111,10 +110,11 @@ impl TestScenario {
 // ==================== Evaluation harness ====================
 
 /// Results from running one algorithm against one scenario.
-#[allow(dead_code)]
 pub(crate) struct ScenarioResult {
     pub scenario_name: &'static str,
     pub algorithm_name: String,
+    /// The route returned by the algorithm. `None` when routing failed.
+    pub route: Option<Route>,
     /// Gross output minus gas costs. Can be negative when gas exceeds proceeds.
     pub net_output: BigInt,
     /// Best single-route net output. `net_output` must be >= this.
@@ -124,24 +124,28 @@ pub(crate) struct ScenarioResult {
     pub analytical_optimum: BigInt,
     /// Number of swaps consuming `token_in`. 1 for single-route, N for a split.
     pub path_count: usize,
-    /// Split fraction per `token_in` swap. All-zero if the algorithm does not set `with_split`.
-    pub split_fractions: Vec<f64>,
 }
 
 impl ScenarioResult {
-    #[allow(dead_code)]
     pub fn assert_meets_lower_bound(&self) {
         self.assert_bound(self.net_output >= self.lower_bound, ">=");
     }
 
-    #[allow(dead_code)]
     pub fn assert_beats_lower_bound(&self) {
         self.assert_bound(self.net_output > self.lower_bound, ">");
     }
 
+    /// Asserts `>= lower_bound` when optimum equals it, `> lower_bound` otherwise.
+    pub fn assert_passes_lower_bound(&self) {
+        if self.analytical_optimum == self.lower_bound {
+            self.assert_meets_lower_bound();
+        } else {
+            self.assert_beats_lower_bound();
+        }
+    }
+
     /// Returns true if `net_output >= (100 - threshold_pct)% of analytical_optimum`.
     /// `threshold_pct` is a whole-number percentage (e.g. `5` means within 5% of optimum).
-    #[allow(dead_code)]
     pub fn within_pct_of_optimum(&self, threshold_pct: u32) -> bool {
         &self.net_output * BigInt::from(100u32) >=
             &self.analytical_optimum * BigInt::from(100 - threshold_pct)
@@ -195,11 +199,11 @@ where
         return ScenarioResult {
             scenario_name: scenario.name,
             algorithm_name: algo.name().to_string(),
+            route: None,
             net_output: BigInt::zero(),
             lower_bound,
             analytical_optimum,
             path_count: 0,
-            split_fractions: vec![],
         };
     };
 
@@ -215,19 +219,16 @@ where
 
     let net_output = route_result.net_amount_out().clone();
     let path_count = input_swaps.len();
-    let split_fractions = input_swaps
-        .iter()
-        .map(|s| *s.split())
-        .collect();
+    let route = route_result.route().clone();
 
     ScenarioResult {
         scenario_name: scenario.name,
         algorithm_name: algo.name().to_string(),
+        route: Some(route),
         net_output,
         lower_bound,
         analytical_optimum,
         path_count,
-        split_fractions,
     }
 }
 
@@ -238,6 +239,12 @@ pub(crate) mod split_scenarios {
 
     use super::{ScenarioPool, TestScenario};
     use crate::algorithm::test_utils::{token, ConstantProductSim, ONE_ETH};
+
+    /// Valid Ethereum addresses the swap encoder registry recognizes
+    const POOL_ADDR_1: &str = "0xaB00000000000000000000000000000000000001";
+    const POOL_ADDR_2: &str = "0xaB00000000000000000000000000000000000002";
+    const POOL_ADDR_3: &str = "0xaB00000000000000000000000000000000000003";
+    const POOL_ADDR_4: &str = "0xaB00000000000000000000000000000000000004";
 
     /// S1: two identical A→B pools; 50/50 split is optimal.
     ///
@@ -253,7 +260,7 @@ pub(crate) mod split_scenarios {
             description: "Two identical A→B pools. 50/50 split is optimal.",
             pools: vec![
                 ScenarioPool {
-                    id: "pool_1",
+                    id: POOL_ADDR_1,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -263,7 +270,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_2",
+                    id: POOL_ADDR_2,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -300,7 +307,7 @@ pub(crate) mod split_scenarios {
             description: "Two A→B pools of unequal size. Optimal split favours the larger pool.",
             pools: vec![
                 ScenarioPool {
-                    id: "pool_1",
+                    id: POOL_ADDR_1,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -310,7 +317,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_2",
+                    id: POOL_ADDR_2,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -344,7 +351,7 @@ pub(crate) mod split_scenarios {
             description: "Split has a real gross benefit but the extra-hop gas exceeds it, making the split net-negative.",
             pools: vec![
                 ScenarioPool {
-                    id: "pool_1",
+                    id: POOL_ADDR_1,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -354,7 +361,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_2",
+                    id: POOL_ADDR_2,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -388,7 +395,7 @@ pub(crate) mod split_scenarios {
             description:
                 "Single A→B pool. No pool to split into; algorithm must return single-route result.",
             pools: vec![ScenarioPool {
-                id: "pool_1",
+                id: POOL_ADDR_1,
                 token_1: token_a.clone(),
                 token_2: token_b.clone(),
                 sim: Box::new(ConstantProductSim {
@@ -431,7 +438,7 @@ pub(crate) mod split_scenarios {
             description: "A→B→C with two parallel B→C pools. PathFrankWolfe discovers both paths sharing P_AB.",
             pools: vec![
                 ScenarioPool {
-                    id: "pool_ab",
+                    id: POOL_ADDR_1,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -441,7 +448,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_bc_main",
+                    id: POOL_ADDR_2,
                     token_1: token_b.clone(),
                     token_2: token_c.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -451,7 +458,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_bc_par",
+                    id: POOL_ADDR_3,
                     token_1: token_b.clone(),
                     token_2: token_c.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -494,7 +501,7 @@ pub(crate) mod split_scenarios {
                           re-splitting.",
             pools: vec![
                 ScenarioPool {
-                    id: "pool_ab_1",
+                    id: POOL_ADDR_1,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -504,7 +511,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_ab_2",
+                    id: POOL_ADDR_2,
                     token_1: token_a.clone(),
                     token_2: token_b.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -514,7 +521,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_bc_1",
+                    id: POOL_ADDR_3,
                     token_1: token_b.clone(),
                     token_2: token_c.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -524,7 +531,7 @@ pub(crate) mod split_scenarios {
                     }),
                 },
                 ScenarioPool {
-                    id: "pool_bc_2",
+                    id: POOL_ADDR_4,
                     token_1: token_b.clone(),
                     token_2: token_c.clone(),
                     sim: Box::new(ConstantProductSim {
@@ -563,8 +570,18 @@ pub(crate) mod split_scenarios {
 mod tests {
     use std::time::Duration;
 
+    use tycho_execution::encoding::models::Solution;
+    use tycho_simulation::tycho_core::Bytes;
+
     use super::*;
-    use crate::algorithm::{bellman_ford::BellmanFordAlgorithm, AlgorithmConfig};
+    use crate::{
+        algorithm::{
+            bellman_ford::BellmanFordAlgorithm,
+            path_frank_wolfe::{PathFrankWolfeAlgorithm, PathFrankWolfeConfig},
+            AlgorithmConfig,
+        },
+        types::{BlockInfo, OrderQuote, QuoteStatus},
+    };
 
     fn f64_eq(x: f64, y: f64) -> bool {
         (x - y).abs() < 1e-9
@@ -572,6 +589,18 @@ mod tests {
 
     fn bf_default() -> BellmanFordAlgorithm {
         BellmanFordAlgorithm::with_config(AlgorithmConfig::default())
+    }
+
+    fn pfw_default() -> PathFrankWolfeAlgorithm {
+        PathFrankWolfeAlgorithm::new(
+            AlgorithmConfig::new(1, 4, Duration::from_millis(5000), None).unwrap(),
+            PathFrankWolfeConfig {
+                max_paths: 6,
+                max_probe: 0.5,
+                min_split: 0.01,
+                line_search_evals: 16,
+            },
+        )
     }
 
     // ==================== evaluate_scenario tests ====================
@@ -681,6 +710,98 @@ mod tests {
         assert_eq!(
             result.net_output, scenario.lower_bound,
             "BF on double_split should match the precomputed lower bound",
+        );
+    }
+
+    // ==================== PFW scenario tests ====================
+
+    /// Generic checks that must hold for every scenario: lower bound, optimum proximity, route
+    /// validity, and encoding correctness. When `analytical_optimum == lower_bound` no split can
+    /// help, so we only require meeting the bound; otherwise the algorithm must strictly beat it.
+    #[tokio::test]
+    async fn pfw_all_scenarios() {
+        let pfw = pfw_default();
+        for scenario in split_scenarios::all() {
+            let name = scenario.name;
+            let (market, gm) = scenario.build_market();
+            let result = evaluate_scenario(&pfw, &scenario, market, gm).await;
+
+            result.assert_passes_lower_bound();
+            assert!(result.within_pct_of_optimum(5), "'{name}': not within 5% of optimum",);
+            let route = result
+                .route
+                .as_ref()
+                .unwrap_or_else(|| panic!("'{name}': expected a route"));
+            assert!(route.validate().is_ok(), "'{name}': route validation failed");
+            assert_route_converts_to_solution(route, &scenario, &result.net_output).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn pfw_gas_kills_split() {
+        let scenario = split_scenarios::gas_kills_split();
+        let (market, gm) = scenario.build_market();
+        let result = evaluate_scenario(&pfw_default(), &scenario, market, gm).await;
+        assert_eq!(result.path_count, 1, "high gas should prevent splitting");
+    }
+
+    // ==================== E2e test helpers ====================
+
+    fn make_order_quote(
+        route: crate::types::quote::Route,
+        amount_in: &BigUint,
+        amount_out: &BigUint,
+    ) -> OrderQuote {
+        let sender = Bytes::from([0xAAu8; 20].as_ref());
+        let receiver = sender.clone();
+        OrderQuote::new(
+            "e2e-test".to_string(),
+            QuoteStatus::Success,
+            amount_in.clone(),
+            amount_out.clone(),
+            route.total_gas(),
+            amount_out.clone(),
+            BlockInfo::new(1, "0x00".to_string(), 0),
+            "test".to_string(),
+            sender,
+            receiver,
+            "1".to_string(),
+        )
+        .with_route(route)
+    }
+
+    /// Converts a route to a Solution and verifies token_in, token_out, and amount_in.
+    async fn assert_route_converts_to_solution(
+        route: &crate::types::quote::Route,
+        scenario: &TestScenario,
+        net_output: &BigInt,
+    ) {
+        // When net_output is negative (gas exceeds output), clamp to zero for the quote.
+        let amount_out = net_output
+            .to_biguint()
+            .unwrap_or_default();
+        let quote = make_order_quote(route.clone(), &scenario.trade_amount, &amount_out);
+
+        let solution = Solution::try_from(&quote)
+            .unwrap_or_else(|e| panic!("'{}': Solution::try_from failed: {e}", scenario.name));
+        assert!(!solution.swaps().is_empty(), "solution must have swaps");
+        assert_eq!(
+            *solution.token_in(),
+            Bytes::from(scenario.token_in.address.as_ref()),
+            "'{}': solution token_in mismatch",
+            scenario.name,
+        );
+        assert_eq!(
+            *solution.token_out(),
+            Bytes::from(scenario.token_out.address.as_ref()),
+            "'{}': solution token_out mismatch",
+            scenario.name,
+        );
+        assert_eq!(
+            *solution.amount_in(),
+            scenario.trade_amount,
+            "'{}': solution amount_in mismatch",
+            scenario.name,
         );
     }
 }
