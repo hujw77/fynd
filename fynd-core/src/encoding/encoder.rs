@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use alloy::{
     primitives::{aliases::U48, keccak256, Address, Keccak256, U160, U256},
@@ -20,34 +20,13 @@ use tycho_execution::encoding::{
 };
 use tycho_simulation::tycho_common::{models::Chain, Bytes};
 
-use crate::{EncodingOptions, FeeBreakdown, OrderQuote, QuoteStatus, SolveError, Transaction};
+use crate::{
+    encoding::router_fees::{FeeRates, RouterFees, SharedRouterFees},
+    EncodingOptions, FeeBreakdown, OrderQuote, QuoteStatus, SolveError, Transaction,
+};
 
 /// Canonical Permit2 contract address — identical on all EVM chains.
 pub const PERMIT2_ADDRESS: &str = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
-
-static ROUTER_FEE_ON_OUTPUT_BPS: OnceLock<u64> = OnceLock::new();
-
-fn router_fee_on_output_bps() -> u64 {
-    *ROUTER_FEE_ON_OUTPUT_BPS.get_or_init(|| {
-        std::env::var("ROUTER_FEE_BPS")
-            .ok()
-            .and_then(|v| {
-                v.parse()
-                    .map_err(|e| {
-                        tracing::warn!(
-                            value = %v,
-                            error = %e,
-                            "ROUTER_FEE_BPS is not a valid u64; using default (10)"
-                        );
-                    })
-                    .ok()
-            })
-            .unwrap_or(10)
-    })
-}
-
-/// Router's share of the client fee: 2000 basis points (20%).
-const ROUTER_FEE_ON_CLIENT_FEE_BPS: u64 = 2000;
 
 /// Encodes solution into tycho compatible transactions.
 ///
@@ -56,10 +35,12 @@ const ROUTER_FEE_ON_CLIENT_FEE_BPS: u64 = 2000;
 ///   compatible transactions
 /// * `chain` - Chain to be used.
 /// * `router_address` - Address of the Tycho Router contract on this chain.
+/// * `router_fees` - Router fee configuration, refreshed from chain by a background fetcher.
 pub struct Encoder {
     tycho_encoder: Box<dyn TychoEncoder>,
     chain: Chain,
     router_address: Bytes,
+    router_fees: SharedRouterFees,
 }
 
 impl TryFrom<&OrderQuote> for Solution {
@@ -149,12 +130,21 @@ impl Encoder {
                 .build()?,
             chain,
             router_address,
+            router_fees: SharedRouterFees::default(),
         })
     }
 
     /// Returns the Tycho Router contract address for this chain.
     pub fn router_address(&self) -> &Bytes {
         &self.router_address
+    }
+
+    /// Returns the shared router fee handle this encoder reads on every encode.
+    ///
+    /// Pass it to a [`RouterFeeFetcher`](crate::encoding::fee_fetcher::RouterFeeFetcher)
+    /// to keep the fees in sync with the on-chain FeeCalculator.
+    pub fn router_fees(&self) -> SharedRouterFees {
+        self.router_fees.clone()
     }
 
     /// Encodes order solutions for execution.
@@ -199,13 +189,27 @@ impl Encoder {
             .tycho_encoder
             .encode_solutions(solutions)?;
 
+        // Require real, on-chain fee values
+        let router_fees = self
+            .router_fees
+            .snapshot()
+            .ok_or_else(|| {
+                SolveError::FailedEncoding(
+                    "router fees not yet loaded from the on-chain FeeCalculator; cannot encode"
+                        .to_string(),
+                )
+            })?;
         for (encoded_solution, (idx, solution)) in encoded_solutions
             .into_iter()
             .zip(to_encode)
         {
             quotes[idx].set_gas_estimate(encoded_solution.estimated_gas().clone());
-            let (transaction, fee_breakdown) =
-                self.encode_tycho_router_call(encoded_solution, &solution, &encoding_options)?;
+            let (transaction, fee_breakdown) = self.encode_tycho_router_call(
+                encoded_solution,
+                &solution,
+                &encoding_options,
+                &router_fees,
+            )?;
             quotes[idx].set_transaction(transaction);
             quotes[idx].set_fee_breakdown(fee_breakdown);
         }
@@ -226,16 +230,24 @@ impl Encoder {
         encoded_solution: EncodedSolution,
         solution: &Solution,
         encoding_options: &EncodingOptions,
+        router_fees: &RouterFees,
     ) -> Result<(Transaction, FeeBreakdown), EncodingError> {
         let amount_in = biguint_to_u256(solution.amount_in());
         let swap_output = solution.min_amount_out();
+        // Mirror FeeCalculator._resolveClient: custom router fees are looked up by the client
+        // fee receiver; without client fee params the contract falls back to tx.origin, for
+        // which the order sender is our best available proxy.
+        let fee_client = encoding_options
+            .client_fee_params()
+            .map_or_else(|| solution.sender(), |f| f.receiver());
         let fee_breakdown = Self::calculate_fee_breakdown(
             swap_output,
             encoding_options
                 .client_fee_params()
                 .map_or(0, |f| f.bps()),
             encoding_options.slippage(),
-        );
+            router_fees.fees_for(fee_client),
+        )?;
         let min_amount_out = biguint_to_u256(fee_breakdown.min_amount_received());
         let native_address = &self.chain.native_token().address;
         let router_eth = Address::from_slice(ROUTER_ETH_ADDRESS.as_ref());
@@ -402,28 +414,48 @@ impl Encoder {
 
     /// Mirrors the on-chain `FeeCalculator.calculateFee` using identical integer arithmetic.
     ///
-    /// Given the raw swap output, client fee in bps, and slippage tolerance, computes
-    /// the exact fee amounts and the minimum amount the user will receive.
+    /// Given the raw swap output, client fee in bps, slippage tolerance, and the effective
+    /// router fee rates for the client, computes the exact fee amounts and the minimum
+    /// amount the user will receive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the combined fees exceed 100%, which would make the on-chain
+    /// call revert with `FeeCalculator__FeeTooHigh`.
     fn calculate_fee_breakdown(
         swap_output: &BigUint,
         client_fee_bps: u16,
         slippage: f64,
-    ) -> FeeBreakdown {
-        let client_bps = client_fee_bps as u64;
+        fee_rates: FeeRates,
+    ) -> Result<FeeBreakdown, EncodingError> {
+        let max_fee_units = fee_rates.max_fee_units();
+        // Scale the client fee from legacy bps (10_000 = 100%) to fee units so both fee
+        // types share the same denominator, exactly as the contract does.
+        let scaled_client_fee = client_fee_bps as u64 * fee_rates.fee_units_per_bps();
+        let fee_on_output = fee_rates.on_output() as u64;
+        let fee_on_client_fee = fee_rates.on_client_fee() as u64;
+
+        if scaled_client_fee + fee_on_output > max_fee_units || fee_on_client_fee > max_fee_units {
+            return Err(EncodingError::FatalError(format!(
+                "combined client fee ({client_fee_bps} bps) and router fee on output \
+                 ({fee_on_output} fee units) exceed 100%; the router would revert"
+            )));
+        }
 
         let mut router_fee_on_client = BigUint::ZERO;
         let mut client_portion = BigUint::ZERO;
 
-        if client_bps > 0 {
-            let fee_numerator = swap_output * client_bps;
-            let total_client_fee = &fee_numerator / 10_000u64;
+        if scaled_client_fee > 0 {
+            let client_fee_numerator = swap_output * scaled_client_fee;
+            let total_client_fee = &client_fee_numerator / max_fee_units;
 
-            router_fee_on_client = &fee_numerator * ROUTER_FEE_ON_CLIENT_FEE_BPS / 100_000_000u64;
+            router_fee_on_client = client_fee_numerator * fee_on_client_fee /
+                BigUint::from(fee_rates.max_fee_units_squared());
 
             client_portion = total_client_fee - &router_fee_on_client;
         }
 
-        let router_fee_on_output = swap_output * router_fee_on_output_bps() / 10_000u64;
+        let router_fee_on_output = swap_output * fee_on_output / max_fee_units;
         let total_router_fee = router_fee_on_client + router_fee_on_output;
 
         let amount_after_fees = swap_output - &client_portion - &total_router_fee;
@@ -434,7 +466,12 @@ impl Encoder {
 
         let min_amount_received = &amount_after_fees - &slippage_amount;
 
-        FeeBreakdown::new(total_router_fee, client_portion, slippage_amount, min_amount_received)
+        Ok(FeeBreakdown::new(
+            total_router_fee,
+            client_portion,
+            slippage_amount,
+            min_amount_received,
+        ))
     }
 }
 
@@ -518,14 +555,14 @@ mod tests {
         Address::from([byte; 20])
     }
 
-    fn make_order_quote() -> OrderQuote {
+    fn make_order_quote(amount_out: u64) -> OrderQuote {
         OrderQuote::new(
             "test-order".to_string(),
             QuoteStatus::Success,
             BigUint::from(1000u64),
-            BigUint::from(990u64),
+            BigUint::from(amount_out),
             BigUint::from(100_000u64),
-            BigUint::from(990u64),
+            BigUint::from(amount_out),
             BlockInfo::new(1, "0x123".to_string(), 1000),
             "test".to_string(),
             Bytes::from(make_address(0xAA).as_ref()),
@@ -550,10 +587,13 @@ mod tests {
     }
 
     fn mock_encoder(chain: Chain) -> Encoder {
+        let router_fees = SharedRouterFees::default();
+        router_fees.set(RouterFees::new(FEE_SCALE, 100_000, 20_000_000, HashMap::new()));
         Encoder {
             tycho_encoder: Box::new(MockTychoEncoder),
             chain,
             router_address: Bytes::from([0u8; 20].as_ref()),
+            router_fees,
         }
     }
 
@@ -572,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_try_from_without_route_errors() {
-        let quote = make_order_quote();
+        let quote = make_order_quote(990);
 
         let result = Solution::try_from(&quote);
 
@@ -602,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_try_from_maps_tokens_and_amounts() {
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let solution = Solution::try_from(&quote).unwrap();
@@ -616,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_try_from_multi_hop_uses_boundary_swap_tokens() {
-        let quote = make_order_quote().with_route(make_route_with_tokens(&[
+        let quote = make_order_quote(990).with_route(make_route_with_tokens(&[
             (make_address(0x01), make_address(0x02)),
             (make_address(0x02), make_address(0x03)),
         ]));
@@ -659,13 +699,35 @@ mod tests {
         let registry = SwapEncoderRegistry::new(Chain::Ethereum)
             .add_default_encoders(None)
             .unwrap();
-        Encoder::new(Chain::Ethereum, registry).unwrap()
+        let encoder = Encoder::new(Chain::Ethereum, registry).unwrap();
+        // Load fees so encode() can run; in production the fetcher supplies on-chain values.
+        encoder
+            .router_fees()
+            .set(RouterFees::new(FEE_SCALE, 100_000, 20_000_000, HashMap::new()));
+        encoder
+    }
+
+    #[tokio::test]
+    async fn test_encode_errors_when_fees_not_loaded() {
+        let registry = SwapEncoderRegistry::new(Chain::Ethereum)
+            .add_default_encoders(None)
+            .unwrap();
+        // Encoder without any fees loaded — must refuse to encode rather than guess.
+        let encoder = Encoder::new(Chain::Ethereum, registry).unwrap();
+        let quote = make_order_quote(990)
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+
+        let result = encoder
+            .encode(vec![quote], EncodingOptions::new(0.01))
+            .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_encode_sets_transaction_on_successful_solution() {
         let encoder = real_encoder();
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let encoding_options = EncodingOptions::new(0.01);
@@ -685,7 +747,7 @@ mod tests {
     #[tokio::test]
     async fn test_encode_with_client_fee_params() {
         let encoder = real_encoder();
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let fee = crate::ClientFeeParams::new(
@@ -712,7 +774,7 @@ mod tests {
     #[tokio::test]
     async fn test_encode_without_client_fee_produces_transaction() {
         let encoder = real_encoder();
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
 
         let encoding_options = EncodingOptions::new(0.01);
@@ -740,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn test_encode_with_client_fee_returns_signature_offset() {
         let encoder = real_encoder();
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
         let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
 
@@ -757,7 +819,7 @@ mod tests {
     #[tokio::test]
     async fn test_encode_without_client_fee_has_no_signature_offset() {
         let encoder = real_encoder();
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
         let opts = EncodingOptions::new(0.01);
 
@@ -776,7 +838,7 @@ mod tests {
     async fn test_signature_offset_allows_patching() {
         let encoder = real_encoder();
         let real_sig = vec![0xFF; 65];
-        let quote = make_order_quote()
+        let quote = make_order_quote(990)
             .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
         let opts = EncodingOptions::new(0.01).with_client_fee_params(make_client_fee(100));
 
@@ -793,5 +855,113 @@ mod tests {
         let mut calldata = tx.data().to_vec();
         calldata[offset..offset + 65].copy_from_slice(&real_sig);
         assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
+    }
+
+    // ==================== Fee Breakdown Tests ====================
+
+    /// FeeCalculator precision used in these tests: 100% = 100,000,000 fee units.
+    const FEE_SCALE: u64 = 100_000_000;
+
+    #[test]
+    fn test_calculate_fee_breakdown() {
+        // 10 bps router fee on output, 20% router share of the client fee, 1% client fee.
+        let rates = FeeRates::new(100_000, 20_000_000, FEE_SCALE);
+
+        let breakdown =
+            Encoder::calculate_fee_breakdown(&BigUint::from(1_000_000u64), 100, 0.0, rates)
+                .unwrap();
+
+        // total client fee = 1% of 1_000_000 = 10_000; router takes 20% of it = 2_000.
+        // router fee on output = 0.1% of 1_000_000 = 1_000.
+        assert_eq!(*breakdown.client_fee(), BigUint::from(8_000u64));
+        assert_eq!(*breakdown.router_fee(), BigUint::from(3_000u64));
+        assert_eq!(*breakdown.min_amount_received(), BigUint::from(989_000u64));
+    }
+
+    #[test]
+    fn test_calculate_fee_breakdown_zero_fees() {
+        let rates = FeeRates::new(0, 0, FEE_SCALE);
+
+        let breakdown =
+            Encoder::calculate_fee_breakdown(&BigUint::from(1_000_000u64), 0, 0.0, rates).unwrap();
+
+        assert_eq!(*breakdown.client_fee(), BigUint::ZERO);
+        assert_eq!(*breakdown.router_fee(), BigUint::ZERO);
+        assert_eq!(*breakdown.min_amount_received(), BigUint::from(1_000_000u64));
+    }
+
+    #[test]
+    fn test_calculate_fee_breakdown_fee_too_high() {
+        // 100% client fee plus any router fee on output exceeds the maximum.
+        let rates = FeeRates::new(1, 0, FEE_SCALE);
+
+        let result =
+            Encoder::calculate_fee_breakdown(&BigUint::from(1_000_000u64), 10_000, 0.0, rates);
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_encode_uses_custom_fees_for_client_fee_receiver() {
+        let encoder = real_encoder();
+        // Default 1% router fee on output; receiver 0xBB pays no router fees at all.
+        let custom = HashMap::from([(Bytes::from(make_address(0xBB).as_ref()), (0u32, 0u32))]);
+        encoder
+            .router_fees()
+            .set(RouterFees::new(FEE_SCALE, 1_000_000, 20_000_000, custom));
+        let quote = make_order_quote(1_000_000_000)
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+        let opts = EncodingOptions::new(0.0).with_client_fee_params(make_client_fee(100));
+
+        let result = encoder
+            .encode(vec![quote], opts)
+            .await
+            .unwrap();
+
+        let breakdown = result[0].fee_breakdown().unwrap();
+        assert_eq!(*breakdown.router_fee(), BigUint::ZERO);
+        // Client keeps the full 1% fee since the router's share is overridden to zero.
+        assert_eq!(*breakdown.client_fee(), BigUint::from(10_000_000u64));
+    }
+
+    #[tokio::test]
+    async fn test_encode_falls_back_to_sender() {
+        let encoder = real_encoder();
+        // The order sender (0xAA) has a custom zero router fee on output; client-fee share
+        // inherits the 20% default.
+        let custom =
+            HashMap::from([(Bytes::from(make_address(0xAA).as_ref()), (0u32, 20_000_000u32))]);
+        encoder
+            .router_fees()
+            .set(RouterFees::new(FEE_SCALE, 1_000_000, 20_000_000, custom));
+        let quote = make_order_quote(1_000_000_000)
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+
+        let result = encoder
+            .encode(vec![quote], EncodingOptions::new(0.0))
+            .await
+            .unwrap();
+
+        let breakdown = result[0].fee_breakdown().unwrap();
+        assert_eq!(*breakdown.router_fee(), BigUint::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_encode_unknown_client() {
+        let encoder = real_encoder();
+        encoder
+            .router_fees()
+            .set(RouterFees::new(FEE_SCALE, 1_000_000, 20_000_000, HashMap::new()));
+        let quote = make_order_quote(1_000_000_000)
+            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
+
+        let result = encoder
+            .encode(vec![quote], EncodingOptions::new(0.0))
+            .await
+            .unwrap();
+
+        let breakdown = result[0].fee_breakdown().unwrap();
+        // 1% of 1_000_000_000.
+        assert_eq!(*breakdown.router_fee(), BigUint::from(10_000_000u64));
     }
 }

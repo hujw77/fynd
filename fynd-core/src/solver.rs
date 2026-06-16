@@ -28,7 +28,7 @@ use tycho_simulation::{
 use crate::{
     algorithm::{AlgorithmConfig, AlgorithmError},
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
-    encoding::encoder::Encoder,
+    encoding::{encoder::Encoder, fee_fetcher::RouterFeeFetcher},
     feed::{
         events::{MarketEvent, MarketEventHandler},
         gas::GasPriceFetcher,
@@ -65,6 +65,8 @@ pub mod defaults {
     pub const TVL_BUFFER_RATIO: f64 = 1.1;
     /// How often the gas price is refreshed from the RPC node.
     pub const GAS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+    /// How often router fees are refreshed from the on-chain FeeCalculator contract.
+    pub const ROUTER_FEE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
     /// Delay before reconnecting to the Tycho feed after a disconnect.
     pub const RECONNECT_DELAY: Duration = Duration::from_secs(5);
     /// Minimum number of solver pool responses required before returning a quote (`0` = wait for
@@ -273,6 +275,9 @@ pub enum SolverBuildError {
     /// The swap encoder could not be created for the target chain.
     #[error("failed to create encoder: {0}")]
     Encoder(String),
+    /// The router fee fetcher could not be created (e.g. malformed RPC URL).
+    #[error("failed to create router fee fetcher: {0}")]
+    RouterFeeFetcher(String),
     /// A pool referenced an algorithm name that is not registered.
     #[error(transparent)]
     UnknownAlgorithm(#[from] UnknownAlgorithmError),
@@ -332,6 +337,7 @@ struct CustomPoolEntry {
 struct BuiltComponents {
     tycho_feed: TychoFeed,
     gas_price_fetcher: GasPriceFetcher<EthereumRpcClient>,
+    router_fee_fetcher: RouterFeeFetcher,
     computation_manager: ComputationManager,
     computation_event_rx: broadcast::Receiver<MarketEvent>,
     computation_shutdown_tx: broadcast::Sender<()>,
@@ -752,6 +758,14 @@ impl FyndBuilder {
         let chain = self.chain;
         let router_address = encoder.router_address().clone();
 
+        let router_fee_fetcher = RouterFeeFetcher::new(
+            self.rpc_url.as_str(),
+            &router_address,
+            encoder.router_fees(),
+            defaults::ROUTER_FEE_REFRESH_INTERVAL,
+        )
+        .map_err(|e| SolverBuildError::RouterFeeFetcher(e.to_string()))?;
+
         // Only start price providers when the guard is enabled.
         // When disabled, per-request attempts to enable the guard return an error.
         let router_config = WorkerPoolRouterConfig::default()
@@ -773,6 +787,7 @@ impl FyndBuilder {
         Ok(BuiltComponents {
             tycho_feed,
             gas_price_fetcher,
+            router_fee_fetcher,
             computation_manager,
             computation_event_rx,
             computation_shutdown_tx,
@@ -804,6 +819,9 @@ impl FyndBuilder {
         let gas_price_handle = tokio::spawn(async move {
             c.gas_price_fetcher.run().await;
         });
+        let router_fee_handle = tokio::spawn(async move {
+            c.router_fee_fetcher.run().await;
+        });
         let computation_handle = tokio::spawn(async move {
             c.computation_manager
                 .run(c.computation_event_rx, c.computation_shutdown_rx)
@@ -817,6 +835,7 @@ impl FyndBuilder {
             derived_data: c.derived_data,
             feed_handle,
             gas_price_handle,
+            router_fee_handle,
             computation_handle,
             computation_shutdown_tx: c.computation_shutdown_tx,
             chain: c.chain,
@@ -857,6 +876,9 @@ impl FyndBuilder {
         let gas_price_handle = tokio::spawn(async move {
             c.gas_price_fetcher.run().await;
         });
+        let router_fee_handle = tokio::spawn(async move {
+            c.router_fee_fetcher.run().await;
+        });
         let computation_handle = tokio::spawn(async move {
             c.computation_manager
                 .run(c.computation_event_rx, c.computation_shutdown_rx)
@@ -876,6 +898,7 @@ impl FyndBuilder {
                 derived_data: c.derived_data,
                 feed_handle,
                 gas_price_handle,
+                router_fee_handle,
                 computation_handle,
                 computation_shutdown_tx: c.computation_shutdown_tx,
                 chain: c.chain,
@@ -895,6 +918,7 @@ pub struct Solver {
     derived_data: SharedDerivedDataRef,
     feed_handle: JoinHandle<()>,
     gas_price_handle: JoinHandle<()>,
+    router_fee_handle: JoinHandle<()>,
     computation_handle: JoinHandle<()>,
     computation_shutdown_tx: broadcast::Sender<()>,
     chain: Chain,
@@ -1118,10 +1142,11 @@ impl Solver {
             tracing::warn!("no receivers for initial MarketUpdated broadcast");
         }
 
-        // Dummy handles for feed/gas (not running in replay mode). The market event
-        // channel stays alive through the `market_event_tx` field on `Solver`.
+        // Dummy handles for feed/gas/router-fees (not running in replay mode). The market
+        // event channel stays alive through the `market_event_tx` field on `Solver`.
         let feed_handle = tokio::spawn(futures::future::pending::<()>());
         let gas_price_handle = tokio::spawn(async { /* no-op */ });
+        let router_fee_handle = tokio::spawn(async { /* no-op */ });
 
         Ok(Solver {
             router,
@@ -1130,6 +1155,7 @@ impl Solver {
             derived_data,
             feed_handle,
             gas_price_handle,
+            router_fee_handle,
             computation_handle,
             computation_shutdown_tx,
             chain,
@@ -1146,6 +1172,7 @@ impl Solver {
         }
         self.feed_handle.abort();
         self.gas_price_handle.abort();
+        self.router_fee_handle.abort();
     }
 
     /// Consumes the solver into its raw parts for callers that add their own layer.
@@ -1157,6 +1184,7 @@ impl Solver {
             derived_data: self.derived_data,
             feed_handle: self.feed_handle,
             gas_price_handle: self.gas_price_handle,
+            router_fee_handle: self.router_fee_handle,
             computation_handle: self.computation_handle,
             computation_shutdown_tx: self.computation_shutdown_tx,
             chain: self.chain,
@@ -1181,6 +1209,8 @@ pub struct SolverParts {
     feed_handle: JoinHandle<()>,
     /// Background task polling the RPC node for gas prices.
     gas_price_handle: JoinHandle<()>,
+    /// Background task refreshing router fees from the on-chain FeeCalculator.
+    router_fee_handle: JoinHandle<()>,
     /// Background task running the computation manager.
     computation_handle: JoinHandle<()>,
     /// Send a unit value on this channel to trigger a graceful computation-manager shutdown.
@@ -1234,6 +1264,7 @@ impl SolverParts {
         JoinHandle<()>,
         JoinHandle<()>,
         JoinHandle<()>,
+        JoinHandle<()>,
         broadcast::Sender<()>,
     ) {
         (
@@ -1243,6 +1274,7 @@ impl SolverParts {
             self.derived_data,
             self.feed_handle,
             self.gas_price_handle,
+            self.router_fee_handle,
             self.computation_handle,
             self.computation_shutdown_tx,
         )
