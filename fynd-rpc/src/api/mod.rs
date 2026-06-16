@@ -19,8 +19,8 @@ use actix_web::{web, HttpResponse, ResponseError};
 pub use dto::HealthStatus;
 pub use error::ApiError;
 use fynd_core::{
-    derived::SharedDerivedDataRef, feed::market_data::MarketData,
-    worker_pool_router::WorkerPoolRouter,
+    derived::SharedDerivedDataRef, encoding::router_fees::SharedRouterFees,
+    feed::market_data::MarketData, worker_pool_router::WorkerPoolRouter,
 };
 use handlers::configure_routes;
 #[cfg(feature = "experimental")]
@@ -68,6 +68,13 @@ pub struct ApiDoc;
 )]
 pub struct ExperimentalApiDoc;
 
+/// Maximum age of the last successful router-fee fetch before health reports unhealthy.
+///
+/// Fees refresh every 5 minutes, so one hour tolerates ~12 consecutive failed fetches before
+/// flagging — long enough to ride out transient RPC blips, short enough that a dead fetcher
+/// trips the deployment's liveness probe and restarts the service.
+const ROUTER_FEE_STALE_THRESHOLD: Duration = Duration::from_secs(3600);
+
 /// Simple tracker for service health metrics.
 ///
 /// Reads the last update timestamp from MarketState to determine how fresh the market data is,
@@ -76,17 +83,25 @@ pub struct ExperimentalApiDoc;
 pub(crate) struct HealthTracker {
     market_data: MarketData,
     derived_data: SharedDerivedDataRef,
+    router_fees: SharedRouterFees,
     gas_price_stale_threshold: Option<Duration>,
+    router_fee_stale_threshold: Duration,
     created_at: Instant,
 }
 
 impl HealthTracker {
     /// Creates a new health tracker.
-    pub(crate) fn new(market_data: MarketData, derived_data: SharedDerivedDataRef) -> Self {
+    pub(crate) fn new(
+        market_data: MarketData,
+        derived_data: SharedDerivedDataRef,
+        router_fees: SharedRouterFees,
+    ) -> Self {
         Self {
             market_data,
             derived_data,
+            router_fees,
             gas_price_stale_threshold: None,
+            router_fee_stale_threshold: ROUTER_FEE_STALE_THRESHOLD,
             created_at: Instant::now(),
         }
     }
@@ -150,6 +165,24 @@ impl HealthTracker {
             .read()
             .await
             .derived_data_ready()
+    }
+
+    /// Returns whether router fees have been loaded from the on-chain FeeCalculator at least
+    /// once. Until then the encoder cannot produce transactions, so the service is not ready.
+    pub(crate) fn fees_ready(&self) -> bool {
+        self.router_fees
+            .last_fetch_age()
+            .is_some()
+    }
+
+    /// Returns whether router fees are stale: no successful on-chain fetch within the
+    /// threshold. During startup (before the threshold has elapsed), a never-fetched state is
+    /// not yet considered stale — the first fetch may still be in flight.
+    pub(crate) fn fees_stale(&self) -> bool {
+        match self.router_fees.last_fetch_age() {
+            Some(age) => age > self.router_fee_stale_threshold,
+            None => self.created_at.elapsed() > self.router_fee_stale_threshold,
+        }
     }
 }
 

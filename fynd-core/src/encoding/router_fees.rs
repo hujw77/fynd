@@ -9,6 +9,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
 
 use tycho_simulation::tycho_common::Bytes;
@@ -66,7 +67,7 @@ impl FeeRates {
 ///
 /// Mirrors the on-chain FeeCalculator state. Rates are in fee units where
 /// [`max_fee_units`](Self::max_fee_units) represents 100%.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RouterFees {
     max_fee_units: u64,
     default_fee_on_output: u32,
@@ -75,23 +76,37 @@ pub struct RouterFees {
     /// has already applied each client's overrides over the defaults, so a lookup miss simply
     /// falls back to the defaults.
     custom_fees: HashMap<Bytes, (u32, u32)>,
+    /// When this configuration was fetched from chain, used for staleness checks.
+    fetched_at: Instant,
 }
 
 impl RouterFees {
-    /// Creates a fee configuration from on-chain values. `custom_fees` maps a client to its
-    /// resolved `(fee_on_output, fee_on_client_fee)` pair in fee units.
+    /// Creates a fee configuration from on-chain values, stamped with the current time.
+    /// `custom_fees` maps a client to its resolved `(fee_on_output, fee_on_client_fee)` pair
+    /// in fee units.
     pub fn new(
         max_fee_units: u64,
         default_fee_on_output: u32,
         default_fee_on_client_fee: u32,
         custom_fees: HashMap<Bytes, (u32, u32)>,
     ) -> Self {
-        Self { max_fee_units, default_fee_on_output, default_fee_on_client_fee, custom_fees }
+        Self {
+            max_fee_units,
+            default_fee_on_output,
+            default_fee_on_client_fee,
+            custom_fees,
+            fetched_at: Instant::now(),
+        }
     }
 
     /// Fee units representing 100% (the contract's `MAX_FEE_BPS`).
     pub fn max_fee_units(&self) -> u64 {
         self.max_fee_units
+    }
+
+    /// Time since this configuration was fetched from chain.
+    pub fn last_fetch_age(&self) -> Duration {
+        self.fetched_at.elapsed()
     }
 
     /// Resolves the effective fee rates for `client`: the per-client pair when present,
@@ -132,7 +147,19 @@ impl SharedRouterFees {
             .clone()
     }
 
-    /// Replaces the fee configuration with freshly fetched on-chain values.
+    /// Time since the last successful fetch, or `None` if no fetch has succeeded yet.
+    ///
+    /// `is_some()` doubles as a readiness check (fees loaded at least once).
+    pub fn last_fetch_age(&self) -> Option<Duration> {
+        self.0
+            .read()
+            .expect("router fees lock poisoned")
+            .as_ref()
+            .map(RouterFees::last_fetch_age)
+    }
+
+    /// Replaces the fee configuration with freshly fetched on-chain values and records the
+    /// fetch time.
     pub fn set(&self, fees: RouterFees) {
         *self
             .0
@@ -152,19 +179,35 @@ mod tests {
     }
 
     #[test]
-    fn test_fess_for_unknown_client() {
+    fn test_fees_for_unknown_client() {
         let fees = RouterFees::new(SCALE, 100_000, 20_000_000, HashMap::new());
 
         assert_eq!(fees.fees_for(&client(0xAA)), FeeRates::new(100_000, 20_000_000, SCALE));
     }
 
     #[test]
-    fn test_fess_for_known_client() {
+    fn test_fees_for_known_client() {
         let custom = HashMap::from([(client(0xAA), (50_000u32, 10_000_000u32))]);
         let fees = RouterFees::new(SCALE, 100_000, 20_000_000, custom);
 
         // Known client gets its stored pair; everyone else gets the defaults.
         assert_eq!(fees.fees_for(&client(0xAA)), FeeRates::new(50_000, 10_000_000, SCALE));
         assert_eq!(fees.fees_for(&client(0xBB)), FeeRates::new(100_000, 20_000_000, SCALE));
+    }
+
+    #[test]
+    fn test_shared_router_fees_tracks_load_and_age() {
+        let shared = SharedRouterFees::default();
+        assert_eq!(shared.last_fetch_age(), None);
+
+        shared.set(RouterFees::new(SCALE, 1, 2, HashMap::new()));
+
+        let snapshot = shared
+            .snapshot()
+            .expect("fees should be loaded");
+        assert_eq!(snapshot.max_fee_units(), SCALE);
+        assert_eq!(snapshot.fees_for(&client(0xAA)), FeeRates::new(1, 2, SCALE));
+        // A fetch just happened, so the recorded age is well under a second.
+        assert!(shared.last_fetch_age().unwrap() < Duration::from_secs(1));
     }
 }

@@ -23,7 +23,7 @@ infrastructure.
 | Endpoint | Handler | Description |
 |---|---|---|
 | `POST /v1/quote` | `handlers::quote` | Submit orders, receive optimal routes |
-| `GET /v1/health` | `handlers::health` | Health check (data freshness, derived data readiness, pool count) |
+| `GET /v1/health` | `handlers::health` | Health check (data freshness, derived data readiness, gas/router-fee staleness, router-fee readiness, pool count). Returns 503 when router fees are unloaded or last fetched over an hour ago, so a liveness probe restarts the service |
 | `GET /v1/info` | `handlers::info` | Static metadata about this Fynd instance (version, chain, spender address) |
 | `GET /v1/prices` | `handlers::get_prices` | Token prices, spot prices, pool depths (experimental feature only) |
 

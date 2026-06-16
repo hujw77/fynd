@@ -44,8 +44,9 @@ sol! {
     }
 }
 
-/// Custom-fee entries requested per `getAllClientFees` call. Each entry is three ABI words,
-/// so a full page stays well within node response limits.
+/// Custom-fee entries requested per `getAllClientFees` call. Each entry is five 32-byte ABI
+/// words (an address plus the four-field `CustomFees` tuple), so a full page is ~80 KB —
+/// well within node response limits.
 const CLIENT_FEE_PAGE_SIZE: usize = 500;
 
 /// Error fetching router fees from chain.

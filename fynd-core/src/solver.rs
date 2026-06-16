@@ -28,7 +28,7 @@ use tycho_simulation::{
 use crate::{
     algorithm::{AlgorithmConfig, AlgorithmError},
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
-    encoding::{encoder::Encoder, fee_fetcher::RouterFeeFetcher},
+    encoding::{encoder::Encoder, fee_fetcher::RouterFeeFetcher, router_fees::SharedRouterFees},
     feed::{
         events::{MarketEvent, MarketEventHandler},
         gas::GasPriceFetcher,
@@ -346,6 +346,7 @@ struct BuiltComponents {
     worker_pools: Vec<WorkerPool>,
     market_data: MarketData,
     derived_data: SharedDerivedDataRef,
+    router_fees: SharedRouterFees,
     chain: Chain,
     router_address: Bytes,
     pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
@@ -757,11 +758,12 @@ impl FyndBuilder {
 
         let chain = self.chain;
         let router_address = encoder.router_address().clone();
+        let router_fees = encoder.router_fees();
 
         let router_fee_fetcher = RouterFeeFetcher::new(
             self.rpc_url.as_str(),
             &router_address,
-            encoder.router_fees(),
+            router_fees.clone(),
             defaults::ROUTER_FEE_REFRESH_INTERVAL,
         )
         .map_err(|e| SolverBuildError::RouterFeeFetcher(e.to_string()))?;
@@ -796,6 +798,7 @@ impl FyndBuilder {
             worker_pools,
             market_data,
             derived_data,
+            router_fees,
             chain,
             router_address,
             pending_indexers: self.pending_indexers,
@@ -833,6 +836,7 @@ impl FyndBuilder {
             worker_pools: c.worker_pools,
             market_data: c.market_data,
             derived_data: c.derived_data,
+            router_fees: c.router_fees,
             feed_handle,
             gas_price_handle,
             router_fee_handle,
@@ -896,6 +900,7 @@ impl FyndBuilder {
                 worker_pools: c.worker_pools,
                 market_data: c.market_data,
                 derived_data: c.derived_data,
+                router_fees: c.router_fees,
                 feed_handle,
                 gas_price_handle,
                 router_fee_handle,
@@ -916,6 +921,7 @@ pub struct Solver {
     worker_pools: Vec<WorkerPool>,
     market_data: MarketData,
     derived_data: SharedDerivedDataRef,
+    router_fees: SharedRouterFees,
     feed_handle: JoinHandle<()>,
     gas_price_handle: JoinHandle<()>,
     router_fee_handle: JoinHandle<()>,
@@ -960,8 +966,9 @@ impl Solver {
     /// - The Tycho feed has delivered at least one market snapshot.
     /// - The computation manager has completed at least one derived-data cycle (spot prices, pool
     ///   depths, token gas prices).
+    /// - Router fees have been loaded from the on-chain FeeCalculator at least once.
     ///
-    /// The method polls every 500 ms and returns as soon as both conditions are
+    /// The method polls every 500 ms and returns as soon as all conditions are
     /// met, or returns [`WaitReadyError`] if `timeout` elapses first.
     ///
     /// # Example
@@ -986,8 +993,12 @@ impl Solver {
                 .read()
                 .await
                 .derived_data_ready();
+            let fees_ready = self
+                .router_fees
+                .last_fetch_age()
+                .is_some();
 
-            if market_ready && derived_ready {
+            if market_ready && derived_ready && fees_ready {
                 return Ok(());
             }
 
@@ -1121,6 +1132,16 @@ impl Solver {
         };
 
         let router_address = encoder.router_address().clone();
+        // Replay mode has no FeeCalculator to read; seed a zero-fee config at the standard
+        // 8-decimal scale so the recording-based solver reports ready (integration tests do
+        // not exercise encoding).
+        let router_fees = encoder.router_fees();
+        router_fees.set(crate::encoding::router_fees::RouterFees::new(
+            100_000_000,
+            0,
+            0,
+            std::collections::HashMap::new(),
+        ));
         let router_config = WorkerPoolRouterConfig::default()
             .with_timeout(Duration::from_millis(max_timeout_ms.max(5000)))
             .with_min_responses(defaults::ROUTER_MIN_RESPONSES);
@@ -1153,6 +1174,7 @@ impl Solver {
             worker_pools,
             market_data,
             derived_data,
+            router_fees,
             feed_handle,
             gas_price_handle,
             router_fee_handle,
@@ -1182,6 +1204,7 @@ impl Solver {
             worker_pools: self.worker_pools,
             market_data: self.market_data,
             derived_data: self.derived_data,
+            router_fees: self.router_fees,
             feed_handle: self.feed_handle,
             gas_price_handle: self.gas_price_handle,
             router_fee_handle: self.router_fee_handle,
@@ -1205,6 +1228,8 @@ pub struct SolverParts {
     market_data: MarketData,
     /// Derived on-chain data (spot prices, depths, gas costs) shared across all components.
     derived_data: SharedDerivedDataRef,
+    /// Router fee configuration, refreshed from chain by the router-fee fetcher.
+    router_fees: SharedRouterFees,
     /// Background task running the Tycho market-data feed.
     feed_handle: JoinHandle<()>,
     /// Background task polling the RPC node for gas prices.
@@ -1245,6 +1270,11 @@ impl SolverParts {
     /// Returns a reference to the shared derived data.
     pub fn derived_data(&self) -> &SharedDerivedDataRef {
         &self.derived_data
+    }
+
+    /// Returns a reference to the shared router fee configuration.
+    pub fn router_fees(&self) -> &SharedRouterFees {
+        &self.router_fees
     }
 
     /// Consumes the parts and returns the router.

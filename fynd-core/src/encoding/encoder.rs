@@ -435,10 +435,17 @@ impl Encoder {
         let fee_on_output = fee_rates.on_output() as u64;
         let fee_on_client_fee = fee_rates.on_client_fee() as u64;
 
-        if scaled_client_fee + fee_on_output > max_fee_units || fee_on_client_fee > max_fee_units {
+        if scaled_client_fee + fee_on_output > max_fee_units {
             return Err(EncodingError::FatalError(format!(
-                "combined client fee ({client_fee_bps} bps) and router fee on output \
-                 ({fee_on_output} fee units) exceed 100%; the router would revert"
+                "client fee ({client_fee_bps} bps) plus router fee on output \
+                 ({fee_on_output} fee units) exceed the {max_fee_units} fee-unit cap (100%); \
+                 the router would revert"
+            )));
+        }
+        if fee_on_client_fee > max_fee_units {
+            return Err(EncodingError::FatalError(format!(
+                "router fee on client fee ({fee_on_client_fee} fee units) exceeds the \
+                 {max_fee_units} fee-unit cap (100%); the router would revert"
             )));
         }
 
