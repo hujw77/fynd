@@ -1,3 +1,12 @@
+## [0.81.0](https://github.com/propeller-heads/fynd/compare/0.80.0...0.81.0) (2026-06-17)
+
+
+### Features
+
+* Fall back to default router fee instead of gating on fee fetch ([9ca6335](https://github.com/propeller-heads/fynd/commit/9ca633520a7e52290bb2576c9fa93c85fc81599d))
+* Gate health on router fee readiness and staleness ([7c36268](https://github.com/propeller-heads/fynd/commit/7c362689d5548373884110f2e9de42104ae5fe4b))
+* Read router fees from on-chain FeeCalculator ([6e06eda](https://github.com/propeller-heads/fynd/commit/6e06edad04afc796dd781564c5cac1e63a3abbc6))
+
 ## [0.80.0](https://github.com/propeller-heads/fynd/compare/0.79.0...0.80.0) (2026-06-15)
 
 
