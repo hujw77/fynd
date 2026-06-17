@@ -114,9 +114,7 @@ pub(crate) async fn health(state: web::Data<AppState>) -> HttpResponse {
         .health_tracker()
         .gas_price_stale()
         .await;
-    let fees_ready = state.health_tracker().fees_ready();
-    let fees_stale = state.health_tracker().fees_stale();
-    let is_healthy = data_fresh && derived_data_ready && !gas_stale && fees_ready && !fees_stale;
+    let is_healthy = data_fresh && derived_data_ready && !gas_stale;
 
     let status = dto::HealthStatus::new(
         is_healthy,
@@ -351,11 +349,9 @@ mod tests {
             .add_default_encoders(None)
             .expect("default encoders should always succeed");
         let encoder = Encoder::new(Chain::Ethereum, registry).expect("encoder should build");
-        let router_fees = encoder.router_fees();
 
         let router = WorkerPoolRouter::new(vec![], WorkerPoolRouterConfig::default(), encoder);
-        let health_tracker =
-            HealthTracker::new(market_data.clone(), Arc::clone(&derived_data), router_fees);
+        let health_tracker = HealthTracker::new(market_data.clone(), Arc::clone(&derived_data));
 
         let router_address =
             Bytes::from(hex::decode("fD0b31d2E955fA55e3fa641Fe90e08b677188d35").unwrap());

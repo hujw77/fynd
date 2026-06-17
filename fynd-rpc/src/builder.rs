@@ -237,12 +237,9 @@ impl FyndRPCBuilder {
                 .into()
         };
 
-        let health_tracker = HealthTracker::new(
-            parts.market_data().clone(),
-            Arc::clone(parts.derived_data()),
-            parts.router_fees().clone(),
-        )
-        .with_gas_price_stale_threshold(self.gas_price_stale_threshold);
+        let health_tracker =
+            HealthTracker::new(parts.market_data().clone(), Arc::clone(parts.derived_data()))
+                .with_gas_price_stale_threshold(self.gas_price_stale_threshold);
 
         #[cfg(feature = "experimental")]
         let gas_token = {

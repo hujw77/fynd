@@ -9,7 +9,6 @@
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
 };
 
 use tycho_simulation::tycho_common::Bytes;
@@ -20,6 +19,14 @@ use tycho_simulation::tycho_common::Bytes;
 /// of the FeeCalculator's internal precision. The contract scales `clientFeeBps` into its own
 /// fee units by `max_fee_units / LEGACY_BPS_DENOMINATOR`.
 pub const LEGACY_BPS_DENOMINATOR: u64 = 10_000;
+
+/// Fee-unit precision for the [`RouterFees::fallback`] configuration: 100% = 100,000,000 fee
+/// units, matching the precision the on-chain FeeCalculator reports in production.
+const FALLBACK_MAX_FEE_UNITS: u64 = 100_000_000;
+
+/// Fallback router fee on swap output, used until the on-chain FeeCalculator has been read and
+/// whenever a fetch fails: 0.1 bps (0.001%), i.e. 1000 fee units at 1e8 precision.
+const FALLBACK_FEE_ON_OUTPUT: u32 = 1_000;
 
 /// Effective router fee rates for one client, together with the precision scale they are
 /// expressed in.
@@ -76,37 +83,30 @@ pub struct RouterFees {
     /// has already applied each client's overrides over the defaults, so a lookup miss simply
     /// falls back to the defaults.
     custom_fees: HashMap<Bytes, (u32, u32)>,
-    /// When this configuration was fetched from chain, used for staleness checks.
-    fetched_at: Instant,
 }
 
 impl RouterFees {
-    /// Creates a fee configuration from on-chain values, stamped with the current time.
-    /// `custom_fees` maps a client to its resolved `(fee_on_output, fee_on_client_fee)` pair
-    /// in fee units.
+    /// Creates a fee configuration from on-chain values. `custom_fees` maps a client to its
+    /// resolved `(fee_on_output, fee_on_client_fee)` pair in fee units.
     pub fn new(
         max_fee_units: u64,
         default_fee_on_output: u32,
         default_fee_on_client_fee: u32,
         custom_fees: HashMap<Bytes, (u32, u32)>,
     ) -> Self {
-        Self {
-            max_fee_units,
-            default_fee_on_output,
-            default_fee_on_client_fee,
-            custom_fees,
-            fetched_at: Instant::now(),
-        }
+        Self { max_fee_units, default_fee_on_output, default_fee_on_client_fee, custom_fees }
+    }
+
+    /// Conservative fallback used until the on-chain FeeCalculator has been read, and whenever
+    /// a fetch fails: a 0.1 bps router fee on output, no fee on client fees, and no per-client
+    /// overrides. Lets the encoder always produce a transaction rather than failing.
+    pub fn fallback() -> Self {
+        Self::new(FALLBACK_MAX_FEE_UNITS, FALLBACK_FEE_ON_OUTPUT, 0, HashMap::new())
     }
 
     /// Fee units representing 100% (the contract's `MAX_FEE_BPS`).
     pub fn max_fee_units(&self) -> u64 {
         self.max_fee_units
-    }
-
-    /// Time since this configuration was fetched from chain.
-    pub fn last_fetch_age(&self) -> Duration {
-        self.fetched_at.elapsed()
     }
 
     /// Resolves the effective fee rates for `client`: the per-client pair when present,
@@ -131,40 +131,33 @@ impl RouterFees {
 /// Cloneable handle to the router fee configuration shared between the encoder (reader)
 /// and the background fee fetcher (writer).
 ///
-/// Empty until the [`RouterFeeFetcher`](crate::encoding::fee_fetcher::RouterFeeFetcher) lands
-/// its first successful fetch. Callers must handle the absent case rather than fall back to
-/// guessed fees.
-#[derive(Debug, Clone, Default)]
-pub struct SharedRouterFees(Arc<RwLock<Option<RouterFees>>>);
+/// Initialised with [`RouterFees::fallback`] so the encoder always has a usable configuration;
+/// the [`RouterFeeFetcher`](crate::encoding::fee_fetcher::RouterFeeFetcher) overwrites it with
+/// on-chain values on each successful refresh.
+#[derive(Debug, Clone)]
+pub struct SharedRouterFees(Arc<RwLock<RouterFees>>);
+
+impl Default for SharedRouterFees {
+    fn default() -> Self {
+        Self(Arc::new(RwLock::new(RouterFees::fallback())))
+    }
+}
 
 impl SharedRouterFees {
-    /// Returns a copy of the current fee configuration, or `None` if no on-chain fetch has
-    /// succeeded yet.
-    pub fn snapshot(&self) -> Option<RouterFees> {
+    /// Returns a copy of the current fee configuration.
+    pub fn snapshot(&self) -> RouterFees {
         self.0
             .read()
             .expect("router fees lock poisoned")
             .clone()
     }
 
-    /// Time since the last successful fetch, or `None` if no fetch has succeeded yet.
-    ///
-    /// `is_some()` doubles as a readiness check (fees loaded at least once).
-    pub fn last_fetch_age(&self) -> Option<Duration> {
-        self.0
-            .read()
-            .expect("router fees lock poisoned")
-            .as_ref()
-            .map(RouterFees::last_fetch_age)
-    }
-
-    /// Replaces the fee configuration with freshly fetched on-chain values and records the
-    /// fetch time.
+    /// Replaces the fee configuration with freshly fetched on-chain values.
     pub fn set(&self, fees: RouterFees) {
         *self
             .0
             .write()
-            .expect("router fees lock poisoned") = Some(fees);
+            .expect("router fees lock poisoned") = fees;
     }
 }
 
@@ -196,18 +189,30 @@ mod tests {
     }
 
     #[test]
-    fn test_shared_router_fees_tracks_load_and_age() {
+    fn test_fallback_is_point_one_bps_on_output() {
+        let rates = RouterFees::fallback().fees_for(&client(0xAA));
+        // 1000 / 1e8 = 0.00001 = 0.1 bps, with no fee on client fees.
+        assert_eq!(rates.on_output(), 1_000);
+        assert_eq!(rates.on_client_fee(), 0);
+        assert_eq!(rates.max_fee_units(), 100_000_000);
+    }
+
+    #[test]
+    fn test_shared_router_fees_set_overrides() {
         let shared = SharedRouterFees::default();
-        assert_eq!(shared.last_fetch_age(), None);
+        // Defaults to the fallback before any on-chain fetch lands.
+        assert_eq!(
+            shared
+                .snapshot()
+                .fees_for(&client(0xAA))
+                .on_output(),
+            1_000
+        );
 
         shared.set(RouterFees::new(SCALE, 1, 2, HashMap::new()));
 
-        let snapshot = shared
-            .snapshot()
-            .expect("fees should be loaded");
+        let snapshot = shared.snapshot();
         assert_eq!(snapshot.max_fee_units(), SCALE);
         assert_eq!(snapshot.fees_for(&client(0xAA)), FeeRates::new(1, 2, SCALE));
-        // A fetch just happened, so the recorded age is well under a second.
-        assert!(shared.last_fetch_age().unwrap() < Duration::from_secs(1));
     }
 }

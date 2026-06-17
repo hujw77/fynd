@@ -189,16 +189,7 @@ impl Encoder {
             .tycho_encoder
             .encode_solutions(solutions)?;
 
-        // Require real, on-chain fee values
-        let router_fees = self
-            .router_fees
-            .snapshot()
-            .ok_or_else(|| {
-                SolveError::FailedEncoding(
-                    "router fees not yet loaded from the on-chain FeeCalculator; cannot encode"
-                        .to_string(),
-                )
-            })?;
+        let router_fees = self.router_fees.snapshot();
         for (encoded_solution, (idx, solution)) in encoded_solutions
             .into_iter()
             .zip(to_encode)
@@ -712,23 +703,6 @@ mod tests {
             .router_fees()
             .set(RouterFees::new(FEE_SCALE, 100_000, 20_000_000, HashMap::new()));
         encoder
-    }
-
-    #[tokio::test]
-    async fn test_encode_errors_when_fees_not_loaded() {
-        let registry = SwapEncoderRegistry::new(Chain::Ethereum)
-            .add_default_encoders(None)
-            .unwrap();
-        // Encoder without any fees loaded — must refuse to encode rather than guess.
-        let encoder = Encoder::new(Chain::Ethereum, registry).unwrap();
-        let quote = make_order_quote(990)
-            .with_route(make_route_with_tokens(&[(make_address(0x01), make_address(0x02))]));
-
-        let result = encoder
-            .encode(vec![quote], EncodingOptions::new(0.01))
-            .await;
-
-        assert!(result.is_err());
     }
 
     #[tokio::test]

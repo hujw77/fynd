@@ -993,12 +993,8 @@ impl Solver {
                 .read()
                 .await
                 .derived_data_ready();
-            let fees_ready = self
-                .router_fees
-                .last_fetch_age()
-                .is_some();
 
-            if market_ready && derived_ready && fees_ready {
+            if market_ready && derived_ready {
                 return Ok(());
             }
 
