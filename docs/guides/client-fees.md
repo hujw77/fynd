@@ -44,17 +44,17 @@ Invariant: `amount_out = router_fee + client_fee + max_slippage + min_amount_rec
 
 ### Example
 
-Example: 1,000,000 USDC output, 10 bps Fynd fee, 50 bps client fee, 1% slippage:
+Example: 1,000,000 USDC output, 0.1 bps Fynd fee, 50 bps client fee, 1% slippage:
 
 ```
 client_fee (total)   = 1,000,000 * 50 / 10,000         = 5,000
 router_share         = 1,000,000 * 50 * 2,000 / 1e8    = 1,000
 client_portion       = 5,000 - 1,000                    = 4,000
-router_fee_output    = 1,000,000 * 10 / 10,000          = 1,000
-router_fee           = 1,000 + 1,000                     = 2,000
-amount_after_fees    = 1,000,000 - 4,000 - 2,000        = 994,000
-max_slippage         = 994,000 * 0.01                    = 9,940
-min_amount_received  = 994,000 - 9,940                   = 984,060
+router_fee_output    = 1,000,000 * 0.1 / 10,000         = 10
+router_fee           = 10 + 1,000                        = 1,010
+amount_after_fees    = 1,000,000 - 4,000 - 1,010        = 994,990
+max_slippage         = 994,990 * 0.01                    = 9,949
+min_amount_received  = 994,990 - 9,949                   = 985,041
 ```
 
 ## Setting up client fees

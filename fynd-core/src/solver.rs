@@ -28,7 +28,7 @@ use tycho_simulation::{
 use crate::{
     algorithm::{AlgorithmConfig, AlgorithmError},
     derived::{ComputationManager, ComputationManagerConfig, SharedDerivedDataRef},
-    encoding::encoder::Encoder,
+    encoding::{encoder::Encoder, fee_fetcher::RouterFeeFetcher, router_fees::SharedRouterFees},
     feed::{
         events::{MarketEvent, MarketEventHandler},
         gas::GasPriceFetcher,
@@ -65,6 +65,8 @@ pub mod defaults {
     pub const TVL_BUFFER_RATIO: f64 = 1.1;
     /// How often the gas price is refreshed from the RPC node.
     pub const GAS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+    /// How often router fees are refreshed from the on-chain FeeCalculator contract.
+    pub const ROUTER_FEE_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
     /// Delay before reconnecting to the Tycho feed after a disconnect.
     pub const RECONNECT_DELAY: Duration = Duration::from_secs(5);
     /// Minimum number of solver pool responses required before returning a quote (`0` = wait for
@@ -273,6 +275,9 @@ pub enum SolverBuildError {
     /// The swap encoder could not be created for the target chain.
     #[error("failed to create encoder: {0}")]
     Encoder(String),
+    /// The router fee fetcher could not be created (e.g. malformed RPC URL).
+    #[error("failed to create router fee fetcher: {0}")]
+    RouterFeeFetcher(String),
     /// A pool referenced an algorithm name that is not registered.
     #[error(transparent)]
     UnknownAlgorithm(#[from] UnknownAlgorithmError),
@@ -332,6 +337,7 @@ struct CustomPoolEntry {
 struct BuiltComponents {
     tycho_feed: TychoFeed,
     gas_price_fetcher: GasPriceFetcher<EthereumRpcClient>,
+    router_fee_fetcher: RouterFeeFetcher,
     computation_manager: ComputationManager,
     computation_event_rx: broadcast::Receiver<MarketEvent>,
     computation_shutdown_tx: broadcast::Sender<()>,
@@ -340,6 +346,7 @@ struct BuiltComponents {
     worker_pools: Vec<WorkerPool>,
     market_data: MarketData,
     derived_data: SharedDerivedDataRef,
+    router_fees: SharedRouterFees,
     chain: Chain,
     router_address: Bytes,
     pending_indexers: Vec<(String, Box<dyn TxDeltaIndexer>)>,
@@ -751,6 +758,15 @@ impl FyndBuilder {
 
         let chain = self.chain;
         let router_address = encoder.router_address().clone();
+        let router_fees = encoder.router_fees();
+
+        let router_fee_fetcher = RouterFeeFetcher::new(
+            self.rpc_url.as_str(),
+            &router_address,
+            router_fees.clone(),
+            defaults::ROUTER_FEE_REFRESH_INTERVAL,
+        )
+        .map_err(|e| SolverBuildError::RouterFeeFetcher(e.to_string()))?;
 
         // Only start price providers when the guard is enabled.
         // When disabled, per-request attempts to enable the guard return an error.
@@ -773,6 +789,7 @@ impl FyndBuilder {
         Ok(BuiltComponents {
             tycho_feed,
             gas_price_fetcher,
+            router_fee_fetcher,
             computation_manager,
             computation_event_rx,
             computation_shutdown_tx,
@@ -781,6 +798,7 @@ impl FyndBuilder {
             worker_pools,
             market_data,
             derived_data,
+            router_fees,
             chain,
             router_address,
             pending_indexers: self.pending_indexers,
@@ -804,6 +822,9 @@ impl FyndBuilder {
         let gas_price_handle = tokio::spawn(async move {
             c.gas_price_fetcher.run().await;
         });
+        let router_fee_handle = tokio::spawn(async move {
+            c.router_fee_fetcher.run().await;
+        });
         let computation_handle = tokio::spawn(async move {
             c.computation_manager
                 .run(c.computation_event_rx, c.computation_shutdown_rx)
@@ -815,8 +836,10 @@ impl FyndBuilder {
             worker_pools: c.worker_pools,
             market_data: c.market_data,
             derived_data: c.derived_data,
+            router_fees: c.router_fees,
             feed_handle,
             gas_price_handle,
+            router_fee_handle,
             computation_handle,
             computation_shutdown_tx: c.computation_shutdown_tx,
             chain: c.chain,
@@ -857,6 +880,9 @@ impl FyndBuilder {
         let gas_price_handle = tokio::spawn(async move {
             c.gas_price_fetcher.run().await;
         });
+        let router_fee_handle = tokio::spawn(async move {
+            c.router_fee_fetcher.run().await;
+        });
         let computation_handle = tokio::spawn(async move {
             c.computation_manager
                 .run(c.computation_event_rx, c.computation_shutdown_rx)
@@ -874,8 +900,10 @@ impl FyndBuilder {
                 worker_pools: c.worker_pools,
                 market_data: c.market_data,
                 derived_data: c.derived_data,
+                router_fees: c.router_fees,
                 feed_handle,
                 gas_price_handle,
+                router_fee_handle,
                 computation_handle,
                 computation_shutdown_tx: c.computation_shutdown_tx,
                 chain: c.chain,
@@ -893,8 +921,10 @@ pub struct Solver {
     worker_pools: Vec<WorkerPool>,
     market_data: MarketData,
     derived_data: SharedDerivedDataRef,
+    router_fees: SharedRouterFees,
     feed_handle: JoinHandle<()>,
     gas_price_handle: JoinHandle<()>,
+    router_fee_handle: JoinHandle<()>,
     computation_handle: JoinHandle<()>,
     computation_shutdown_tx: broadcast::Sender<()>,
     chain: Chain,
@@ -936,8 +966,9 @@ impl Solver {
     /// - The Tycho feed has delivered at least one market snapshot.
     /// - The computation manager has completed at least one derived-data cycle (spot prices, pool
     ///   depths, token gas prices).
+    /// - Router fees have been loaded from the on-chain FeeCalculator at least once.
     ///
-    /// The method polls every 500 ms and returns as soon as both conditions are
+    /// The method polls every 500 ms and returns as soon as all conditions are
     /// met, or returns [`WaitReadyError`] if `timeout` elapses first.
     ///
     /// # Example
@@ -1097,6 +1128,16 @@ impl Solver {
         };
 
         let router_address = encoder.router_address().clone();
+        // Replay mode has no FeeCalculator to read; seed a zero-fee config at the standard
+        // 8-decimal scale so the recording-based solver reports ready (integration tests do
+        // not exercise encoding).
+        let router_fees = encoder.router_fees();
+        router_fees.set(crate::encoding::router_fees::RouterFees::new(
+            100_000_000,
+            0,
+            0,
+            std::collections::HashMap::new(),
+        ));
         let router_config = WorkerPoolRouterConfig::default()
             .with_timeout(Duration::from_millis(max_timeout_ms.max(5000)))
             .with_min_responses(defaults::ROUTER_MIN_RESPONSES);
@@ -1118,18 +1159,21 @@ impl Solver {
             tracing::warn!("no receivers for initial MarketUpdated broadcast");
         }
 
-        // Dummy handles for feed/gas (not running in replay mode). The market event
-        // channel stays alive through the `market_event_tx` field on `Solver`.
+        // Dummy handles for feed/gas/router-fees (not running in replay mode). The market
+        // event channel stays alive through the `market_event_tx` field on `Solver`.
         let feed_handle = tokio::spawn(futures::future::pending::<()>());
         let gas_price_handle = tokio::spawn(async { /* no-op */ });
+        let router_fee_handle = tokio::spawn(async { /* no-op */ });
 
         Ok(Solver {
             router,
             worker_pools,
             market_data,
             derived_data,
+            router_fees,
             feed_handle,
             gas_price_handle,
+            router_fee_handle,
             computation_handle,
             computation_shutdown_tx,
             chain,
@@ -1146,6 +1190,7 @@ impl Solver {
         }
         self.feed_handle.abort();
         self.gas_price_handle.abort();
+        self.router_fee_handle.abort();
     }
 
     /// Consumes the solver into its raw parts for callers that add their own layer.
@@ -1155,8 +1200,10 @@ impl Solver {
             worker_pools: self.worker_pools,
             market_data: self.market_data,
             derived_data: self.derived_data,
+            router_fees: self.router_fees,
             feed_handle: self.feed_handle,
             gas_price_handle: self.gas_price_handle,
+            router_fee_handle: self.router_fee_handle,
             computation_handle: self.computation_handle,
             computation_shutdown_tx: self.computation_shutdown_tx,
             chain: self.chain,
@@ -1177,10 +1224,14 @@ pub struct SolverParts {
     market_data: MarketData,
     /// Derived on-chain data (spot prices, depths, gas costs) shared across all components.
     derived_data: SharedDerivedDataRef,
+    /// Router fee configuration, refreshed from chain by the router-fee fetcher.
+    router_fees: SharedRouterFees,
     /// Background task running the Tycho market-data feed.
     feed_handle: JoinHandle<()>,
     /// Background task polling the RPC node for gas prices.
     gas_price_handle: JoinHandle<()>,
+    /// Background task refreshing router fees from the on-chain FeeCalculator.
+    router_fee_handle: JoinHandle<()>,
     /// Background task running the computation manager.
     computation_handle: JoinHandle<()>,
     /// Send a unit value on this channel to trigger a graceful computation-manager shutdown.
@@ -1217,6 +1268,11 @@ impl SolverParts {
         &self.derived_data
     }
 
+    /// Returns a reference to the shared router fee configuration.
+    pub fn router_fees(&self) -> &SharedRouterFees {
+        &self.router_fees
+    }
+
     /// Consumes the parts and returns the router.
     pub fn into_router(self) -> WorkerPoolRouter {
         self.router
@@ -1234,6 +1290,7 @@ impl SolverParts {
         JoinHandle<()>,
         JoinHandle<()>,
         JoinHandle<()>,
+        JoinHandle<()>,
         broadcast::Sender<()>,
     ) {
         (
@@ -1243,6 +1300,7 @@ impl SolverParts {
             self.derived_data,
             self.feed_handle,
             self.gas_price_handle,
+            self.router_fee_handle,
             self.computation_handle,
             self.computation_shutdown_tx,
         )

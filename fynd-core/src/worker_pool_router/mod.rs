@@ -535,7 +535,18 @@ mod tests {
         let registry = SwapEncoderRegistry::new(Chain::Ethereum)
             .add_default_encoders(None)
             .expect("default encoders should always succeed");
-        Encoder::new(Chain::Ethereum, registry).expect("encoder creation should succeed")
+        let encoder =
+            Encoder::new(Chain::Ethereum, registry).expect("encoder creation should succeed");
+        // Load fees so encoding can run; the fetcher supplies on-chain values in production.
+        encoder
+            .router_fees()
+            .set(crate::encoding::router_fees::RouterFees::new(
+                100_000_000,
+                100_000,
+                20_000_000,
+                std::collections::HashMap::new(),
+            ));
+        encoder
     }
 
     fn make_address(byte: u8) -> Address {

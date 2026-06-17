@@ -409,6 +409,11 @@ async fn main() -> anyhow::Result<()> {
     println!("Amount in:           {}", quote.amount_in());
     println!("Amount out:          {}", quote.amount_out());
     println!("Amount out net gas:  {}", quote.amount_out_net_gas());
+    if let Some(fees) = quote.fee_breakdown() {
+        println!("Router fee:          {}", fees.router_fee());
+        println!("Client fee:          {}", fees.client_fee());
+        println!("Min amount received: {}", fees.min_amount_received());
+    }
     println!("Token in:            0x{}", hex::encode(&sell_token_bytes));
     println!("Token out:           0x{}", hex::encode(&buy_token_bytes));
     println!("Gas estimate:        {}", quote.gas_estimate());

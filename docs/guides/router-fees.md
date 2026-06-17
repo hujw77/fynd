@@ -6,7 +6,7 @@ icon: coins
 
 Fynd charges a fee when you execute a swap. Quotes are free.
 
-The default Fynd fee is 10 bps (0.1%) of swap output. Contact us for volume discounts.
+The default Fynd fee is 0.1 bps (0.001%) of swap output. Contact us for volume discounts.
 
 If you charge your own swap fees, Fynd also takes 20% of those fees. See [Charge Fees on your Swaps](client-fees.md).
 
@@ -40,13 +40,13 @@ Invariant without client fees: `amount_out = router_fee + max_slippage + min_amo
 
 ### Example
 
-Example: 1,000,000 USDC output, 10 bps Fynd fee, 1% slippage:
+Example: 1,000,000 USDC output, 0.1 bps Fynd fee, 1% slippage:
 
 ```
-router_fee           = 1,000,000 * 10 / 10,000          = 1,000
-amount_after_fees    = 1,000,000 - 1,000                = 999,000
-max_slippage         = 999,000 * 0.01                   = 9,990
-min_amount_received  = 999,000 - 9,990                  = 989,010
+router_fee           = 1,000,000 * 0.1 / 10,000         = 10
+amount_after_fees    = 1,000,000 - 10                   = 999,990
+max_slippage         = 999,990 * 0.01                   = 9,999
+min_amount_received  = 999,990 - 9,999                  = 989,991
 ```
 
 ## Charge Fees on your Swaps
