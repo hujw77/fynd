@@ -272,7 +272,7 @@ where
             Err(err) => {
                 let solve_error = match err {
                     crate::AlgorithmError::NoPath { .. } => {
-                        error!(
+                        debug!(
                             order_id = %order.id(),
                             error = %err,
                             "no route found"
@@ -280,7 +280,7 @@ where
                         SolveError::NoRouteFound { order_id: order.id().to_string() }
                     }
                     crate::AlgorithmError::Timeout { elapsed_ms } => {
-                        error!(
+                        warn!(
                             order_id = %order.id(),
                             elapsed_ms,
                             "solve timeout"
@@ -507,16 +507,8 @@ where
                                 self.quote(order, params).await
                             };
 
-                            if let Err(ref e) = result {
-                                warn!(
-                                    self.worker_id,
-                                    task_id = %task_id,
-                                    error = %e,
-                                    "solve failed"
-                                );
-                            }
-
-                            // Send response
+                            // Send response. The specific failure cause is already logged in
+                            // `quote()` and returned to the caller, so we don't re-log here.
                             task.respond(result);
                         }
                         None => {
