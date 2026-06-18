@@ -297,7 +297,7 @@ impl WorkerPoolRouter {
                         }
                         Some((pool_name, Err(e))) => {
                             remaining_pools.remove(&pool_name);
-                            warn!(
+                            debug!(
                                 pool = %pool_name,
                                 order_id = %order_id,
                                 error = %e,
