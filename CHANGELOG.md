@@ -1,3 +1,10 @@
+## [0.81.1](https://github.com/propeller-heads/fynd/compare/0.81.0...0.81.1) (2026-06-19)
+
+
+### Bug Fixes
+
+* **release:** exclude fynd-core integration tests from published crate ([e6db8c5](https://github.com/propeller-heads/fynd/commit/e6db8c5c869c5adb4e51868958b653793dcae7bb))
+
 ## [0.81.0](https://github.com/propeller-heads/fynd/compare/0.80.0...0.81.0) (2026-06-17)
 
 
