@@ -38,7 +38,7 @@ Before each iteration, the algorithm computes a **probe amount**: the minimum tr
 
 ### Finding a candidate path
 
-To find the next candidate path, the algorithm constructs a **degraded market state** that reflects the current allocation:
+To find the next candidate path, the algorithm constructs a **post-swap market state** that reflects the current allocation:
 
 1. Simulate all current path allocations through their respective pools
 2. Store the post-swap pool states as overrides
