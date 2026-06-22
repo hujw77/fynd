@@ -16,9 +16,7 @@ Three properties make this harder than classical shortest-path routing:
 2. **Weights are multiplicative, not additive.** Exchange rates multiply along a path. Shortest-path algorithms like Dijkstra assume additive costs.
 3. **The best route depends on trade size.** A pool with deep liquidity wins for large trades; a shallow pool with a better spot price wins for small ones. There is no single "best route" independent of the amount.
 
-These properties rule out off-the-shelf graph algorithms that rely on precomputed, additive, size-independent edge weights. Both of Fynd's algorithms handle this by simulating the actual swap math at every step.
-
-> **Note:** Fynd currently finds the single best path for each order. Order splitting across parallel paths is planned and will improve output for large trades where a single path exhausts pool liquidity.
+These properties rule out off-the-shelf graph algorithms that rely on precomputed, additive, size-independent edge weights. All of Fynd's algorithms handle this by simulating the actual swap math at every step.
 
 ## How Fynd uses algorithms
 
@@ -30,10 +28,10 @@ See [Architecture](../ARCHITECTURE.md) for the full system design and [Custom Al
 
 ## Built-in algorithms
 
-|                        | [Most Liquid](most-liquid.md)                                       | [Bellman-Ford](bellman-ford.md)                    |
-| ---------------------- | ------------------------------------------------------------------- | -------------------------------------------------- |
-| **Approach**           | Enumerate paths, score by heuristic, simulate top-N                 | Simulate every reachable edge, keep best amounts   |
-| **Strengths**          | Fast; good at common, high-liquidity pairs                          | Finds non-obvious routes; no heuristic blind spots |
-| **Weaknesses**         | Path count explodes at high hop counts; heuristic can misjudge      | Slower per request; benefits less from pre-scoring |
-| **Default config**     | _(not in default `worker_pools.toml`)_                              | 2 hops, 3 workers (see `worker_pools.toml`)        |
-| **Derived data needs** | Spot prices + pool depths (scoring), token gas prices (gas ranking) | Token gas prices (optional, for gas-aware mode)    |
+|                        | [Most Liquid](most-liquid.md)                                       | [Bellman-Ford](bellman-ford.md)                    | [Path Frank-Wolfe](path-frank-wolfe.md)                               |
+| ---------------------- | ------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------- |
+| **Approach**           | Enumerate paths, score by heuristic, simulate top-N                 | Simulate every reachable edge, keep best amounts   | Bellman-Ford based multi-path discovery + Frank-Wolfe split optimisation        |
+| **Strengths**          | Fast; good at common, high-liquidity pairs                          | Finds non-obvious routes; no heuristic blind spots | Reduces price impact by splitting flow across parallel paths          |
+| **Weaknesses**         | Path count explodes at high hop counts; heuristic can misjudge      | Single path only; suboptimal for large trades      | More simulation work per request; overkill for small trades           |
+| **Default config**     | _(not in default `worker_pools.toml`)_                              | 2 hops, 3 workers (see `worker_pools.toml`)        | _(not in default `worker_pools.toml`)_                                |
+| **Derived data needs** | Spot prices + pool depths (scoring), token gas prices (gas ranking) | Token gas prices (optional, for gas-aware mode)    | Token gas prices + spot prices (price impact, probe amount, gas cost) |
