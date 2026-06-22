@@ -1,9 +1,12 @@
 //! HTTP request handlers for the solver API.
 
+use std::str::FromStr;
+
 use actix_web::{web, HttpResponse};
 #[cfg(feature = "experimental")]
 use tracing::warn;
 use tracing::{info, instrument};
+use tycho_simulation::tycho_common::models::Address;
 
 use super::{dto, ApiError, AppState};
 use crate::api::error::ErrorResponse;
@@ -18,7 +21,8 @@ pub(crate) fn configure_routes(cfg: &mut web::ServiceConfig) {
     let scope = web::scope("/v1")
         .route("/quote", web::post().to(quote))
         .route("/health", web::get().to(health))
-        .route("/info", web::get().to(info));
+        .route("/info", web::get().to(info))
+        .route("/debug/components", web::get().to(debug_components));
     #[cfg(feature = "experimental")]
     let scope = scope.route("/prices", web::get().to(get_prices));
     cfg.service(scope);
@@ -147,6 +151,87 @@ pub(crate) async fn info(state: web::Data<AppState>) -> HttpResponse {
         state.permit2_address().clone().into(),
     );
     HttpResponse::Ok().json(body)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/debug/components",
+    tag = "debug",
+    params(dto::DebugComponentsQuery),
+    responses(
+        (status = 200, description = "Tracked market components", body = dto::DebugComponentsResponse),
+        (status = 400, description = "Invalid token filter", body = ErrorResponse),
+    )
+)]
+pub(crate) async fn debug_components(
+    state: web::Data<AppState>,
+    query: web::Query<dto::DebugComponentsQuery>,
+) -> Result<HttpResponse, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let offset = query.offset.unwrap_or(0);
+    let token_filter = query.token.clone();
+    let token_filter_addr = match token_filter.as_deref() {
+        Some(token) => Some(
+            Address::from_str(token)
+                .map_err(|e| ApiError::BadRequest(format!("invalid token address '{token}': {e}")))?,
+        ),
+        None => None,
+    };
+
+    let market = state.market_data().read().await;
+    let total_components = market.components().len();
+    let last_updated_timestamp = market.last_updated().map(|info| info.timestamp());
+    let mut protocol_sync_statuses: Vec<_> = market
+        .protocol_sync_statuses()
+        .iter()
+        .map(|(protocol_system, status)| dto::DebugProtocolSyncStatus {
+            protocol_system: protocol_system.clone(),
+            state: status.to_string(),
+        })
+        .collect();
+
+    let mut components: Vec<_> = market
+        .components()
+        .values()
+        .filter(|component| {
+            token_filter_addr
+                .as_ref()
+                .is_none_or(|token| component.tokens.iter().any(|candidate| candidate == token))
+        })
+        .map(|component| dto::DebugComponentEntry {
+            id: component.id.clone(),
+            protocol_system: component.protocol_system.clone(),
+            protocol_type_name: component.protocol_type_name.clone(),
+            chain: component.chain.to_string(),
+            tokens: component
+                .tokens
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        })
+        .collect();
+    drop(market);
+
+    protocol_sync_statuses.sort_by(|a, b| a.protocol_system.cmp(&b.protocol_system));
+    components.sort_by(|a, b| a.id.cmp(&b.id));
+    let filtered_components = components.len();
+    let components: Vec<_> = components.into_iter().skip(offset).take(limit).collect();
+    let returned_components = components.len();
+
+    Ok(HttpResponse::Ok().json(dto::DebugComponentsResponse {
+        total_components,
+        filtered_components,
+        returned_components,
+        limit,
+        offset,
+        token_filter,
+        last_updated_timestamp,
+        protocol_sync_statuses,
+        components,
+    }))
 }
 
 #[cfg(feature = "experimental")]
@@ -361,6 +446,7 @@ mod tests {
         AppState::new(
             router,
             health_tracker,
+            market_data,
             1,
             router_address,
             permit2_address,

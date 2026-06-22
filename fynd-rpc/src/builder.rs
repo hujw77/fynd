@@ -261,6 +261,7 @@ impl FyndRPCBuilder {
         let app_state = AppState::new(
             router,
             health_tracker,
+            _market_data.clone(),
             chain_id,
             router_address,
             permit2_address,
