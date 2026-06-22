@@ -134,4 +134,4 @@ The Frank-Wolfe loop checks elapsed time at the start of each iteration. If the 
 | `fynd-core/src/algorithm/bellman_ford.rs` | Inner BF solver used for path discovery |
 | `fynd-core/src/algorithm/mod.rs` | `Algorithm` trait definition |
 | `fynd-core/src/worker_pool/registry.rs` | Maps `"path_frank_wolfe"` to `PathFrankWolfeAlgorithm` |
-| `worker_pools.deep.toml` | Example configuration with PFW alongside BF and Most Liquid |
+| `worker_pools.toml` | Worker pool configuration (add a `path_frank_wolfe` pool to enable) |
