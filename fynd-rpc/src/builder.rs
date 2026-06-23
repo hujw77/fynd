@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    net::TcpListener,
     sync::Arc,
     time::Duration,
 };
@@ -26,6 +27,7 @@ pub struct FyndRPCBuilder {
     fynd_builder: FyndBuilder,
     http_host: String,
     http_port: u16,
+    http_listener: Option<TcpListener>,
     /// Gas price staleness threshold. Health returns 503 when exceeded. Disabled by default.
     gas_price_stale_threshold: Option<Duration>,
 }
@@ -66,6 +68,7 @@ impl FyndRPCBuilder {
             fynd_builder,
             http_host: defaults::HTTP_HOST.to_owned(),
             http_port: defaults::HTTP_PORT,
+            http_listener: None,
             gas_price_stale_threshold: None,
         })
     }
@@ -79,6 +82,14 @@ impl FyndRPCBuilder {
     /// Sets the HTTP port (default: 3000).
     pub fn http_port(mut self, port: u16) -> Self {
         self.http_port = port;
+        self
+    }
+
+    /// Uses a pre-bound TCP listener instead of binding `http_host:http_port`.
+    ///
+    /// Intended for tests that need an ephemeral port without a TOCTOU race.
+    pub fn http_listener(mut self, listener: TcpListener) -> Self {
+        self.http_listener = Some(listener);
         self
     }
 
@@ -275,9 +286,16 @@ impl FyndRPCBuilder {
             App::new()
                 .wrap(tracing_actix_web::TracingLogger::default())
                 .configure(|cfg| configure_app(cfg, app_state.clone()))
-        })
-        .bind((self.http_host.as_str(), self.http_port))
-        .context("failed to bind HTTP server")?
+        });
+        let server = if let Some(listener) = self.http_listener {
+            server
+                .listen(listener)
+                .context("failed to bind HTTP server")?
+        } else {
+            server
+                .bind((self.http_host.as_str(), self.http_port))
+                .context("failed to bind HTTP server")?
+        }
         .run();
 
         let server_handle = server.handle();

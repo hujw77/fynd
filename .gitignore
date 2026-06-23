@@ -12,3 +12,4 @@ scale_results*.json
 
 # fynd-gas-audit output artifacts
 tools/fynd-gas-audit/out/
+.agents

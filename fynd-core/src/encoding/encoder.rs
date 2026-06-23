@@ -26,6 +26,7 @@ use crate::{EncodingOptions, FeeBreakdown, OrderQuote, QuoteStatus, SolveError, 
 pub const PERMIT2_ADDRESS: &str = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
 static ROUTER_FEE_ON_OUTPUT_BPS: OnceLock<u64> = OnceLock::new();
+const FEE_CALCULATOR_SCALE: u64 = 100_000_000;
 
 fn router_fee_on_output_bps() -> u64 {
     *ROUTER_FEE_ON_OUTPUT_BPS.get_or_init(|| {
@@ -37,12 +38,12 @@ fn router_fee_on_output_bps() -> u64 {
                         tracing::warn!(
                             value = %v,
                             error = %e,
-                            "ROUTER_FEE_BPS is not a valid u64; using default (10)"
+                            "ROUTER_FEE_BPS is not a valid u64; using default (1000)"
                         );
                     })
                     .ok()
             })
-            .unwrap_or(10)
+            .unwrap_or(1000)
     })
 }
 
@@ -418,12 +419,13 @@ impl Encoder {
             let fee_numerator = swap_output * client_bps;
             let total_client_fee = &fee_numerator / 10_000u64;
 
-            router_fee_on_client = &fee_numerator * ROUTER_FEE_ON_CLIENT_FEE_BPS / 100_000_000u64;
+            router_fee_on_client =
+                &fee_numerator * ROUTER_FEE_ON_CLIENT_FEE_BPS / FEE_CALCULATOR_SCALE;
 
             client_portion = total_client_fee - &router_fee_on_client;
         }
 
-        let router_fee_on_output = swap_output * router_fee_on_output_bps() / 10_000u64;
+        let router_fee_on_output = swap_output * router_fee_on_output_bps() / FEE_CALCULATOR_SCALE;
         let total_router_fee = router_fee_on_client + router_fee_on_output;
 
         let amount_after_fees = swap_output - &client_portion - &total_router_fee;
@@ -793,5 +795,16 @@ mod tests {
         let mut calldata = tx.data().to_vec();
         calldata[offset..offset + 65].copy_from_slice(&real_sig);
         assert_eq!(&calldata[offset..offset + 65], &real_sig[..]);
+    }
+
+    #[test]
+    fn test_calculate_fee_breakdown_matches_chain_fee_units() {
+        let fee_breakdown =
+            Encoder::calculate_fee_breakdown(&BigUint::from(1_744_363u64), 0, 0.005);
+
+        assert_eq!(fee_breakdown.router_fee(), &BigUint::from(17u64));
+        assert_eq!(fee_breakdown.client_fee(), &BigUint::ZERO);
+        assert_eq!(fee_breakdown.max_slippage(), &BigUint::from(8_721u64));
+        assert_eq!(fee_breakdown.min_amount_received(), &BigUint::from(1_735_625u64));
     }
 }

@@ -73,6 +73,7 @@ num-traits = { workspace = true }
 tycho-execution = { workspace = true }
 bytes = { workspace = true }
 fynd-client = { workspace = true }
+erc20-overrides = { workspace = true }
 
 [workspace]
 members = [
@@ -137,8 +138,8 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 
 # Tycho
-tycho-execution = ">=0.304"
-tycho-simulation = ">=0.304"
+tycho-execution = { path = "../tycho/crates/tycho-execution" }
+tycho-simulation = { path = "../tycho/crates/tycho-simulation" }
 typetag = "0.2"
 
 # Compression
