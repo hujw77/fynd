@@ -34,7 +34,7 @@ use crate::api::error::ErrorResponse;
 /// OpenAPI documentation bundle for the stable Fynd RPC endpoints.
 #[derive(OpenApi)]
 #[openapi(
-    paths(handlers::quote, handlers::health, handlers::info),
+    paths(handlers::quote, handlers::health, handlers::info, handlers::debug_components),
     components(schemas(
         dto::QuoteRequest,
         dto::Order,
@@ -48,6 +48,9 @@ use crate::api::error::ErrorResponse;
         dto::Swap,
         dto::BlockInfo,
         dto::InstanceInfo,
+        dto::DebugComponentEntry,
+        dto::DebugComponentsResponse,
+        dto::DebugProtocolSyncStatus,
         HealthStatus,
         ErrorResponse,
     ))
@@ -158,6 +161,7 @@ impl HealthTracker {
 pub struct AppState {
     worker_router: Arc<WorkerPoolRouter>,
     health_tracker: HealthTracker,
+    market_data: MarketData,
     chain_id: u64,
     router_address: Bytes,
     permit2_address: Bytes,
@@ -172,6 +176,7 @@ impl AppState {
     pub(crate) fn new(
         worker_router: WorkerPoolRouter,
         health_tracker: HealthTracker,
+        market_data: MarketData,
         chain_id: u64,
         router_address: Bytes,
         permit2_address: Bytes,
@@ -181,6 +186,7 @@ impl AppState {
         Self {
             worker_router: Arc::new(worker_router),
             health_tracker,
+            market_data,
             chain_id,
             router_address,
             permit2_address,
@@ -197,6 +203,10 @@ impl AppState {
 
     pub(crate) fn health_tracker(&self) -> &HealthTracker {
         &self.health_tracker
+    }
+
+    pub(crate) fn market_data(&self) -> &MarketData {
+        &self.market_data
     }
 
     pub(crate) fn chain_id(&self) -> u64 {

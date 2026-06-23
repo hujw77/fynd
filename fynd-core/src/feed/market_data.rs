@@ -285,6 +285,16 @@ impl<'a> MarketDataView<'a> {
         self.guard.get_component(id)
     }
 
+    /// Returns all tracked components from the base data.
+    pub fn components(&self) -> &HashMap<ComponentId, ProtocolComponent> {
+        self.guard.components()
+    }
+
+    /// Returns all protocol sync statuses from the base data.
+    pub fn protocol_sync_statuses(&self) -> &HashMap<String, SynchronizerState> {
+        self.guard.protocol_sync_statuses()
+    }
+
     /// Returns a reference to the underlying base market state, bypassing any overlay.
     pub fn base_market_state(&self) -> &MarketState {
         &self.guard
@@ -360,6 +370,16 @@ impl MarketState {
     /// Gets a component by ID.
     pub fn get_component(&self, id: &str) -> Option<&ProtocolComponent> {
         self.components.get(id)
+    }
+
+    /// Returns all tracked components indexed by component ID.
+    pub fn components(&self) -> &HashMap<ComponentId, ProtocolComponent> {
+        &self.components
+    }
+
+    /// Returns all protocol sync statuses indexed by protocol system name.
+    pub fn protocol_sync_statuses(&self) -> &HashMap<String, SynchronizerState> {
+        &self.protocol_sync_status
     }
 
     /// Gets a simulation state by ID.
