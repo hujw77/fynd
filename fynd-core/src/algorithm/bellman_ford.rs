@@ -35,6 +35,7 @@ use tracing::{debug, instrument, trace, warn};
 use tycho_simulation::{
     tycho_common::models::Address,
     tycho_core::{models::token::Token, simulation::protocol_sim::Price},
+    evm::protocol::uniswap_v2::state::UniswapV2State,
 };
 
 use super::{
@@ -404,6 +405,18 @@ impl BellmanFordAlgorithm {
                             continue;
                         };
 
+                    if let Some(state) = sim.as_any().downcast_ref::<UniswapV2State>() {
+                        debug!(
+                            component_id = %component_id,
+                            token_in = %token_u.address,
+                            token_out = %token_v.address,
+                            reserve0 = %state.reserve0,
+                            reserve1 = %state.reserve1,
+                            amount_in = %amount[u_idx],
+                            "bellman_ford using uniswap_v2 simulation state"
+                        );
+                    }
+
                     let result = match sim.get_amount_out(amount[u_idx].clone(), token_u, token_v) {
                         Ok(r) => r,
                         Err(e) => {
@@ -531,6 +544,53 @@ impl BellmanFordAlgorithm {
                 component.clone(),
                 sim_state.clone_box(),
             ));
+
+            if let Some(state) = sim_state.as_any().downcast_ref::<UniswapV2State>() {
+                debug!(
+                    component_id = %component_id,
+                    token_in = %token_in.address,
+                    token_out = %token_out.address,
+                    reserve0 = %state.reserve0,
+                    reserve1 = %state.reserve1,
+                    amount_in = %amount[from_node.index()],
+                    route_amount_out = %amount[to_node.index()],
+                    "bellman_ford route hop uses uniswap_v2 state"
+                );
+
+                match sim_state.get_amount_out(
+                    amount[from_node.index()].clone(),
+                    token_in,
+                    token_out,
+                ) {
+                    Ok(recomputed) => {
+                        if recomputed.amount != amount[to_node.index()] {
+                            warn!(
+                                component_id = %component_id,
+                                token_in = %token_in.address,
+                                token_out = %token_out.address,
+                                amount_in = %amount[from_node.index()],
+                                route_amount_out = %amount[to_node.index()],
+                                recomputed_amount_out = %recomputed.amount,
+                                route_gas = %edge_gas[to_node.index()],
+                                recomputed_gas = %recomputed.gas,
+                                reserve0 = %state.reserve0,
+                                reserve1 = %state.reserve1,
+                                "bellman_ford route amount_out differs from recomputed pool simulation"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        warn!(
+                            component_id = %component_id,
+                            token_in = %token_in.address,
+                            token_out = %token_out.address,
+                            amount_in = %amount[from_node.index()],
+                            error = %error,
+                            "bellman_ford failed to recompute route hop during diagnostics"
+                        );
+                    }
+                }
+            }
             tokens
                 .entry(token_in.address.clone())
                 .or_insert_with(|| token_in.clone());
